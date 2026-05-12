@@ -1,26 +1,29 @@
 """File selection for multi-file Antiquarian commands.
 
 Default behavior: walk the repo via ``git ls-files`` (respects ``.gitignore``)
-and apply a built-in skiplist for common bloat directories. Users can refine
-with ``--include`` / ``--exclude`` globs, or bypass everything with ``--only``
-to feed an exact whitelist of paths.
+and hard-skip only ``.git/`` and ``.antiquarian/`` (tool plumbing / own output).
+Everything else in the tracked set is trusted — the project's ``.gitignore`` is
+the authority on what matters.
+
+A soft-warn list emits a one-time stderr warning when unusual directories
+(``node_modules/``, ``__pycache__/``, etc.) appear in the candidate set, but
+does **not** filter them.
+
+Non-git directories are refused — Antiquarian's value comes from version history.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
+_HARD_SKIP_DIRS = frozenset({".git", ".antiquarian"})
 
-# Always skip, even if the user's .gitignore allows them in.
-# Dropped from any candidate set unless they appear in --only.
-_BUILT_IN_SKIP_DIRS = frozenset(
+_SOFT_WARN_DIRS = frozenset(
     {
-        ".git",
-        ".hg",
-        ".svn",
         "node_modules",
         "bower_components",
         "__pycache__",
@@ -37,45 +40,40 @@ _BUILT_IN_SKIP_DIRS = frozenset(
         ".ruff_cache",
         ".tox",
         "vendor",
-        ".antiquarian",
+        "target",
     }
 )
 
-_BUILT_IN_SKIP_GLOBS = frozenset(
+_SOFT_WARN_GLOBS = frozenset(
     {
-        "*.pyc",
-        "*.pyo",
-        "*.pyd",
-        "*.so",
-        "*.dylib",
-        "*.dll",
-        ".DS_Store",
+        "*.egg-info",
     }
 )
 
 
-def _path_in_skip_dir(path: str) -> bool:
+def _path_in_dir_set(path: str, dirs: frozenset[str]) -> bool:
     parts = path.replace("\\", "/").split("/")
-    return any(part in _BUILT_IN_SKIP_DIRS for part in parts)
+    return any(part in dirs for part in parts)
+
+
+def _path_matches_soft_warn(path: str) -> str | None:
+    """Return the triggering directory name if path matches a soft-warn pattern, else None."""
+    parts = path.replace("\\", "/").split("/")
+    for part in parts:
+        if part in _SOFT_WARN_DIRS:
+            return part
+        if any(fnmatch(part, g) for g in _SOFT_WARN_GLOBS):
+            return part
+    return None
 
 
 def _matches_glob(path: str, pattern: str) -> bool:
-    """Match against the full path *or* the basename — catches both `tests/foo.py` and `*.pyc`."""
+    """Match against the full path *or* the basename."""
     return fnmatch(path, pattern) or fnmatch(os.path.basename(path), pattern)
 
 
 def _matches_any_glob(path: str, patterns: list[str]) -> bool:
     return any(_matches_glob(path, p) for p in patterns)
-
-
-def _matches_built_in_skip(path: str) -> bool:
-    if _path_in_skip_dir(path):
-        return True
-    if _matches_any_glob(path, list(_BUILT_IN_SKIP_GLOBS)):
-        return True
-    if any(part.endswith(".egg-info") for part in path.split("/")):
-        return True
-    return False
 
 
 def _git_tracked_files(repo_path: str | Path) -> list[str]:
@@ -89,18 +87,19 @@ def _git_tracked_files(repo_path: str | Path) -> list[str]:
     return [line for line in result.stdout.split("\n") if line]
 
 
-def _walk_filesystem(repo_path: str | Path) -> list[str]:
-    """Fallback for non-git directories: walk filesystem, applying built-in skips."""
-    base = Path(repo_path)
-    paths: list[str] = []
-    for root, dirs, files in os.walk(base):
-        # Prune skip dirs in-place so os.walk doesn't descend
-        dirs[:] = [d for d in dirs if d not in _BUILT_IN_SKIP_DIRS]
-        for name in files:
-            full = Path(root) / name
-            rel = str(full.relative_to(base))
-            paths.append(rel)
-    return paths
+def _emit_soft_warnings(candidates: list[str]) -> None:
+    """Emit one stderr warning per unusual directory found in the candidate set."""
+    warned: set[str] = set()
+    for path in candidates:
+        trigger = _path_matches_soft_warn(path)
+        if trigger and trigger not in warned:
+            warned.add(trigger)
+            print(
+                f"warning: '{trigger}/' appears to be tracked in this repo's history.\n"
+                f"         That's unusual — including it will cloud the codebase narrative.\n"
+                f"         To filter: --exclude '{trigger}/*'  (or add to .gitignore)",
+                file=sys.stderr,
+            )
 
 
 def select_files(
@@ -113,16 +112,14 @@ def select_files(
 ) -> list[str]:
     """Return repo-relative file paths to analyze.
 
-    Semantics:
+    Requires a git repository. Raises ``SystemExit`` for non-git directories.
 
-    - When ``only`` is non-empty, return exactly those paths (verifying each exists).
-      Bypasses defaults, ``.gitignore``, ``include``, and ``exclude``.
-    - Otherwise, candidates come from ``git ls-files`` (when ``respect_gitignore``
-      is True and the directory is a git repo) or a filesystem walk.
-    - Built-in skiplist always applies (``.git/``, ``node_modules/``, ``__pycache__/``, etc.).
-    - ``exclude`` patterns are subtracted from the candidate set.
-    - ``include`` patterns are additive: matching files are added back even if they
-      were skipped by the built-in list or ``exclude``.
+    - ``only`` (non-empty): return exactly those paths, bypassing all filters.
+    - Otherwise, candidates come from ``git ls-files``.
+    - Hard-skip: ``.git/``, ``.antiquarian/`` (always excluded).
+    - Soft-warn: unusual tracked directories get a stderr warning but are included.
+    - ``exclude`` patterns subtract from the candidate set.
+    - ``include`` patterns add back even if excluded.
     """
     repo = Path(repo_path).resolve()
 
@@ -134,21 +131,24 @@ def select_files(
                 result.append(p)
         return sorted(set(result))
 
-    candidates: list[str]
-    if respect_gitignore and (repo / ".git").exists():
-        try:
-            candidates = _git_tracked_files(repo)
-        except subprocess.CalledProcessError:
-            candidates = _walk_filesystem(repo)
-    else:
-        candidates = _walk_filesystem(repo)
+    if not (repo / ".git").exists():
+        print(
+            f"error: '{repo}' is not a git repository.\n"
+            "       antiquarian requires git history to work — "
+            "run 'git init' first.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    candidates = _git_tracked_files(repo)
+    _emit_soft_warnings(candidates)
 
     exclude = exclude or []
     include = include or []
 
     selected: list[str] = []
     for path in candidates:
-        if _matches_built_in_skip(path):
+        if _path_in_dir_set(path, _HARD_SKIP_DIRS):
             if _matches_any_glob(path, include):
                 selected.append(path)
             continue
@@ -158,8 +158,6 @@ def select_files(
             continue
         selected.append(path)
 
-    # Includes can also re-add filesystem-walked files that weren't in the original
-    # candidate set (rare but possible if exclude=** was set and include=foo/*)
     if include:
         all_seen = set(selected)
         for path in candidates:
