@@ -22,4 +22,5 @@ build-backend = "hatchling.build"
 dev = [
     "pytest>=8.0",
     "ruff>=0.15.12",
+    "z3-solver>=4.13.0",
 ]
