@@ -1,4 +1,20 @@
-"""Reusable Hypothesis strategies for Antiquarian property tests."""
+"""Reusable Hypothesis strategies for Antiquarian property tests.
+
+Two distinct goals are in tension and we cover both:
+
+1. **Regression prevention** — re-test known-bad patterns (Claude attribution
+   trailers from issue #16) so they can never silently slip back into the
+   prompt path. Handled by ``_HANG_PATTERN_FRAGMENTS`` below.
+2. **Finding new failures** — generate genuinely hostile commit content that
+   stresses the sanitizer and prompt builder in ways no specific bug has
+   surfaced yet. Handled by ``adversarial_text`` and its compositions.
+
+Inspired by Hypothesis's own "categories of nasty text" recipe
+(see https://hypothesis.readthedocs.io/en/latest/data.html) and the
+patterns commonly used in security/fuzz test corpora — `\\x00` bytes,
+RTL marks, zero-width joiners, regex-bomb shapes, markdown-fence
+breakouts, ANSI escapes.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +25,9 @@ from hypothesis import strategies as st
 from antiquarian.models import CommitFeatures, TodoAnnotation
 
 
-# Known patterns that have caused (or might cause) `claude -p` to hang.
-# Mixed into messages alongside arbitrary text to verify the sanitizer
-# and prompt builder handle them under fuzzing.
+# Known patterns that have caused `claude -p` to hang. Anti-regression set —
+# every property test that builds a prompt must still pass when these appear
+# in commit content.
 _HANG_PATTERN_FRAGMENTS = [
     "🤖 Generated with [Claude Code](https://claude.ai/code)",
     "Co-Authored-By: Claude <noreply@anthropic.com>",
@@ -23,24 +39,111 @@ _HANG_PATTERN_FRAGMENTS = [
 ]
 
 
+# Categories of "nasty" content for the adversarial branch. Each is sampled
+# independently so a single message can layer several of them. Tightening or
+# expanding these is how we hunt for new failure modes.
+_ADVERSARIAL_FRAGMENTS = [
+    # Whitespace-only / invisible
+    "",
+    " " * 5000,                          # long run of spaces
+    "\t" * 1000,                         # long run of tabs
+    "\n" * 200,                          # vertical column of nothing
+    "​" * 50,                       # zero-width spaces
+    "‮" + "reversed!" + "‬",   # RTL override sandwich
+    "﻿" * 10,                       # BOMs
+
+    # Combining / unusual unicode
+    "a" + "́" * 100,                # 100 combining acute accents on 'a' (Zalgo-light)
+    "💀" * 200,                          # emoji run
+    "\U0001F4A9" * 100,                  # supplementary plane
+
+    # Control / escape sequences
+    "\x00 NUL injection",
+    "\x1b[31mANSI red\x1b[0m",
+    "\x07\x07\x07 BEL",
+    "\x7f DEL char",
+
+    # Regex-bomb shapes (catastrophic backtracking targets)
+    "(" * 200 + "a" + ")" * 200,
+    "a" * 100 + "?" * 100,
+    "[" + "a-z" * 50 + "]" * 50,
+
+    # Markdown fence / injection
+    "```\n```\n```\n" * 10,              # fence storm
+    "</code></pre>" * 20,
+    "`" * 500,                           # backtick wall
+    "![](data:image/png;base64,AAAAAAAA)",
+    "[link](javascript:alert(1))",
+
+    # Things that look like patterns we sanitize but aren't
+    "Co-Authored-By: Bob <bob@example.com>",
+    "🤖 Beep boop, not an AI attribution.",
+    "https://claude.ai/code is a link, but no markdown.",
+
+    # Wide ranges of input length
+    "x" * 50_000,                        # massive single-line
+    "x\n" * 5_000,                       # many lines
+]
+
+
+# A character strategy that draws from a broad swath of unicode, including
+# the categories `st.text` excludes by default. Useful when we want the
+# message to be *just text* but really, truly, any text.
+_broad_chars = st.characters(
+    blacklist_characters="\x00",         # SQLite still rejects NUL in TEXT
+    blacklist_categories=(),             # everything else fair game
+)
+
+
+@st.composite
+def adversarial_text(draw: st.DrawFn) -> str:
+    """Hostile text: arbitrary Unicode plus optional adversarial fragments."""
+    base = draw(st.text(_broad_chars, min_size=0, max_size=3_000))
+    nasties = draw(st.lists(st.sampled_from(_ADVERSARIAL_FRAGMENTS), max_size=3))
+    if not nasties:
+        return base
+    parts = [base] + nasties
+    draw(st.permutations(parts))  # not order-significant for the consumer
+    return "\n".join(parts)
+
+
 @st.composite
 def commit_messages(draw: st.DrawFn) -> str:
-    """A commit message — arbitrary text optionally laced with hang-pattern fragments."""
-    body = draw(st.text(min_size=0, max_size=2000))
+    """A commit message — text optionally laced with hang patterns and/or adversarial fragments.
+
+    Three modes drawn from at random:
+    - vanilla: just ``st.text``, the simple case
+    - regression: vanilla text + one or more known hang-pattern fragments
+    - adversarial: text drawn from ``adversarial_text`` (broad unicode, nasties)
+    - mixed: adversarial text + hang-pattern fragments stacked on top
+    """
+    mode = draw(st.sampled_from(["vanilla", "regression", "adversarial", "mixed"]))
+
+    if mode == "vanilla":
+        return draw(st.text(min_size=0, max_size=2_000))
+
+    if mode == "regression":
+        body = draw(st.text(min_size=0, max_size=2_000))
+        fragments = draw(
+            st.lists(st.sampled_from(_HANG_PATTERN_FRAGMENTS), min_size=1, max_size=4)
+        )
+        return body + "\n\n" + "\n".join(fragments)
+
+    if mode == "adversarial":
+        return draw(adversarial_text())
+
+    # mixed
+    body = draw(adversarial_text())
     fragments = draw(
-        st.lists(st.sampled_from(_HANG_PATTERN_FRAGMENTS), max_size=4)
+        st.lists(st.sampled_from(_HANG_PATTERN_FRAGMENTS), min_size=1, max_size=4)
     )
-    if not fragments:
-        return body
     return body + "\n\n" + "\n".join(fragments)
 
 
 @st.composite
 def commit_features(draw: st.DrawFn) -> CommitFeatures:
     """Generate a CommitFeatures with arbitrary but type-valid field values."""
-    sha = draw(
-        st.text(alphabet="0123456789abcdef", min_size=7, max_size=40)
-    )
+    sha = draw(st.text(alphabet="0123456789abcdef", min_size=7, max_size=40))
     return CommitFeatures(
         id=draw(st.text(min_size=1, max_size=30)),
         git_sha=sha,
