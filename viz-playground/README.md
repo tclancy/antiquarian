@@ -1,95 +1,142 @@
 # Antiquarian viz playground
 
-Feel-testing infrastructure for issue [#8](https://github.com/tclancy/antiquarian/issues/8). The same three atoms rendered identically across three candidate stacks from the same real input, so Tom can experience each option side-by-side and decide which (if any) earns a real implementation.
+Feel-testing infrastructure for issue [#8](https://github.com/tclancy/antiquarian/issues/8). Three candidate stacks render the same three atoms from the same real input — but in **three deliberately different visual idioms** so Tom can compare what each one actually feels like, not just what it can technically draw.
 
-This is **not** a finished product. It is throwaway scaffolding whose job is to be looked at, compared, and discarded once a choice is made.
+This is **not** a finished product. It is scaffolding whose job is to be looked at, compared, and discarded once a choice is made.
 
 ## What's here
 
 ```
 viz-playground/
-├── Makefile                # `make all PROJECT=<name>` builds everything for that project
-├── data/extract.py         # Python — reads cache.db + per-file stories, emits JSON atoms
-├── observable/build.py     # Stack 1 — Observable Plot via CDN, markdown-vibe authoring
-├── vega-lite-static/build.py  # Stack 2 — Python emits Vega-Lite specs, vega-embed renders
-├── hand-svg/build.py       # Stack 3 — pure-Python SVG strings, zero chart library
-├── output/<project>/       # Rendered artifacts per project per stack
-│   ├── data/               # JSON contract — shared across stacks
-│   ├── observable/index.html
-│   ├── vega-lite-static/index.html (+ specs/*.vl.json)
+├── Makefile                       # `make all PROJECT=<name>` builds everything
+├── data/extract.py                # Python — cache.db + stories → JSON atoms (+ timeline + lifespans)
+├── observable/                    # Stack 1 — real Observable Framework (Node + npm)
+│   ├── package.json               #     `npm run dev` for live-reload preview
+│   ├── observablehq.config.js
+│   ├── src/index.md               #     narrative essay with charts inline
+│   ├── src/style.css              #     story-page typography (serif body)
+│   └── src/components/*.js        #     four atoms + the dual-axis time helper
+├── vega-lite-static/build.py      # Stack 2 — Python emits Vega-Lite specs, vega-embed renders
+├── hand-svg/build.py              # Stack 3 — pure-Python SVG strings, project-controlled vocabulary
+├── output/<project>/              # Rendered artifacts per project per stack
+│   ├── data/                      #   JSON contract — shared across all three stacks
+│   ├── observable/index.html      #   compiled Framework output
+│   ├── vega-lite-static/index.html  #   + specs/*.vl.json
 │   └── hand-svg/index.html
 └── README.md
 ```
 
-Both projects ship with real cached data and at least one real `antiquarian story` output. No stub TODOs. No invented commits.
-
 ## Quick start
 
 ```bash
-# Build everything for itguy (Tom's homelab deployment tool — bot-authored, no TODOs)
+# Build everything for itguy (bot-authored, 0 TODOs — empty-atom test case)
 make all PROJECT=itguy
 
-# Build everything for comictagger (10+ years old, 3 contributors, 9 real TODOs, big lossy gap)
-make all PROJECT=comictagger REPO=/tmp/comictagger
+# Build everything for comictagger (6 files, 22 arcs, 7-year dormancy)
+make all PROJECT=comictagger
+
+# Or point at any other repo that's been `antiquarian story`d
+make all PROJECT=BetterBlue REPO=/path/to/BetterBlue
+make all PROJECT=courtlistener REPO=/path/to/courtlistener
 
 # Serve and inspect
-make serve PROJECT=itguy
+make serve PROJECT=comictagger
 # → http://localhost:8765/observable/, /vega-lite-static/, /hand-svg/
 ```
 
-`make all` accepts any project name as long as `REPO=<path>` points to a directory that has `.antiquarian/cache.db` (and, ideally, `.antiquarian/stories/*.md`). Defaults to `/Users/tom/Documents/work/itguy` for `PROJECT=itguy` and `/tmp/comictagger` for `PROJECT=comictagger`.
+`make all` accepts any project name. Built-in defaults exist for `itguy`, `comictagger`, `BetterBlue`, and `courtlistener`. For anything else, pass `REPO=<path>` pointing at a directory that has `.antiquarian/cache.db` (and, ideally, `.antiquarian/stories/*.md` and `.antiquarian/surveys/*.md`).
 
-## Why three projects' worth of stories matter
+## Observable Framework dev loop
 
-The playground deliberately uses two projects with different shapes so the visual differences between stacks actually surface:
+The Observable variant is now a real npm-based Framework project, not a static-HTML approximation. The dev loop:
 
-- **itguy** — recent (April-May 2026), bot-authored, three files in cache, **eleven** named arcs, **zero** TODOs. Stresses the multi-file legend, the arc-band density, and the "empty atom" message in the TODO strip.
-- **comictagger** — decade-old OSS, three contributors, one file in cache, five arcs, **nine** real TODOs across three commit cohorts, with a **seven-year gap** between contributor eras. Stresses the lossy-region atom (hand-svg renders it as diagonal hatching across the gap) and the TODO age-bucket colorization.
+```bash
+cd viz-playground/observable
+nvm use                        # honors .nvmrc (Node ≥ 20)
+npm install                    # first time only — produces package-lock.json
+npm run dev                    # http://localhost:3000 with live reload
+```
 
-If you want to add a third project: run `antiquarian story <file>` against it first to seed at least one story, then `make all PROJECT=<name> REPO=<path>`.
+Re-pointing the dev preview at a different project requires running `make observable PROJECT=<name>` first, which copies that project's JSON into `src/data/` (the Framework reads it via `FileAttachment`). The `dev` server picks up the new data automatically.
 
-## How to compare these
+The orchestrator `observable/build.py` does the full production build:
 
-Open all six pages in tabs and scroll through them with both projects:
+1. Copies per-project JSON from `output/<project>/data/` → `observable/src/data/`
+2. Writes `active-project.json` (project name, files, story paths)
+3. Generates a per-project Framework config (`observablehq.config.<project>.js`) that overrides just the `output` key so two `make` runs don't collide
+4. Invokes `npx observable build` → `dist-<project>/`
+5. Copies `dist-<project>/` → `output/<project>/observable/`
 
-1. **Does the TODO strip read at a glance?** No drill-down needed — the eye should land on the oldest admissions immediately. Comictagger's three cohorts (1473d, 1455d, 274d) should pop visually.
-2. **Does the swimlane communicate the channel quality?** Hand-svg adds a diagonal-hatch overlay for the biggest commit gap (the seven-year silence in comictagger). The other two stacks just show the empty space. Which feels more honest?
-3. **Does the arc band feel like a single answer, or a "click around to find it" puzzle?** Per Tom's anti-Bubble-Dashboard criterion.
-4. **Does the source code feel like something you'd want to maintain?** Observable embeds JS-in-markdown templates inside Python; Vega-Lite is pure JSON dicts; hand-svg is f-strings of literal SVG. Each has a different cognitive shape when you go to add the next atom.
+## Round 2 highlights — what changed from the first pass
 
-## Decision log — trade-offs ran into while standing these up
+Tom's PR #11 review asked for four things and surfaced one bigger problem ("the stacks look too similar at a glance"). This round addresses each:
 
-### Observable Framework (`observable/`)
-- **What it actually is here:** Static HTML with Observable Plot loaded from a CDN and the data embedded inline, rendered into `<div>` targets on page load. The playground brief excluded "static HTML + Python build only," so a full Framework project (Node + npm + `npm run build`) was out of scope. The Plot calls themselves are written the way an `auth.py.md` Framework page would write them — narrative paragraphs interleaved with `Plot.plot({...})` blocks — so the *authoring feel* is preserved even if the *build pipeline* isn't.
-- **What feels good:** The Plot grammar is genuinely terse. The TODO bar chart is ~25 lines of Plot config; legends and tooltips are one-liners. Interleaving prose with charts in the same file reads the way technical writing wants to read — narrative-first, charts as evidence.
-- **What hurt:** Embedding JS expressions inside a Python f-string is its own special hell — `${...}` template literals collide with Python's `{...}` placeholders, so the JS bodies live in module-level constants with `${{...}}`-style escaping. Real Observable Framework wouldn't have this pain because the markdown source is JS-native. If we picked this stack, the right move is the proper Framework setup and accept the Node dependency.
-- **Bubble Dashboard risk:** Low. Plot doesn't give you a free "drag here to explore all dimensions" surface; you have to pick what to encode in each call.
+### 1. Stacks now feel visually distinct
 
-### Vega-Lite static (`vega-lite-static/`)
-- **What it actually is here:** Python emits three `*.vl.json` specs into `output/<project>/vega-lite-static/specs/`, plus a tiny `index.html` harness that loads them via `vega-embed`. The specs are the deliverable; the harness is incidental.
-- **What feels good:** Atom = value, not component. The specs round-trip cleanly through `vega-lite.compile()` for validation (every spec compiles with zero warnings in this build). When the data layer changes shape, ALL three specs regenerate from one Python script — derive-don't-duplicate is a real thing here, not a slogan. Each spec is also independently readable/diffable as JSON.
-- **What hurt:** Vega-Lite has opinions about chart shape that occasionally fight the data: an arc with a single decisive commit collapses to a zero-width band (visible in the comictagger arc-band; arcs 1, 3, 5 are commit-count=1 so they only show as a single tick, not a band). The fix is per-spec polish (force a minimum-width inset, draw a tick at the band position when count=1) which is doable but is "polish a library default" not "design the visual atom."
-- **Bubble Dashboard risk:** Low. Like Plot, the grammar forces you to commit to a visual encoding per chart.
+- **observable/** — long-form essay typography. Serif body, single ~720px column, charts as evidence cited inline between paragraphs. Reads like a New Yorker piece with charts. Real Observable Framework via npm.
+- **vega-lite-static/** — instrument-panel density. Black header strip, monospace typography, hex-numbered cell labels (00, 01, 02, 03), each atom paired with an inline JSON spec inspector. Reads like a technical reference page.
+- **hand-svg/** — antiquarian broadsheet. Parchment-yellow paper, large serif masthead, dateline in small caps, drop cap on the lede paragraph, double-rule borders, italic "the silence — N days" labels across the lossy hatching. Reads like a 19th-century broadsheet.
 
-### Hand-rolled SVG (`hand-svg/`)
-- **What it actually is here:** Python emits SVG strings directly into a single HTML page. Zero JS, zero chart library, zero CDN. The visual vocabulary — colors, type sizes, the diagonal-hatch lossy-region pattern, the per-arc color palette — is project-defined in a `PALETTE` dict and an `ARC_COLORS` list at the top of the file.
-- **What feels good:** Everything is exactly what you wrote. The diagonal-hatch overlay on the seven-year comictagger gap is a *project-controlled* visual signal, not a library affordance. There is no chart library defaulting to "tag soup" pastels. This is also where the uncertainty / lossy-region atom Tom called out in issue #4 *should* live long term — even if the other two stacks render the swimlane prettier, neither can speak the project's own visual language for "the channel went dark here."
-- **What hurt:** Manual axes. Manual layout math. Manual tooltip-via-`<title>` (no rich tooltips without adding JS). It took ~3x as much code as either library variant to produce a comparable swimlane. For *the canonical uncertainty atom* this is fine; for general-purpose chart rendering, the maintenance burden compounds fast.
-- **Bubble Dashboard risk:** Zero. You can't accidentally turn a hand-rolled SVG into a faceted explorer.
+Same data, three completely different presentations. If they still look interchangeable, something has gone wrong.
 
-## My honest recommendation as a developer who just lived through this
+### 2. Dual-axis timeline + active-window compression
 
-(For the PR body — keeping it brief here.)
+Comictagger's record runs across 3,558 days (Feb 2013 → Nov 2022) with a 2-year gap and then a 7-year gap. A naive time axis renders 99% blank space. This round implements a **piecewise pixel-space scale**:
 
-**The layered answer from the issue #4 second pass holds up.** The three stacks turn out not to be alternatives — they are answers to different questions:
+- Every atom has a **reference strip** atop it showing the full project lifespan (2013–2022 for comictagger) with active commit windows in accent and dormancies hatched. Year ticks below.
+- The main chart's X-axis is **compressed to only the active windows**. Gap segments between windows are drawn explicitly with hatching and an italic "X.Xy gap" label. The 7-year silence is still visible — as 80px of diagonal hatching, not as 89% empty plot.
+- Per-window date labels ("Feb 2013 · 2.0y gap · Feb 2015 · 7.1y gap · Apr–Nov 2022") sit beneath each chart.
 
-- **Vega-Lite for the bulk of atoms.** The "atom = JSON spec, Python owns the truth" promise is real and ergonomic. Six specs compile cleanly in this build; the data shape change for multi-file arcs only required updating `data/extract.py` and one small label tweak in `vega-lite-static/build.py`.
-- **Observable Plot for the *narrative pages*.** If we want a viewer that reads as narrative-with-evidence (the original "auth.py.md" vision), Plot inline in markdown is the right authoring ergonomic. But we should commit to actual Observable Framework with npm — the JS-in-Python-f-string version here is a feel-test approximation, not a production pattern.
-- **Hand-rolled SVG for the uncertainty / lossy-region atom and any other atom that needs to look intentional.** Per Tom's issue #4 reply: "the channel is too lossy here" needs project-controlled visual language. The diagonal hatching in `hand-svg/` is the canonical version; the other two stacks should *consume* it as a reusable atom rather than reinvent it.
+The dual-axis logic lives in a tiny Python helper (`build_active_scale()`) duplicated across all three stacks. It's small enough that the duplication is honest — the alternative was a JS+Python interop dance the playground shouldn't need.
 
-**Anti-pattern guard:** All three pass the Bubble-Dashboard test. None of them give a "drill down through interactive nodes" surface. All three deliver the answer at first glance.
+### 3. Real Observable Framework via npm
 
-**Practical caveat:** the playground deliberately tested only three atoms. The real load-bearing question — "how do these feel when you're trying to render the *seventh* atom into the same page" — won't show up until we wire one of these into a real `antiquarian narrative` output. So this comparison ranks the stacks for what they look like; the real test is what they look like at week three.
+Replaces the static-HTML CDN approximation from round 1. `node >= 20` (pinned via `.nvmrc`), `npm run dev` for live reload, `observable build` produces a static dist that the orchestrator copies into `output/<project>/observable/`. The narrative page (`src/index.md`) reads as markdown with inline JS code blocks that import from `src/components/*.js` — exactly the authoring ergonomic the round-1 stand-in only approximated.
+
+### 4. "Diff size (LoC)" legend label
+
+All three stacks now spell out the diff-size dimension as **lines of code (LoC)** in the swimlane legend, so a reader doesn't have to infer that the mark size is a code metric:
+
+- observable: hand-rolled size legend with three sample circles + LoC values
+- vega-lite: native size legend with `title: "Diff size (LoC)"`
+- hand-svg: hand-set legend block with sample circles + LoC values + italic "decisive commit (named in story) / supporting commit" color legend
+
+### Bonus — rename-truncation honesty
+
+The comictagger survey noted `cli.py` shows only 1 commit because `git log --follow` lost the rename chain at the 2013 SVN→Git boundary. The data layer flags this (`likely_rename_truncated` in `file_lifespans.json`) and:
+
+- observable shows an aside that names the affected files and explains the cause
+- hand-svg adds a margin note: `2 file(s): "--follow" lost the chain.`
+- vega-lite leaves the dot in place (the user can see the isolation in the swimlane)
+
+This is a known limitation of the mining layer, not a viz bug — but the playground surfaces it rather than papering over.
+
+## The richer comictagger dataset
+
+This round runs against a 6-file comictagger survey (up from 1):
+
+| File | Commits | Era | Notes |
+|------|---------|-----|-------|
+| `comictaggerlib/cli.py` | 1 | 2013 | SVN-import boundary; history truncated at rename |
+| `comictaggerlib/taggerwindow.py` | 1 | 2013 | Same — but TODO evidence proves later edits exist |
+| `comicapi/comicarchive.py` | 7 | 2015 + 2022 | Born in the package-split commit, modernized 2022 |
+| `comicapi/filenameparser.py` | 9 | 2015 + 2022 | Carries 9 archaeological TODOs |
+| `comicapi/genericmetadata.py` | 7 | 2015 + 2022 | Carries 1 TODO |
+| `comictalker/talkers/comicvine.py` | 6 | 2022 (Oct-Nov) | Pluggable-talker arc, separate author |
+
+The survey synthesis identifies five cross-file arcs (the 2013 SVN boundary, the 2015 `comicapi` extraction, the fcanc PEP 8 campaign, the 2022 Welch modernization, and the pluggable-talker arc). The hand-svg variant pulls one paragraph from the survey synthesis into the masthead as a pull-quote.
+
+## Honest recommendation (from the dev who just rebuilt these)
+
+**The layered answer from issue #4's second pass holds up, now with more conviction.** The three stacks aren't alternatives — they answer different questions about *what kind of document* this is:
+
+- **Observable Framework for narrative pages.** Real npm build, Plot grammar in markdown, charts as evidence cited inline next to the prose that explains them. If the canonical `antiquarian narrative` output reads as long-form code-archaeology essay, this is its stack.
+- **Vega-Lite for instrument-panel atoms.** "Atom = JSON spec, Python pipeline owns the truth" — all five specs compile cleanly via `vega-lite.compile()` with zero warnings; the JSON is inspectable; the multi-file label change required updating exactly one Python builder. Best for compact dashboards and reusable chart components.
+- **Hand-SVG for branded / canonical atoms.** The lossy hatching with "the silence — 2596 days" labels is a project-controlled signal no library default can express. The broadsheet typography (serif, drop cap, double rule, small-caps dateline) is also project-controlled. Best for atoms that need to look intentional rather than chart-library-default.
+
+**Anti-pattern guard:** All three still pass the Bubble-Dashboard test. None of them give a "drill down through interactive nodes" surface. All three deliver the answer at first glance.
+
+**Practical caveat:** the playground tested three atoms. The seventh-atom test is still ahead.
 
 ## Re-running everything
 
@@ -97,15 +144,9 @@ The Makefile is idempotent. Re-extract data after running `antiquarian story` ag
 
 ```bash
 make data PROJECT=<name>
-# Then any of:
 make observable PROJECT=<name>
 make vega-lite PROJECT=<name>
 make svg PROJECT=<name>
 make all PROJECT=<name>          # all three
-```
-
-To clean a project's output:
-
-```bash
-make clean PROJECT=<name>
+make clean PROJECT=<name>        # remove output/<project>/
 ```
