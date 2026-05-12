@@ -5,7 +5,55 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
-from antiquarian.narrative import build_survey_prompt, build_user_prompt
+from antiquarian.narrative import (
+    _sanitize_for_claude,
+    build_survey_prompt,
+    build_user_prompt,
+)
+
+
+class TestSanitizeForClaude:
+    """Coverage for the issue #16 fix — strip the patterns that hang `claude -p`."""
+
+    def test_strips_robot_attribution_line(self) -> None:
+        msg = (
+            "Initial release\n\n"
+            "Some description.\n\n"
+            "🤖 Generated with [Claude Code](https://claude.ai/code)\n\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>"
+        )
+        out = _sanitize_for_claude(msg)
+        assert "🤖" not in out
+        assert "claude.ai/code" not in out
+        assert "Co-Authored-By: Claude <" not in out
+        assert "Initial release" in out
+        assert "Some description." in out
+
+    def test_keeps_parameterized_coauthor(self) -> None:
+        """The form with model parameters (used by dispatch-bot[bot]) does not
+        trigger the hang and should be preserved."""
+        msg = (
+            "Some commit\n\n"
+            "Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+        )
+        out = _sanitize_for_claude(msg)
+        assert "Claude Opus 4.7 (1M context)" in out
+
+    def test_idempotent(self) -> None:
+        msg = (
+            "test\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>"
+        )
+        once = _sanitize_for_claude(msg)
+        twice = _sanitize_for_claude(once)
+        assert once == twice
+
+    def test_no_attribution_unchanged(self) -> None:
+        msg = "Regular commit\n\nNo attribution here"
+        assert _sanitize_for_claude(msg) == msg
+
+    def test_empty_string(self) -> None:
+        assert _sanitize_for_claude("") == ""
 
 
 def _commit(

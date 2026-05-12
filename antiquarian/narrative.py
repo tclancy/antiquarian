@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from typing import Sequence
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
+
+
+# Patterns that cause `claude -p` to hang indefinitely when present in the user
+# prompt. The mechanism inside claude -p is unknown (self-recognition? markdown
+# link handling? safety filtering?) but reproducible on real BetterBlue commits.
+# Strip at prompt-build time only — the cache keeps the original message intact.
+# See issue #16.
+_CLAUDE_HANG_PATTERNS = [
+    re.compile(r"🤖 Generated with \[Claude Code\]\(https://claude\.ai/code\)\s*"),
+    re.compile(r"Co-Authored-By: Claude <noreply@anthropic\.com>\s*"),
+]
+
+
+def _sanitize_for_claude(text: str) -> str:
+    """Strip the specific patterns known to hang ``claude -p`` (issue #16).
+
+    Conservative: removes ONLY the bare ``Co-Authored-By: Claude <…>`` form and
+    the ``🤖 Generated with [Claude Code](…)`` line. The parameterized form
+    (``Co-Authored-By: Claude Opus 4.7 (1M context) <…>`` used by
+    ``dispatch-bot[bot]`` commits) is left intact because it does not trigger
+    the hang.
+    """
+    for pat in _CLAUDE_HANG_PATTERNS:
+        text = pat.sub("", text)
+    return text.strip()
 
 
 SYSTEM_PROMPT = """\
@@ -81,7 +107,7 @@ def _format_commit(c: CommitFeatures, index: int) -> str:
     if c.pr_number is not None:
         pr_section = f"\n\n**PR #{c.pr_number}**"
         if c.pr_body:
-            pr_section += f"\n```\n{c.pr_body}\n```"
+            pr_section += f"\n```\n{_sanitize_for_claude(c.pr_body)}\n```"
     files_summary = ", ".join(c.files_changed[:6])
     if len(c.files_changed) > 6:
         files_summary += f", ... ({len(c.files_changed)} files total)"
@@ -89,7 +115,7 @@ def _format_commit(c: CommitFeatures, index: int) -> str:
     return (
         f"### [{index}] {sha[:8]} — {c.timestamp.date().isoformat()} — {c.author}\n"
         f"+{c.additions}/-{c.deletions} across: {files_summary}\n\n"
-        f"**Message:**\n```\n{c.message}\n```{pr_section}"
+        f"**Message:**\n```\n{_sanitize_for_claude(c.message)}\n```{pr_section}"
     )
 
 
