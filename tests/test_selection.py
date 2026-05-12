@@ -8,30 +8,59 @@ from pathlib import Path
 import pytest
 
 from antiquarian.selection import (
-    _matches_built_in_skip,
+    _HARD_SKIP_DIRS,
     _matches_glob,
+    _path_in_dir_set,
+    _path_matches_soft_warn,
     select_files,
 )
 
 
-class TestBuiltInSkip:
+class TestHardSkip:
     @pytest.mark.parametrize(
         "path",
         [
             ".git/config",
             "src/.git/hooks/pre-commit",
-            "node_modules/foo/index.js",
-            "deep/node_modules/foo.js",
-            "src/__pycache__/cli.cpython-313.pyc",
-            ".venv/lib/python3.13/site-packages/foo.py",
-            "dist/wheel.whl",
-            "build/lib/antiquarian/cli.py",
-            "antiquarian.egg-info/PKG-INFO",
-            ".pytest_cache/v/cache/lastfailed",
+            ".antiquarian/cache.db",
+            ".antiquarian/stories/deploy.md",
         ],
     )
-    def test_skipped_paths(self, path: str) -> None:
-        assert _matches_built_in_skip(path)
+    def test_hard_skipped_paths(self, path: str) -> None:
+        assert _path_in_dir_set(path, _HARD_SKIP_DIRS)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "antiquarian/cli.py",
+            "src/itguy/deploy.py",
+            "README.md",
+            "node_modules/foo/index.js",
+            ".env",
+            ".venv/lib/foo.py",
+        ],
+    )
+    def test_not_hard_skipped(self, path: str) -> None:
+        assert not _path_in_dir_set(path, _HARD_SKIP_DIRS)
+
+
+class TestSoftWarn:
+    @pytest.mark.parametrize(
+        "path,expected_trigger",
+        [
+            ("node_modules/foo/index.js", "node_modules"),
+            ("deep/node_modules/foo.js", "node_modules"),
+            ("src/__pycache__/cli.cpython-313.pyc", "__pycache__"),
+            (".venv/lib/python3.13/site-packages/foo.py", ".venv"),
+            ("dist/wheel.whl", "dist"),
+            ("build/lib/antiquarian/cli.py", "build"),
+            ("antiquarian.egg-info/PKG-INFO", "antiquarian.egg-info"),
+            ("vendor/github.com/foo/bar.go", "vendor"),
+            ("target/release/binary", "target"),
+        ],
+    )
+    def test_triggers_warning(self, path: str, expected_trigger: str) -> None:
+        assert _path_matches_soft_warn(path) == expected_trigger
 
     @pytest.mark.parametrize(
         "path",
@@ -40,15 +69,12 @@ class TestBuiltInSkip:
             "src/itguy/deploy.py",
             "README.md",
             "tests/test_selection.py",
-            "docs/architecture.md",
+            ".env",
+            "config/settings.yaml",
         ],
     )
-    def test_non_skipped_paths(self, path: str) -> None:
-        assert not _matches_built_in_skip(path)
-
-    def test_compiled_python_files_skipped(self) -> None:
-        assert _matches_built_in_skip("foo/bar.pyc")
-        assert _matches_built_in_skip("foo.pyo")
+    def test_no_warning(self, path: str) -> None:
+        assert _path_matches_soft_warn(path) is None
 
 
 class TestGlobMatching:
@@ -64,10 +90,10 @@ class TestGlobMatching:
         assert not _matches_glob("docs/intro.md", "tests/*")
 
 
-@pytest.fixture
+@pytest.fixture()
 def tmp_git_repo(tmp_path: Path) -> Path:
     """A tmp directory initialized as a git repo with a small fixture file tree."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True
     )
@@ -85,7 +111,6 @@ def tmp_git_repo(tmp_path: Path) -> Path:
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content)
 
-    # Files that should be ignored
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv" / "ignored.py").write_text("ignored")
     (tmp_path / "src" / "__pycache__").mkdir()
@@ -107,7 +132,6 @@ class TestSelectFiles:
         assert "src/app.py" in selected
         assert "src/util.py" in selected
         assert "tests/test_app.py" in selected
-        # gitignored
         assert not any(".venv" in p for p in selected)
         assert not any("__pycache__" in p for p in selected)
 
@@ -122,7 +146,6 @@ class TestSelectFiles:
         assert selected == ["src/app.py"]
 
     def test_only_bypasses_other_filters(self, tmp_git_repo: Path) -> None:
-        # Even though we exclude '*', the only paths come through
         selected = select_files(
             tmp_git_repo,
             only=["src/app.py"],
@@ -143,23 +166,52 @@ class TestSelectFiles:
         )
         assert "tests/test_app.py" in selected
 
-    def test_no_respect_gitignore_falls_back_to_filesystem(
-        self, tmp_git_repo: Path
-    ) -> None:
-        # Without git, .venv would normally show up — but the built-in skiplist
-        # still excludes it. So this test just verifies the codepath runs.
-        selected = select_files(tmp_git_repo, respect_gitignore=False)
-        assert "README.md" in selected
-        assert not any(".venv" in p for p in selected)  # still skipped by built-in
-
-    def test_non_git_directory_walks_filesystem(self, tmp_path: Path) -> None:
+    def test_non_git_directory_raises(self, tmp_path: Path) -> None:
         (tmp_path / "a.txt").write_text("hi")
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "sub" / "b.txt").write_text("hi")
-        (tmp_path / "__pycache__").mkdir()
-        (tmp_path / "__pycache__" / "c.pyc").write_text("x")
+        with pytest.raises(SystemExit):
+            select_files(tmp_path)
 
-        selected = select_files(tmp_path)
-        assert "a.txt" in selected
-        assert "sub/b.txt" in selected
-        assert not any("__pycache__" in p for p in selected)
+    def test_tracked_env_file_included(self, tmp_git_repo: Path) -> None:
+        """A .env file tracked by git should be included — trust the maintainer."""
+        env_file = tmp_git_repo / ".env"
+        env_file.write_text("SECRET=foo\n")
+        subprocess.run(["git", "add", "-f", ".env"], cwd=tmp_git_repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add .env"],
+            cwd=tmp_git_repo,
+            check=True,
+        )
+        selected = select_files(tmp_git_repo)
+        assert ".env" in selected
+
+
+class TestSoftWarnEmission:
+    def test_warns_on_tracked_node_modules(
+        self, tmp_git_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """If node_modules is tracked, emit a warning but still include it."""
+        nm_dir = tmp_git_repo / "node_modules" / "foo"
+        nm_dir.mkdir(parents=True)
+        (nm_dir / "index.js").write_text("module.exports = {};")
+        subprocess.run(
+            ["git", "add", "node_modules/"], cwd=tmp_git_repo, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add node_modules"],
+            cwd=tmp_git_repo,
+            check=True,
+        )
+
+        selected = select_files(tmp_git_repo)
+        assert "node_modules/foo/index.js" in selected
+
+        captured = capsys.readouterr()
+        assert "node_modules/" in captured.err
+        assert "warning:" in captured.err
+
+    def test_no_warning_for_clean_repo(
+        self, tmp_git_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        select_files(tmp_git_repo)
+        captured = capsys.readouterr()
+        assert "warning:" not in captured.err
