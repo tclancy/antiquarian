@@ -21,7 +21,6 @@ def historical_shas(repo_path: str | Path, file_path: str) -> list[str]:
             str(repo_path),
             "log",
             "--follow",
-            "--reverse",
             "--pretty=format:%H",
             "--",
             file_path,
@@ -30,7 +29,9 @@ def historical_shas(repo_path: str | Path, file_path: str) -> list[str]:
         text=True,
         check=True,
     )
-    return [sha for sha in result.stdout.strip().split("\n") if sha]
+    shas = [sha for sha in result.stdout.strip().split("\n") if sha]
+    shas.reverse()
+    return shas
 
 
 def mine_file_history(
