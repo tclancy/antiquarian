@@ -112,9 +112,7 @@ class TestSelectFiles:
         assert not any("__pycache__" in p for p in selected)
 
     def test_only_returns_exact_paths(self, tmp_git_repo: Path) -> None:
-        selected = select_files(
-            tmp_git_repo, only=["src/app.py", "src/util.py"]
-        )
+        selected = select_files(tmp_git_repo, only=["src/app.py", "src/util.py"])
         assert selected == ["src/app.py", "src/util.py"]
 
     def test_only_drops_nonexistent_paths(self, tmp_git_repo: Path) -> None:

@@ -7,17 +7,8 @@ from pathlib import Path
 
 import typer
 
-from antiquarian.cache import (
-    cache_path_for_repo,
-    get_commit,
-    open_cache,
-    put_commit,
-)
-from antiquarian.mining import historical_shas, mine_file_history
-from antiquarian.narrative import synthesize_narrative
-from antiquarian.prs import detect_github_repo, enrich_with_pr
+from antiquarian.pipeline import generate_codebase_survey, generate_file_story
 from antiquarian.selection import select_files
-from antiquarian.todos import extract_todos
 
 app = typer.Typer(
     name="antiquarian",
@@ -31,95 +22,118 @@ def _main() -> None:
     """Reconstruct code history narratives from git — Telephone in reverse."""
 
 
+def _stderr(msg: str) -> None:
+    typer.echo(msg, err=True)
+
+
+def _resolve_file_path(file: str, repo_path: Path) -> str:
+    file_path_abs = Path(file)
+    if file_path_abs.is_absolute():
+        try:
+            return str(file_path_abs.relative_to(repo_path))
+        except ValueError as e:
+            raise typer.BadParameter(f"{file} is not inside {repo_path}") from e
+    return file
+
+
+def _handle_claude_error(e: BaseException) -> None:
+    if isinstance(e, subprocess.CalledProcessError):
+        typer.echo(f"Error: claude -p failed (exit {e.returncode})", err=True)
+        if e.stderr:
+            typer.echo(e.stderr, err=True)
+    elif isinstance(e, subprocess.TimeoutExpired):
+        typer.echo("Error: claude -p timed out", err=True)
+    raise typer.Exit(code=1)
+
+
 @app.command()
 def story(
     file: str = typer.Argument(..., help="Path to the file whose story to tell."),
     repo: str = typer.Option(".", help="Path to the git repository."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the SQLite cache."),
-    no_prs: bool = typer.Option(False, "--no-prs", help="Skip PR description fetching via gh."),
+    no_prs: bool = typer.Option(
+        False, "--no-prs", help="Skip PR description fetching via gh."
+    ),
 ) -> None:
     """Tell the story of a file's evolution through git history."""
     repo_path = Path(repo).resolve()
+    file_path_rel = _resolve_file_path(file, repo_path)
 
-    file_path_abs = Path(file)
-    if file_path_abs.is_absolute():
-        try:
-            file_path_rel = str(file_path_abs.relative_to(repo_path))
-        except ValueError:
-            typer.echo(f"Error: {file} is not inside {repo_path}", err=True)
-            raise typer.Exit(code=1)
-    else:
-        file_path_rel = file
-
-    full_file_path = repo_path / file_path_rel
-    if not full_file_path.exists():
-        typer.echo(f"Error: file not found at {full_file_path}", err=True)
-        raise typer.Exit(code=1)
-
-    gh = detect_github_repo(repo_path) if not no_prs else None
-    repo_name = f"{gh[0]}/{gh[1]}" if gh else repo_path.name
-
-    typer.echo(f"[mining] {file_path_rel} in {repo_name}", err=True)
-
-    db_path = cache_path_for_repo(repo_path)
-    commits = []
-
-    with open_cache(db_path) as conn:
-        shas = historical_shas(repo_path, file_path_rel)
-        typer.echo(f"[mining] {len(shas)} commits in history", err=True)
-
-        cached_shas: set[str] = set()
-        if not no_cache:
-            for sha in shas:
-                cached = get_commit(conn, sha, file_path_rel)
-                if cached is not None:
-                    commits.append(cached)
-                    cached_shas.add(sha)
-
-        remaining = [s for s in shas if s not in cached_shas]
-        if remaining:
-            typer.echo(f"[mining] processing {len(remaining)} new commits", err=True)
-            for cf in mine_file_history(repo_path, file_path_rel):
-                if cf.git_sha in cached_shas:
-                    continue
-                if gh:
-                    cf = enrich_with_pr(cf, *gh)
-                put_commit(conn, cf, file_path_rel)
-                commits.append(cf)
-        else:
-            typer.echo("[mining] all commits already cached", err=True)
-
-    commits.sort(key=lambda c: c.timestamp)
-
-    typer.echo("[todos] extracting from current HEAD", err=True)
-    todos = list(extract_todos(repo_path, file_path_rel))
-    typer.echo(f"[todos] found {len(todos)} annotation(s)", err=True)
-
-    typer.echo("[narrative] sending to claude -p (this may take a minute)...", err=True)
     try:
-        narrative = synthesize_narrative(
-            file_path=file_path_rel,
-            repo_name=repo_name,
-            commits=commits,
-            todos=todos,
+        narrative, _ = generate_file_story(
+            repo_path,
+            file_path_rel,
+            use_cache=not no_cache,
+            fetch_prs=not no_prs,
+            log=_stderr,
         )
-    except subprocess.CalledProcessError as e:
-        typer.echo(f"Error: claude -p failed (exit {e.returncode})", err=True)
-        if e.stderr:
-            typer.echo(e.stderr, err=True)
+    except FileNotFoundError as e:
+        typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
-    except subprocess.TimeoutExpired:
-        typer.echo("Error: claude -p timed out", err=True)
-        raise typer.Exit(code=1)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        _handle_claude_error(e)
 
     typer.echo(narrative)
 
-    stories_dir = repo_path / ".antiquarian" / "stories"
-    stories_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = file_path_rel.replace("/", "__") + ".md"
-    story_file = stories_dir / safe_name
-    story_file.write_text(narrative + "\n", encoding="utf-8")
-    typer.echo(f"[wrote] {story_file}", err=True)
+
+@app.command()
+def survey(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    include: list[str] = typer.Option(
+        [], "--include", help="Glob to include (additive). Repeatable."
+    ),
+    exclude: list[str] = typer.Option(
+        [], "--exclude", help="Glob to exclude (subtractive). Repeatable."
+    ),
+    only: list[str] = typer.Option(
+        [],
+        "--only",
+        help="Exact path. When set (repeatable), ONLY these paths are surveyed.",
+    ),
+    respect_gitignore: bool = typer.Option(
+        True,
+        "--respect-gitignore/--no-respect-gitignore",
+        help="Use `git ls-files` for the candidate set (honors .gitignore).",
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the SQLite cache."),
+    no_prs: bool = typer.Option(
+        False, "--no-prs", help="Skip PR description fetching via gh."
+    ),
+) -> None:
+    """Synthesize a codebase-level narrative from per-file stories."""
+    repo_path = Path(repo).resolve()
+
+    files = select_files(
+        repo_path,
+        include=include,
+        exclude=exclude,
+        only=only,
+        respect_gitignore=respect_gitignore,
+    )
+
+    if not files:
+        typer.echo("Error: no files matched the selection criteria.", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"[survey] {len(files)} file(s) selected:", err=True)
+    for f in files:
+        typer.echo(f"  - {f}", err=True)
+
+    try:
+        narrative, _ = generate_codebase_survey(
+            repo_path,
+            files,
+            use_cache=not no_cache,
+            fetch_prs=not no_prs,
+            log=_stderr,
+        )
+    except FileNotFoundError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        _handle_claude_error(e)
+
+    typer.echo(narrative)
 
 
 @app.command()
