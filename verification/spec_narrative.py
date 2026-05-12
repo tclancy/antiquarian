@@ -26,17 +26,11 @@ def test_bare_coauthored_removed():
     after_sanitize_contains_bare = Bool("after_sanitize_contains_bare")
 
     # Constraint: bare pattern is removed
-    sanitization = Or(
-        Not(contains_bare_coauth),
-        Not(after_sanitize_contains_bare)
-    )
+    sanitization = Or(Not(contains_bare_coauth), Not(after_sanitize_contains_bare))
     s.add(sanitization)
 
     # Try to violate: text contains bare pattern but sanitize doesn't remove it
-    violation = And(
-        contains_bare_coauth,
-        after_sanitize_contains_bare
-    )
+    violation = And(contains_bare_coauth, after_sanitize_contains_bare)
     s.add(violation)
 
     result = s.check()
@@ -61,17 +55,11 @@ def test_parameterized_coauthored_preserved():
     after_sanitize_contains_param = Bool("after_sanitize_contains_param")
 
     # Constraint: parameterized pattern is NOT removed
-    preservation = Or(
-        Not(contains_param_coauth),
-        after_sanitize_contains_param
-    )
+    preservation = Or(Not(contains_param_coauth), after_sanitize_contains_param)
     s.add(preservation)
 
     # Try to violate: text contains parameterized pattern but sanitize removes it
-    violation = And(
-        contains_param_coauth,
-        Not(after_sanitize_contains_param)
-    )
+    violation = And(contains_param_coauth, Not(after_sanitize_contains_param))
     s.add(violation)
 
     result = s.check()
@@ -96,17 +84,11 @@ def test_generated_marker_removed():
     after_sanitize_contains_marker = Bool("after_sanitize_contains_marker")
 
     # Constraint: generated marker is removed
-    removal = Or(
-        Not(contains_generated_marker),
-        Not(after_sanitize_contains_marker)
-    )
+    removal = Or(Not(contains_generated_marker), Not(after_sanitize_contains_marker))
     s.add(removal)
 
     # Try to violate
-    violation = And(
-        contains_generated_marker,
-        after_sanitize_contains_marker
-    )
+    violation = And(contains_generated_marker, after_sanitize_contains_marker)
     s.add(violation)
 
     result = s.check()
@@ -133,16 +115,14 @@ def test_sanitizer_idempotency():
     after_second_sanitize = Bool("after_second_sanitize")
 
     # Idempotency: once stripped, stripping again changes nothing
-    idempotency = Or(
+    _idempotency = Or(  # documentation; the simpler equality below is what we prove
         after_first_sanitize == after_second_sanitize,
-        And(after_first_sanitize, Not(after_second_sanitize))  # impossible
+        And(after_first_sanitize, Not(after_second_sanitize)),  # impossible
     )
     s.add(after_first_sanitize == after_second_sanitize)
 
     # Try to violate: first and second differ
-    violation = And(
-        after_first_sanitize != after_second_sanitize
-    )
+    violation = And(after_first_sanitize != after_second_sanitize)
     s.add(violation)
 
     result = s.check()
@@ -173,11 +153,7 @@ def test_sanitizer_no_false_positives():
     is_removed = Bool("is_removed")
 
     # Constraint: text is only removed if it matches one of the patterns
-    no_false_positive = Or(
-        matches_bare_pattern,
-        matches_param_pattern,
-        Not(is_removed)
-    )
+    no_false_positive = Or(matches_bare_pattern, matches_param_pattern, Not(is_removed))
     s.add(no_false_positive)
 
     # Try to violate: text removed without matching patterns
@@ -185,7 +161,7 @@ def test_sanitizer_no_false_positives():
         contains_coauth_substring,
         Not(matches_bare_pattern),
         Not(matches_param_pattern),
-        is_removed
+        is_removed,
     )
     s.add(violation)
 

@@ -8,7 +8,7 @@ Invariants to prove:
 5. Non-negativity: result is a subset of all possible files
 """
 
-from z3 import And, Bool, Not, Or, Solver, unsat, sat
+from z3 import And, Bool, Not, Or, Solver, unsat
 
 
 def test_only_is_exclusive():
@@ -20,28 +20,21 @@ def test_only_is_exclusive():
 
     s = Solver()
 
-    file_in_candidates = Bool("file_in_candidates")
+    _file_in_candidates = Bool(
+        "file_in_candidates"
+    )  # documentation; not load-bearing for this property
     file_exists = Bool("file_exists")
     result_contains_path = Bool("result_contains_path")
 
     # When --only is specified and file exists, it appears in result
-    rule_only_includes_existing = Or(
-        Not(file_exists),
-        result_contains_path
-    )
+    rule_only_includes_existing = Or(Not(file_exists), result_contains_path)
 
     # When --only is specified and file doesn't exist, it doesn't appear
-    rule_only_excludes_missing = Or(
-        file_exists,
-        Not(result_contains_path)
-    )
+    rule_only_excludes_missing = Or(file_exists, Not(result_contains_path))
 
     # When --only is specified, result is independent of candidates, include, exclude
     # (only depends on existence)
-    rule_only_bypasses_filters = Or(
-        Not(file_exists),
-        result_contains_path
-    )
+    rule_only_bypasses_filters = Or(Not(file_exists), result_contains_path)
 
     s.add(rule_only_includes_existing)
     s.add(rule_only_excludes_missing)
@@ -53,7 +46,9 @@ def test_only_is_exclusive():
 
     result = s.check()
     if result == unsat:
-        print("PROVED: --only is exclusive (includes existing paths, bypasses other filters)")
+        print(
+            "PROVED: --only is exclusive (includes existing paths, bypasses other filters)"
+        )
         return True
     else:
         print("FAILED: --only exclusivity violated")
@@ -77,17 +72,11 @@ def test_include_re_adds_excluded():
     result_contains_file = Bool("result_contains_file")
 
     # Without include/exclude: file is in result iff in candidates
-    base_logic = Or(
-        Not(file_in_candidates),
-        result_contains_file
-    )
+    base_logic = Or(Not(file_in_candidates), result_contains_file)
 
     # If matches_exclude but also matches_include, the file should be in result
     # (include takes precedence when both are specified)
-    reinclusion = Or(
-        Not(matches_include),
-        result_contains_file
-    )
+    reinclusion = Or(Not(matches_include), result_contains_file)
 
     s.add(base_logic)
     s.add(reinclusion)
@@ -95,11 +84,7 @@ def test_include_re_adds_excluded():
 
     # Try to violate: file is in candidates, matches both exclude and include,
     # but NOT in result
-    violation = And(
-        matches_exclude,
-        matches_include,
-        Not(result_contains_file)
-    )
+    violation = And(matches_exclude, matches_include, Not(result_contains_file))
     s.add(violation)
 
     result = s.check()
@@ -123,20 +108,14 @@ def test_exclude_removes():
 
     # If matches exclude and does NOT match include, file is removed
     exclusion_rule = Or(
-        Not(matches_exclude),
-        matches_include,
-        Not(result_contains_file)
+        Not(matches_exclude), matches_include, Not(result_contains_file)
     )
 
     s.add(exclusion_rule)
     s.add(file_in_candidates)
 
     # Try to violate: file matches exclude, doesn't match include, but is in result
-    violation = And(
-        matches_exclude,
-        Not(matches_include),
-        result_contains_file
-    )
+    violation = And(matches_exclude, Not(matches_include), result_contains_file)
     s.add(violation)
 
     result = s.check()
@@ -165,18 +144,12 @@ def test_idempotency():
     # For any file in the result of the first call, applying the same filters
     # again should either keep it (if it still matches) or remove it (if it no longer does).
     # Idempotency means: if it was in the result, it stays in the result.
-    idempotency_rule = Or(
-        Not(in_result_first_call),
-        in_result_second_call
-    )
+    idempotency_rule = Or(Not(in_result_first_call), in_result_second_call)
 
     s.add(idempotency_rule)
 
     # Try to violate: file was in first result but NOT in second result
-    violation = And(
-        in_result_first_call,
-        Not(in_result_second_call)
-    )
+    violation = And(in_result_first_call, Not(in_result_second_call))
     s.add(violation)
 
     result = s.check()
@@ -199,18 +172,12 @@ def test_result_subset_of_candidates():
     result_contains_file = Bool("result_contains_file")
 
     # If file is not in candidates, it cannot be in result
-    subset_rule = Or(
-        file_in_candidates,
-        Not(result_contains_file)
-    )
+    subset_rule = Or(file_in_candidates, Not(result_contains_file))
 
     s.add(subset_rule)
 
     # Try to violate: file is not in candidates but is in result
-    violation = And(
-        Not(file_in_candidates),
-        result_contains_file
-    )
+    violation = And(Not(file_in_candidates), result_contains_file)
     s.add(violation)
 
     result = s.check()

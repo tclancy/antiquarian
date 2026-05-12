@@ -7,7 +7,7 @@ Invariants to prove:
 4. Key collision resistance: (sha1, fp1) != (sha2, fp2) for distinct entries
 """
 
-from z3 import And, Int, Not, Or, String, Solver, unsat, sat
+from z3 import And, Int, Not, Or, String, Solver, unsat
 
 
 def test_primary_key_uniqueness():
@@ -39,16 +39,12 @@ def test_primary_key_uniqueness():
     # OR the second insert replaces the first
     pk_rule = Or(
         Or(row1_sha != row2_sha, row1_fp != row2_fp),  # different key (not our case)
-        row1_id == row2_id  # same key -> same row (both must refer to same record)
+        row1_id == row2_id,  # same key -> same row (both must refer to same record)
     )
     s.add(pk_rule)
 
     # Try to violate: same key but different records
-    violation = And(
-        row1_sha == row2_sha,
-        row1_fp == row2_fp,
-        row1_id != row2_id
-    )
+    violation = And(row1_sha == row2_sha, row1_fp == row2_fp, row1_id != row2_id)
     s.add(violation)
 
     result = s.check()
@@ -95,7 +91,7 @@ def test_round_trip_correctness():
         stored_email == input_email,
         stored_message == input_message,
         stored_additions == input_additions,
-        stored_deletions == input_deletions
+        stored_deletions == input_deletions,
     )
 
     s.add(put_constraint)
@@ -106,17 +102,13 @@ def test_round_trip_correctness():
 
     # Round-trip invariant: retrieved values must match input
     round_trip = And(
-        retrieved_author == input_author,
-        retrieved_message == input_message
+        retrieved_author == input_author, retrieved_message == input_message
     )
 
     s.add(round_trip)
 
     # Try to violate: input and retrieved don't match
-    violation = And(
-        stored_author == input_author,
-        retrieved_author != input_author
-    )
+    violation = And(stored_author == input_author, retrieved_author != input_author)
     s.add(violation)
 
     result = s.check()
@@ -137,8 +129,9 @@ def test_narrative_chunk_versioning():
     """
     s = Solver()
 
-    sha = String("sha")
-    file_path = String("file_path")
+    # Key shape — documentation only; the versioning property below is over v1/v2.
+    _sha = String("sha")
+    _file_path = String("file_path")
     v1 = Int("v1")
     v2 = Int("v2")
 
@@ -157,18 +150,11 @@ def test_narrative_chunk_versioning():
     s.add(store_v2)
 
     # After storing both, v1 is still accessible
-    versioning_rule = Or(
-        Not(store_v1),
-        v1_still_accessible
-    )
+    versioning_rule = Or(Not(store_v1), v1_still_accessible)
     s.add(versioning_rule)
 
     # Try to violate: v1 was stored, v2 was stored, but v1 is no longer accessible
-    violation = And(
-        store_v1,
-        store_v2,
-        Not(v1_still_accessible)
-    )
+    violation = And(store_v1, store_v2, Not(v1_still_accessible))
     s.add(violation)
 
     result = s.check()
@@ -189,34 +175,27 @@ def test_key_collision_resistance():
     """
     s = Solver()
 
-    # Entry 1
+    # Entry 1 — timestamps documented but not constrained (key is sha+fp)
     e1_sha = String("e1_sha")
     e1_fp = String("e1_fp")
     e1_author = String("e1_author")
-    e1_ts = Int("e1_ts")
+    _e1_ts = Int("e1_ts")
 
-    # Entry 2
+    # Entry 2 — same shape
     e2_sha = String("e2_sha")
     e2_fp = String("e2_fp")
     e2_author = String("e2_author")
-    e2_ts = Int("e2_ts")
+    _e2_ts = Int("e2_ts")
 
     # If two entries have different authors (logical difference)
     s.add(e1_author != e2_author)
 
     # They must differ in at least one component of the key
-    key_distinction = Or(
-        e1_sha != e2_sha,
-        e1_fp != e2_fp
-    )
+    key_distinction = Or(e1_sha != e2_sha, e1_fp != e2_fp)
     s.add(key_distinction)
 
     # Try to violate: different authors but same key
-    violation = And(
-        e1_author != e2_author,
-        e1_sha == e2_sha,
-        e1_fp == e2_fp
-    )
+    violation = And(e1_author != e2_author, e1_sha == e2_sha, e1_fp == e2_fp)
     s.add(violation)
 
     result = s.check()
@@ -236,23 +215,18 @@ def test_cache_no_silent_drops():
     """
     s = Solver()
 
-    sha = String("sha")
-    file_path = String("file_path")
+    # Key shape — documentation only; the property below is over was_written/is_retrievable.
+    _sha = String("sha")
+    _file_path = String("file_path")
     was_written = Bool("was_written")
     is_retrievable = Bool("is_retrievable")
 
     # If a commit was written, it must be retrievable
-    no_silent_drops = Or(
-        Not(was_written),
-        is_retrievable
-    )
+    no_silent_drops = Or(Not(was_written), is_retrievable)
     s.add(no_silent_drops)
 
     # Try to violate: was written but not retrievable
-    violation = And(
-        was_written,
-        Not(is_retrievable)
-    )
+    violation = And(was_written, Not(is_retrievable))
     s.add(violation)
 
     result = s.check()

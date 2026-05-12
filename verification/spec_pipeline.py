@@ -30,17 +30,11 @@ def test_no_silent_drops_in_pipeline():
     s.add(num_selected > 0)
 
     # Invariant: for every selected file, it must be processed
-    no_drop_rule = Or(
-        num_selected <= 0,
-        num_processed >= num_selected
-    )
+    no_drop_rule = Or(num_selected <= 0, num_processed >= num_selected)
     s.add(no_drop_rule)
 
     # Try to violate: selected > 0 but processed < selected
-    violation = And(
-        num_selected > 0,
-        num_processed < num_selected
-    )
+    violation = And(num_selected > 0, num_processed < num_selected)
     s.add(violation)
 
     result = s.check()
@@ -75,22 +69,19 @@ def test_complete_handoff_to_survey():
 
     # After processing, we produce stories
     production_rule = Or(
-        num_files_processed <= 0,
-        num_stories_produced == num_files_processed
+        num_files_processed <= 0, num_stories_produced == num_files_processed
     )
     s.add(production_rule)
 
     # Complete handoff: stories produced = stories received
     handoff_rule = Or(
-        num_stories_produced <= 0,
-        num_stories_received == num_stories_produced
+        num_stories_produced <= 0, num_stories_received == num_stories_produced
     )
     s.add(handoff_rule)
 
     # Try to violate: stories produced but not all received
     violation = And(
-        num_stories_produced > 0,
-        num_stories_received < num_stories_produced
+        num_stories_produced > 0, num_stories_received < num_stories_produced
     )
     s.add(violation)
 
@@ -121,17 +112,11 @@ def test_no_divergence_in_persistence():
     in_memory_matches_disk = Bool("in_memory_matches_disk")
 
     # Constraint: if we wrote, then memory and disk must match
-    persistence_rule = Or(
-        Not(wrote_to_disk),
-        in_memory_matches_disk
-    )
+    persistence_rule = Or(Not(wrote_to_disk), in_memory_matches_disk)
     s.add(persistence_rule)
 
     # Try to violate: wrote to disk but memory != disk
-    violation = And(
-        wrote_to_disk,
-        Not(in_memory_matches_disk)
-    )
+    violation = And(wrote_to_disk, Not(in_memory_matches_disk))
     s.add(violation)
 
     result = s.check()
@@ -161,11 +146,7 @@ def test_error_handling_covers_all_cases():
     file_silently_skipped = Bool("file_silently_skipped")
 
     # If a file is selected, it must either generate a story or raise an exception
-    error_coverage = Or(
-        Not(file_selected),
-        story_generated,
-        exception_raised
-    )
+    error_coverage = Or(Not(file_selected), story_generated, exception_raised)
     s.add(error_coverage)
 
     # Silent skip is not allowed (file is selected but no story and no exception)
@@ -173,7 +154,7 @@ def test_error_handling_covers_all_cases():
         Not(file_selected),
         story_generated,
         exception_raised,
-        Not(file_silently_skipped)
+        Not(file_silently_skipped),
     )
     s.add(no_silent_skip)
 
@@ -183,7 +164,7 @@ def test_error_handling_covers_all_cases():
         file_selected,
         Not(story_generated),
         Not(exception_raised),
-        file_silently_skipped
+        file_silently_skipped,
     )
     s.add(violation)
 
@@ -219,22 +200,22 @@ def test_cache_usage_improves_performance_not_correctness():
 
     # Constraint: same commits -> same narrative
     cache_transparency = Or(
-        commits_in_run1 != commits_in_run2,
-        narrative_run1 == narrative_run2
+        commits_in_run1 != commits_in_run2, narrative_run1 == narrative_run2
     )
     s.add(cache_transparency)
     s.add(commits_in_run1 == commits_in_run2)  # both runs see same commits
 
     # Try to violate: same commits but different narratives
     violation = And(
-        commits_in_run1 == commits_in_run2,
-        narrative_run1 != narrative_run2
+        commits_in_run1 == commits_in_run2, narrative_run1 != narrative_run2
     )
     s.add(violation)
 
     result = s.check()
     if result == unsat:
-        print("PROVED: Cache is transparent (doesn't affect narrative if commits unchanged)")
+        print(
+            "PROVED: Cache is transparent (doesn't affect narrative if commits unchanged)"
+        )
         return True
     else:
         print("FAILED: Cache correctness invariant violated")
