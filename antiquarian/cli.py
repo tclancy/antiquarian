@@ -16,6 +16,7 @@ from antiquarian.cache import (
 from antiquarian.mining import historical_shas, mine_file_history
 from antiquarian.narrative import synthesize_narrative
 from antiquarian.prs import detect_github_repo, enrich_with_pr
+from antiquarian.selection import select_files
 from antiquarian.todos import extract_todos
 
 app = typer.Typer(
@@ -119,6 +120,40 @@ def story(
     story_file = stories_dir / safe_name
     story_file.write_text(narrative + "\n", encoding="utf-8")
     typer.echo(f"[wrote] {story_file}", err=True)
+
+
+@app.command()
+def files(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    include: list[str] = typer.Option(
+        [], "--include", help="Glob to include (additive). Repeatable."
+    ),
+    exclude: list[str] = typer.Option(
+        [], "--exclude", help="Glob to exclude (subtractive). Repeatable."
+    ),
+    only: list[str] = typer.Option(
+        [],
+        "--only",
+        help="Exact path. When set (repeatable), ONLY these paths are returned; "
+        "all other filters are bypassed.",
+    ),
+    respect_gitignore: bool = typer.Option(
+        True,
+        "--respect-gitignore/--no-respect-gitignore",
+        help="Use `git ls-files` for the candidate set (honors .gitignore).",
+    ),
+) -> None:
+    """List files that would be analyzed, after applying selection rules."""
+    selected = select_files(
+        repo,
+        include=include,
+        exclude=exclude,
+        only=only,
+        respect_gitignore=respect_gitignore,
+    )
+    for path in selected:
+        typer.echo(path)
+    typer.echo(f"[selected] {len(selected)} file(s)", err=True)
 
 
 if __name__ == "__main__":
