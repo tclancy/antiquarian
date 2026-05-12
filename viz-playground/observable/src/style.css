@@ -1,0 +1,162 @@
+/* Story-page typography for the Observable narrative variant.
+ * Distinct from the technical/dense Vega-Lite stack and from the
+ * broadsheet/branded hand-svg stack: this is "long-form essay with
+ * charts as cited evidence in the prose." */
+
+:root {
+  --serif: "Iowan Old Style", "Palatino", "Hoefler Text", Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --ink: #1a1a1a;
+  --ink-dim: #555;
+  --rule: #d4d4d4;
+  --accent: #b35a1f;
+  --paper: #fafaf7;
+  --aside: #f3eee5;
+}
+
+#observablehq-main {
+  max-width: 720px !important;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem !important;
+}
+
+#observablehq-main p,
+#observablehq-main li {
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  line-height: 1.65;
+  color: var(--ink);
+  max-width: 64ch;
+}
+
+#observablehq-main h1 {
+  font-family: var(--serif);
+  font-size: 2.4rem;
+  font-weight: 600;
+  line-height: 1.15;
+  margin-bottom: 0.25rem;
+  letter-spacing: -0.01em;
+}
+
+#observablehq-main h2 {
+  font-family: var(--serif);
+  font-size: 1.45rem;
+  font-weight: 600;
+  margin-top: 3.5rem;
+  margin-bottom: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+
+#observablehq-main h3 {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-dim);
+  margin-top: 1.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.dateline {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--ink-dim);
+  margin-bottom: 0.5rem;
+}
+
+.byline {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 1rem;
+}
+
+.pull-quote {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.2rem;
+  line-height: 1.5;
+  border-left: 3px solid var(--accent);
+  padding: 0.5rem 0 0.5rem 1.5rem;
+  margin: 2rem 0;
+  color: var(--ink);
+  max-width: 60ch;
+}
+
+.aside {
+  background: var(--aside);
+  border-left: 3px solid var(--ink-dim);
+  padding: 0.75rem 1rem;
+  margin: 1.5rem 0;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  line-height: 1.5;
+  max-width: 60ch;
+}
+
+.aside strong {
+  color: var(--ink);
+}
+
+figure.atom {
+  margin: 2rem -2rem;
+  max-width: none;
+}
+
+figure.atom figcaption {
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  color: var(--ink-dim);
+  margin-top: 0.5rem;
+  padding: 0 0.5rem;
+  font-style: italic;
+}
+
+figure.atom .fig-label {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.timeline-strip {
+  margin: 0 0 0.5rem 0;
+}
+
+.timeline-strip svg {
+  display: block;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+#observablehq-main hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 4rem auto;
+  width: 30%;
+}
+
+.section-mark {
+  font-family: var(--serif);
+  font-size: 1rem;
+  font-variant: small-caps;
+  letter-spacing: 0.1em;
+  color: var(--ink-dim);
+  text-align: center;
+  margin: 3rem 0 1rem;
+}
