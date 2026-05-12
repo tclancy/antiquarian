@@ -12,7 +12,8 @@
 #   make clean PROJECT=itguy                  # remove output/<project>/
 
 PROJECT ?= itguy
-REPO ?= $(if $(filter itguy,$(PROJECT)),/Users/tom/Documents/work/itguy,$(if $(filter comictagger,$(PROJECT)),/tmp/comictagger,$(error REPO is required for PROJECT=$(PROJECT))))
+# REPO has built-in defaults for common projects. For anything else, pass REPO=<path>.
+REPO ?= $(if $(filter itguy,$(PROJECT)),/Users/tom/Documents/work/itguy,$(if $(filter comictagger,$(PROJECT)),/Users/tom/Documents/work/comictagger,$(if $(filter BetterBlue,$(PROJECT)),/Users/tom/Documents/work/BetterBlue,$(if $(filter courtlistener,$(PROJECT)),/Users/tom/Documents/work/courtlistener,$(error REPO is required for PROJECT=$(PROJECT))))))
 
 OUT := output/$(PROJECT)
 DATA := $(OUT)/data
@@ -54,7 +55,7 @@ vega-lite: data
 	$(PYTHON) vega-lite-static/build.py --project $(PROJECT) --data-dir $(DATA) --output-dir $(OUT)/vega-lite-static
 
 svg: data
-	$(PYTHON) hand-svg/build.py --project $(PROJECT) --data-dir $(DATA) --output-dir $(OUT)/hand-svg
+	$(PYTHON) hand-svg/build.py --project $(PROJECT) --data-dir $(DATA) --output-dir $(OUT)/hand-svg --repo $(REPO)
 
 serve:
 	@echo "Serving $(OUT) at http://localhost:$(PORT)/ (Ctrl-C to stop)"
