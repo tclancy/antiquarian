@@ -48,7 +48,9 @@ def _build_rename_chain(repo: Path, names: list[str]) -> str:
     current = initial
     for next_name in names[1:]:
         _run(["git", "mv", current, next_name], cwd=repo)
-        _run(["git", "commit", "-q", "-m", f"rename {current} -> {next_name}"], cwd=repo)
+        _run(
+            ["git", "commit", "-q", "-m", f"rename {current} -> {next_name}"], cwd=repo
+        )
         current = next_name
     return current
 
