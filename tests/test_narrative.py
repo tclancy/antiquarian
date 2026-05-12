@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
+from unittest.mock import patch
+
+import pytest
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import (
+    _run_claude_p,
     _sanitize_for_claude,
     build_survey_prompt,
     build_user_prompt,
@@ -174,3 +179,102 @@ class TestBuildSurveyPrompt:
         prompt = build_survey_prompt("r", [("only.py", "The only file.")])
         assert "**Files surveyed:** 1" in prompt
         assert "Per-file story: `only.py`" in prompt
+
+
+def _completed(stdout: str = "ok") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=["claude"], returncode=0, stdout=stdout, stderr=""
+    )
+
+
+def _timeout() -> subprocess.TimeoutExpired:
+    return subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+
+
+class TestRunClaudeP:
+    """Retry behavior for ``_run_claude_p`` (issue #31)."""
+
+    def test_success_on_first_attempt_does_not_log_retry(self) -> None:
+        logs: list[str] = []
+        sleeps: list[float] = []
+        with patch(
+            "antiquarian.narrative.subprocess.run", return_value=_completed("yes")
+        ):
+            result = _run_claude_p(
+                ["claude", "-p"], "hi", 300, log=logs.append, sleep=sleeps.append
+            )
+        assert result.stdout == "yes"
+        assert logs == []
+        assert sleeps == []
+
+    def test_retries_on_timeout_then_succeeds(self) -> None:
+        logs: list[str] = []
+        sleeps: list[float] = []
+        side_effects = [_timeout(), _timeout(), _completed("eventually")]
+        with patch(
+            "antiquarian.narrative.subprocess.run", side_effect=side_effects
+        ) as mock_run:
+            result = _run_claude_p(
+                ["claude", "-p"],
+                "hi",
+                300,
+                base_backoff_seconds=1.0,
+                log=logs.append,
+                sleep=sleeps.append,
+            )
+        assert result.stdout == "eventually"
+        assert mock_run.call_count == 3
+        assert len(logs) == 2
+        assert all("retrying" in m for m in logs)
+        assert len(sleeps) == 2
+        # Exponential: ~1.0, ~3.0 (with up to 20% jitter on top)
+        assert 1.0 <= sleeps[0] < 1.21
+        assert 3.0 <= sleeps[1] < 3.61
+
+    def test_raises_after_max_attempts(self) -> None:
+        logs: list[str] = []
+        with patch(
+            "antiquarian.narrative.subprocess.run",
+            side_effect=[_timeout(), _timeout(), _timeout()],
+        ):
+            with pytest.raises(subprocess.TimeoutExpired):
+                _run_claude_p(
+                    ["claude", "-p"],
+                    "hi",
+                    300,
+                    base_backoff_seconds=0.01,
+                    log=logs.append,
+                    sleep=lambda _s: None,
+                )
+        # Two "retrying" logs (attempts 1 and 2) + one "giving up" log (attempt 3)
+        assert len(logs) == 3
+        assert "giving up" in logs[-1]
+
+    def test_no_retry_on_called_process_error(self) -> None:
+        logs: list[str] = []
+        err = subprocess.CalledProcessError(
+            returncode=2, cmd=["claude"], stderr="bad prompt"
+        )
+        with patch("antiquarian.narrative.subprocess.run", side_effect=err) as mock_run:
+            with pytest.raises(subprocess.CalledProcessError):
+                _run_claude_p(
+                    ["claude", "-p"], "hi", 300, log=logs.append, sleep=lambda _s: None
+                )
+        assert mock_run.call_count == 1
+        assert logs == []
+
+    def test_custom_max_attempts_honored(self) -> None:
+        with patch(
+            "antiquarian.narrative.subprocess.run",
+            side_effect=[_timeout(), _completed("ok")],
+        ) as mock_run:
+            result = _run_claude_p(
+                ["claude", "-p"],
+                "hi",
+                300,
+                max_attempts=2,
+                base_backoff_seconds=0.01,
+                sleep=lambda _s: None,
+            )
+        assert result.stdout == "ok"
+        assert mock_run.call_count == 2

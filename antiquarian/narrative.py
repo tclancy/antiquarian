@@ -2,12 +2,65 @@
 
 from __future__ import annotations
 
+import random
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Callable, Sequence
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
+
+
+def _noop(_msg: str) -> None:
+    pass
+
+
+def _run_claude_p(
+    args: Sequence[str],
+    user_prompt: str,
+    timeout_seconds: int,
+    *,
+    max_attempts: int = 3,
+    base_backoff_seconds: float = 5.0,
+    log: Callable[[str], None] = _noop,
+    sleep: Callable[[float], None] = time.sleep,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``claude -p`` with retry on transient timeouts (issue #31).
+
+    Retries on ``subprocess.TimeoutExpired`` only — ``CalledProcessError`` is a
+    real upstream failure (the prompt is probably the cause) and not retried.
+    Backoff is exponential with up to 20% jitter to avoid lockstep retries
+    against a momentarily degraded upstream.
+    """
+    last_exc: subprocess.TimeoutExpired | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return subprocess.run(
+                list(args),
+                input=user_prompt,
+                text=True,
+                capture_output=True,
+                check=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as e:
+            last_exc = e
+            if attempt < max_attempts:
+                delay = base_backoff_seconds * (3 ** (attempt - 1))
+                wait = delay + random.uniform(0, delay * 0.2)
+                log(
+                    f"[narrative] claude -p timed out "
+                    f"(attempt {attempt}/{max_attempts}); retrying in {wait:.1f}s"
+                )
+                sleep(wait)
+            else:
+                log(
+                    f"[narrative] claude -p timed out on all "
+                    f"{max_attempts} attempts; giving up"
+                )
+    assert last_exc is not None
+    raise last_exc
 
 
 # Patterns that cause `claude -p` to hang indefinitely when present in the user
@@ -174,16 +227,16 @@ def synthesize_narrative(
     commits: Sequence[CommitFeatures],
     todos: Sequence[TodoAnnotation],
     timeout_seconds: int = 300,
+    *,
+    log: Callable[[str], None] = _noop,
 ) -> str:
     """Send the source data to ``claude -p`` and return the narrative markdown."""
     user_prompt = build_user_prompt(file_path, repo_name, commits, todos)
-    result = subprocess.run(
+    result = _run_claude_p(
         ["claude", "-p", "--system-prompt", SYSTEM_PROMPT],
-        input=user_prompt,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=timeout_seconds,
+        user_prompt,
+        timeout_seconds,
+        log=log,
     )
     return result.stdout.strip()
 
@@ -291,15 +344,14 @@ def synthesize_survey(
     repo_name: str,
     file_stories: Sequence[tuple[str, str]],
     timeout_seconds: int = 300,
+    log: Callable[[str], None] = _noop,
 ) -> str:
     """Send per-file stories to ``claude -p`` and return a codebase-level narrative."""
     user_prompt = build_survey_prompt(repo_name, file_stories)
-    result = subprocess.run(
+    result = _run_claude_p(
         ["claude", "-p", "--system-prompt", SURVEY_SYSTEM_PROMPT],
-        input=user_prompt,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=timeout_seconds,
+        user_prompt,
+        timeout_seconds,
+        log=log,
     )
     return result.stdout.strip()

@@ -90,6 +90,7 @@ def generate_file_story(
         repo_name=repo_name,
         commits=commits,
         todos=todos,
+        log=log,
     )
 
     stories_dir = repo_path / ".antiquarian" / "stories"
@@ -140,6 +141,7 @@ def generate_codebase_survey(
     survey = synthesize_survey(
         repo_name=repo_name,
         file_stories=file_stories,
+        log=log,
     )
 
     surveys_dir = repo_path / ".antiquarian" / "surveys"
