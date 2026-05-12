@@ -18,9 +18,7 @@ jobs:
         run: uv python install
       - name: Install dependencies
         run: uv sync --all-groups
-      - name: Lint (ruff)
-        run: uv run ruff check antiquarian/ tests/
-      - name: Format check (ruff)
-        run: uv run ruff format --check antiquarian/ tests/
+      - name: Pre-commit hooks
+        run: uv run pre-commit run --all-files --show-diff-on-failure
       - name: Run tests
         run: uv run pytest
