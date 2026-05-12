@@ -6,14 +6,13 @@ run without network access, a real Claude subscription, or a populated repo.
 
 from __future__ import annotations
 
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from antiquarian.models import CommitFeatures, TodoAnnotation
+from antiquarian.models import CommitFeatures
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
 
 
@@ -57,7 +56,10 @@ class TestGenerateFileStory:
     @patch("antiquarian.pipeline.mine_file_history")
     @patch("antiquarian.pipeline.historical_shas", return_value=["aaa111"])
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
-    @patch("antiquarian.pipeline.synthesize_narrative", return_value="## Origin\nNarrative here.")
+    @patch(
+        "antiquarian.pipeline.synthesize_narrative",
+        return_value="## Origin\nNarrative here.",
+    )
     def test_happy_path(
         self,
         mock_synth: MagicMock,
@@ -106,7 +108,10 @@ class TestGenerateSurvey:
         with pytest.raises(ValueError, match="at least one"):
             generate_codebase_survey(tmp_repo, [])
 
-    @patch("antiquarian.pipeline.synthesize_survey", return_value="## Files surveyed\nSynthesis.")
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nSynthesis.",
+    )
     @patch("antiquarian.pipeline.generate_file_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_happy_path(
@@ -124,9 +129,7 @@ class TestGenerateSurvey:
         (tmp_repo / "a.py").write_text("x = 1\n")
         (tmp_repo / "b.py").write_text("y = 2\n")
 
-        survey, survey_path = generate_codebase_survey(
-            tmp_repo, ["a.py", "b.py"]
-        )
+        survey, survey_path = generate_codebase_survey(tmp_repo, ["a.py", "b.py"])
 
         assert "Synthesis" in survey
         assert survey_path.exists()
@@ -136,7 +139,10 @@ class TestGenerateSurvey:
         stories_arg = mock_survey.call_args.kwargs["file_stories"]
         assert len(stories_arg) == 2
 
-    @patch("antiquarian.pipeline.synthesize_survey", return_value="## Files surveyed\nDone.")
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
     @patch("antiquarian.pipeline.generate_file_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_log_callback_invoked(

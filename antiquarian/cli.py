@@ -32,9 +32,7 @@ def _resolve_file_path(file: str, repo_path: Path) -> str:
         try:
             return str(file_path_abs.relative_to(repo_path))
         except ValueError as e:
-            raise typer.BadParameter(
-                f"{file} is not inside {repo_path}"
-            ) from e
+            raise typer.BadParameter(f"{file} is not inside {repo_path}") from e
     return file
 
 
@@ -53,7 +51,9 @@ def story(
     file: str = typer.Argument(..., help="Path to the file whose story to tell."),
     repo: str = typer.Option(".", help="Path to the git repository."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the SQLite cache."),
-    no_prs: bool = typer.Option(False, "--no-prs", help="Skip PR description fetching via gh."),
+    no_prs: bool = typer.Option(
+        False, "--no-prs", help="Skip PR description fetching via gh."
+    ),
 ) -> None:
     """Tell the story of a file's evolution through git history."""
     repo_path = Path(repo).resolve()
@@ -96,7 +96,9 @@ def survey(
         help="Use `git ls-files` for the candidate set (honors .gitignore).",
     ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the SQLite cache."),
-    no_prs: bool = typer.Option(False, "--no-prs", help="Skip PR description fetching via gh."),
+    no_prs: bool = typer.Option(
+        False, "--no-prs", help="Skip PR description fetching via gh."
+    ),
 ) -> None:
     """Synthesize a codebase-level narrative from per-file stories."""
     repo_path = Path(repo).resolve()

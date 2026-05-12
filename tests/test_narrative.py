@@ -35,7 +35,9 @@ def _commit(
     )
 
 
-def _todo(*, kind: str = "TODO", line: int = 42, text: str = "clean this up") -> TodoAnnotation:
+def _todo(
+    *, kind: str = "TODO", line: int = 42, text: str = "clean this up"
+) -> TodoAnnotation:
     return TodoAnnotation(
         kind=kind,
         line_number=line,

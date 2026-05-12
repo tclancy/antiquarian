@@ -71,9 +71,7 @@ def _blame_line(
     return sha, author, ts
 
 
-def extract_todos(
-    repo_path: str | Path, file_path: str
-) -> Iterator[TodoAnnotation]:
+def extract_todos(repo_path: str | Path, file_path: str) -> Iterator[TodoAnnotation]:
     """Yield a ``TodoAnnotation`` for each TODO/FIXME-style comment in the file at HEAD."""
     try:
         lines = _read_file_at_head(repo_path, file_path)
