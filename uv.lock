@@ -19,6 +19,7 @@ dependencies = [
     { name = "pydriller" },
     { name = "python-ulid" },
     { name = "typer" },
+    { name = "typing-extensions" },
 ]
 
 [package.dev-dependencies]
@@ -31,6 +32,7 @@ requires-dist = [
     { name = "pydriller", specifier = ">=2.9" },
     { name = "python-ulid", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "typing-extensions", specifier = ">=4.15.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -261,4 +263,13 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/2e/a545aae2c4d2af7e3b7b967049c2f271b2f5338d96a58224fe1ee53a54f3/types_pytz-2026.2.0.20260506.tar.gz", hash = "sha256:fc6a0de6a1b7da82a748fb4065e152372dac3016559cb1eef5e8af1e338eb627", size = 10844, upload-time = "2026-05-06T05:17:51.964Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/cd/df3e4ccccb2a5a0b7e59c9fb2baafb6dac0817e80799e4c9854fe4d2eba3/types_pytz-2026.2.0.20260506-py3-none-any.whl", hash = "sha256:58ab5307c20885f9bcd42ff106616eb0e32710791f8cbdc770aee2ea0c4f01fb", size = 10120, upload-time = "2026-05-06T05:17:51.026Z" },
+]
+
+[[package]]
+name = "typing-extensions"
+version = "4.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
 ]
