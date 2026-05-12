@@ -287,6 +287,127 @@ def build_swimlane(commits: list[Commit]) -> dict:
     }
 
 
+def build_timeline(commits: list[Commit]) -> dict:
+    """Build dual-axis timeline metadata.
+
+    Two ranges:
+      - `full_span`: project lifespan (cache min → cache max). The thin reference
+        strip at the top of each atom in the viz stacks shows this.
+      - `active_windows`: contiguous clusters of commits — gaps larger than
+        N months collapse into separate windows. The visualized axis shows
+        only the union of these windows, but with explicit "gap" segments
+        between them so the dormancy is still visible structurally.
+
+    Why this matters: comictagger spans 2013-02 → 2022-11 with two big gaps
+    (Feb 2013 → Feb 2015, Feb 2015 → Apr 2022). A naive time axis renders 99%
+    empty space. A pure-active-window axis hides the dormancy. The dual-axis
+    approach is honest about both: full lifespan visible as a strip up top,
+    active clusters drawn at usable width below, with gap markers between.
+    """
+    if not commits:
+        return {
+            "full_span": None,
+            "active_windows": [],
+            "gaps": [],
+            "active_total_days": 0,
+            "compression_ratio": 1.0,
+        }
+    sorted_commits = sorted(commits, key=lambda c: c.timestamp)
+    timestamps = [c.timestamp for c in sorted_commits]
+    full_min = timestamps[0]
+    full_max = timestamps[-1]
+
+    # Cluster commits into windows. A gap of >= 365 days breaks a window —
+    # short of that, the visualization just shows blank space inside the window.
+    GAP_THRESHOLD_DAYS = 365
+
+    def _parse(ts: str) -> datetime:
+        return datetime.fromisoformat(ts)
+
+    windows: list[dict] = []
+    gaps: list[dict] = []
+    cur_start = timestamps[0]
+    cur_end = timestamps[0]
+    cur_count = 1
+    for i in range(1, len(sorted_commits)):
+        prev = _parse(timestamps[i - 1])
+        cur = _parse(timestamps[i])
+        delta_days = (cur - prev).days
+        if delta_days >= GAP_THRESHOLD_DAYS:
+            windows.append(
+                {"start": cur_start, "end": cur_end, "commit_count": cur_count}
+            )
+            gaps.append(
+                {
+                    "start": timestamps[i - 1],
+                    "end": timestamps[i],
+                    "days": delta_days,
+                }
+            )
+            cur_start = timestamps[i]
+            cur_count = 0
+        cur_end = timestamps[i]
+        cur_count += 1
+    windows.append({"start": cur_start, "end": cur_end, "commit_count": cur_count})
+
+    active_total_days = sum(
+        (_parse(w["end"]) - _parse(w["start"])).days + 1 for w in windows
+    )
+    full_total_days = (_parse(full_max) - _parse(full_min)).days + 1
+    return {
+        "full_span": {"start": full_min, "end": full_max, "days": full_total_days},
+        "active_windows": windows,
+        "active_total_days": active_total_days,
+        "gaps": gaps,
+        "compression_ratio": (
+            full_total_days / active_total_days if active_total_days else 1.0
+        ),
+    }
+
+
+def build_per_file_lifespans(
+    cache_db: Path, files: list[str], commits: list[Commit]
+) -> list[dict]:
+    """Per-file first/last commit + commit count.
+
+    Used to detect `git log --follow` rename truncation: a file with a single
+    commit on a date >2y before any other surviving evidence is almost certainly
+    a rename boundary where pre-rename history dropped off. Surfaces in the UI
+    as a "history truncated at rename" indicator rather than papering over it.
+    """
+    if not cache_db.exists():
+        return []
+    conn = sqlite3.connect(str(cache_db))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT file_path, MIN(timestamp) as first_ts, MAX(timestamp) as last_ts, "
+            "COUNT(*) as n FROM commit_features GROUP BY file_path"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    all_firsts = sorted(r["first_ts"] for r in rows)
+    for r in rows:
+        first = datetime.fromisoformat(r["first_ts"])
+        likely_truncated = False
+        if r["n"] == 1 and len(all_firsts) > 1:
+            others = [datetime.fromisoformat(t) for t in all_firsts if t != r["first_ts"]]
+            if others and (min(others) - first).days > 365:
+                likely_truncated = True
+        out.append(
+            {
+                "file_path": r["file_path"],
+                "first_commit": r["first_ts"],
+                "last_commit": r["last_ts"],
+                "commit_count": r["n"],
+                "likely_rename_truncated": likely_truncated,
+            }
+        )
+    out.sort(key=lambda f: f["first_commit"])
+    return out
+
+
 def build_arc_band(arcs: list[Arc], commits: list[Commit]) -> dict:
     """Build per-arc SC ranking band data.
 
@@ -405,6 +526,8 @@ def main() -> int:
 
     swimlane = build_swimlane(commits)
     arc_band = build_arc_band(arcs, commits)
+    timeline = build_timeline(commits)
+    file_lifespans = build_per_file_lifespans(cache_db, cached_files, commits)
 
     # Emit each atom's data as a separate JSON file so the stacks can load only
     # what they need.
@@ -422,6 +545,12 @@ def main() -> int:
     )
     (project_out / "arc_band.json").write_text(
         json.dumps(arc_band, indent=2), encoding="utf-8"
+    )
+    (project_out / "timeline.json").write_text(
+        json.dumps(timeline, indent=2), encoding="utf-8"
+    )
+    (project_out / "file_lifespans.json").write_text(
+        json.dumps(file_lifespans, indent=2), encoding="utf-8"
     )
 
     manifest = {
@@ -445,6 +574,8 @@ def main() -> int:
                 "arc_count": arc_band["arc_count"],
             },
         },
+        "timeline": timeline,
+        "file_lifespans": file_lifespans,
     }
     (project_out / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
