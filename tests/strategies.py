@@ -45,44 +45,38 @@ _HANG_PATTERN_FRAGMENTS = [
 _ADVERSARIAL_FRAGMENTS = [
     # Whitespace-only / invisible
     "",
-    " " * 5000,                          # long run of spaces
-    "\t" * 1000,                         # long run of tabs
-    "\n" * 200,                          # vertical column of nothing
-    "​" * 50,                       # zero-width spaces
-    "‮" + "reversed!" + "‬",   # RTL override sandwich
-    "﻿" * 10,                       # BOMs
-
+    " " * 5000,  # long run of spaces
+    "\t" * 1000,  # long run of tabs
+    "\n" * 200,  # vertical column of nothing
+    "​" * 50,  # zero-width spaces
+    "‮" + "reversed!" + "‬",  # RTL override sandwich
+    "﻿" * 10,  # BOMs
     # Combining / unusual unicode
-    "a" + "́" * 100,                # 100 combining acute accents on 'a' (Zalgo-light)
-    "💀" * 200,                          # emoji run
-    "\U0001F4A9" * 100,                  # supplementary plane
-
+    "a" + "́" * 100,  # 100 combining acute accents on 'a' (Zalgo-light)
+    "💀" * 200,  # emoji run
+    "\U0001f4a9" * 100,  # supplementary plane
     # Control / escape sequences
     "\x00 NUL injection",
     "\x1b[31mANSI red\x1b[0m",
     "\x07\x07\x07 BEL",
     "\x7f DEL char",
-
     # Regex-bomb shapes (catastrophic backtracking targets)
     "(" * 200 + "a" + ")" * 200,
     "a" * 100 + "?" * 100,
     "[" + "a-z" * 50 + "]" * 50,
-
     # Markdown fence / injection
-    "```\n```\n```\n" * 10,              # fence storm
+    "```\n```\n```\n" * 10,  # fence storm
     "</code></pre>" * 20,
-    "`" * 500,                           # backtick wall
+    "`" * 500,  # backtick wall
     "![](data:image/png;base64,AAAAAAAA)",
     "[link](javascript:alert(1))",
-
     # Things that look like patterns we sanitize but aren't
     "Co-Authored-By: Bob <bob@example.com>",
     "🤖 Beep boop, not an AI attribution.",
     "https://claude.ai/code is a link, but no markdown.",
-
     # Wide ranges of input length
-    "x" * 50_000,                        # massive single-line
-    "x\n" * 5_000,                       # many lines
+    "x" * 50_000,  # massive single-line
+    "x\n" * 5_000,  # many lines
 ]
 
 
@@ -90,8 +84,8 @@ _ADVERSARIAL_FRAGMENTS = [
 # the categories `st.text` excludes by default. Useful when we want the
 # message to be *just text* but really, truly, any text.
 _broad_chars = st.characters(
-    blacklist_characters="\x00",         # SQLite still rejects NUL in TEXT
-    blacklist_categories=(),             # everything else fair game
+    blacklist_characters="\x00",  # SQLite still rejects NUL in TEXT
+    blacklist_categories=(),  # everything else fair game
 )
 
 
@@ -169,7 +163,9 @@ def commit_features(draw: st.DrawFn) -> CommitFeatures:
         ),
         additions=draw(st.integers(min_value=0, max_value=1_000_000)),
         deletions=draw(st.integers(min_value=0, max_value=1_000_000)),
-        pr_number=draw(st.one_of(st.none(), st.integers(min_value=1, max_value=999_999))),
+        pr_number=draw(
+            st.one_of(st.none(), st.integers(min_value=1, max_value=999_999))
+        ),
         pr_body=draw(st.one_of(st.none(), commit_messages())),
     )
 

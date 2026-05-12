@@ -193,9 +193,7 @@ class TestSoftWarnEmission:
         nm_dir = tmp_git_repo / "node_modules" / "foo"
         nm_dir.mkdir(parents=True)
         (nm_dir / "index.js").write_text("module.exports = {};")
-        subprocess.run(
-            ["git", "add", "node_modules/"], cwd=tmp_git_repo, check=True
-        )
+        subprocess.run(["git", "add", "node_modules/"], cwd=tmp_git_repo, check=True)
         subprocess.run(
             ["git", "commit", "-q", "-m", "add node_modules"],
             cwd=tmp_git_repo,

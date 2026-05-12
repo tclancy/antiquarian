@@ -65,12 +65,14 @@ class TestSanitizerProperties:
             f"input: {msg!r}\noutput: {out!r}"
         )
 
-    @given(prose=st.text(min_size=1, max_size=500).filter(
-        lambda s: "🤖" not in s
-        and "Claude" not in s
-        and "claude.ai" not in s
-    ))
-    def test_attribution_free_text_unchanged_modulo_whitespace(self, prose: str) -> None:
+    @given(
+        prose=st.text(min_size=1, max_size=500).filter(
+            lambda s: "🤖" not in s and "Claude" not in s and "claude.ai" not in s
+        )
+    )
+    def test_attribution_free_text_unchanged_modulo_whitespace(
+        self, prose: str
+    ) -> None:
         """Text with no attribution patterns survives unchanged (modulo the
         ``.strip()`` at the end of the sanitizer)."""
         out = _sanitize_for_claude(prose)
