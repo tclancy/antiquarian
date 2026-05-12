@@ -13,7 +13,14 @@ from antiquarian.models import CommitFeatures
 
 
 def historical_shas(repo_path: str | Path, file_path: str) -> list[str]:
-    """Return SHAs that ever touched ``file_path`` (following renames), oldest first."""
+    """Return SHAs that ever touched ``file_path`` (following renames), oldest first.
+
+    ``git log --follow --reverse`` is a toxic combination that truncates history
+    to 0-1 commits because ``--follow`` runs in git's output layer while
+    ``--reverse`` reorders the walker before ``--follow`` sees it. We emit
+    chronological-descending via ``--follow`` alone and reverse in Python.
+    See issue #13.
+    """
     result = subprocess.run(
         [
             "git",
