@@ -8,6 +8,8 @@ from pathlib import Path
 import typer
 
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
+from antiquarian.render import render_broadsheet
+from antiquarian.render_data import extract_render_data
 from antiquarian.selection import select_files
 
 app = typer.Typer(
@@ -204,6 +206,52 @@ def files(
     for path in selected:
         typer.echo(path)
     typer.echo(f"[selected] {len(selected)} file(s)", err=True)
+
+
+@app.command()
+def render(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    output: str = typer.Option(
+        "",
+        "--output",
+        "-o",
+        help="Output HTML path. Defaults to <repo>/.antiquarian/render/index.html.",
+    ),
+) -> None:
+    """Render the antiquarian broadsheet — a self-contained HTML page (#40).
+
+    Pulls the per-file stories and cache.db rows that already exist under
+    ``<repo>/.antiquarian/`` and emits a hand-set SVG broadsheet alongside
+    them. Does not call ``claude -p``; only reads what previous ``story`` /
+    ``survey`` runs already produced.
+    """
+    repo_path = Path(repo).resolve()
+    cache_db = repo_path / ".antiquarian" / "cache.db"
+    if not cache_db.exists():
+        typer.echo(
+            f"Error: no antiquarian cache at {cache_db}. "
+            "Run `antiquarian story` or `antiquarian survey` first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    output_path = (
+        Path(output).resolve()
+        if output
+        else repo_path / ".antiquarian" / "render" / "index.html"
+    )
+
+    _stderr(f"[render] extracting data from {repo_path}")
+    data = extract_render_data(repo_path)
+    _stderr(
+        f"[render] {len(data['files'])} file(s), {len(data['commits'])} commit(s), "
+        f"{len(data['arcs'])} arc(s), {len(data['todos'])} todo(s)"
+    )
+    html = render_broadsheet(data)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html, encoding="utf-8")
+    _stderr(f"[render] wrote {output_path}")
+    typer.echo(str(output_path))
 
 
 if __name__ == "__main__":

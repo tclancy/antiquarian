@@ -1,70 +1,61 @@
-"""Pull real per-file stories + cache.db rows for a project, emit JSON specs.
+"""Pull per-file stories + cache.db rows into a single dict ready for rendering.
 
-The playground is feel-testing infrastructure, not a finished product. This script
-is the single source of truth for what each of the three viz stacks renders. The
-Python pipeline owns the data shape; the stacks just paint it. Derive-don't-duplicate.
+This is the data-extraction half of the broadsheet renderer (issue #40 — promoted
+out of ``viz-playground/data/extract.py``). The library entry point is
+``extract_render_data(repo_path) -> dict``. The CLI's ``antiquarian render``
+command consumes the dict and passes it to ``antiquarian.render.render_broadsheet``.
 
-Usage:
-    python extract.py --project itguy --repo /Users/tom/Documents/work/itguy
-
-Outputs JSON files into output/<project>/data/:
-    - commits.json        — flat commit list (for swimlane + SC band)
-    - todos.json          — current TODOs per file (for TODO-age strip)
-    - arcs.json           — Major arcs parsed from each per-file story
-    - manifest.json       — list of files, projects, and which atoms have data
-
-Honest data only: if a file has no TODOs, the JSON reflects that. If a project
-has no story, the arcs.json reflects that. The playground surfaces these gaps
-rather than papering over them — per the project's "lossy regions are signal"
-ethos.
+Honest data only: if a file has no TODOs, the dict reflects that. If a project
+has no story, the arcs are empty. The renderer surfaces those gaps rather than
+papering over them — per the "lossy regions are signal" ethos.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import sqlite3
-import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Make the antiquarian package importable when running from the playground.
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
+from antiquarian.cache import cache_path_for_repo
+from antiquarian.todos import extract_todos
 
-from antiquarian.todos import extract_todos  # noqa: E402
-
-
-# Arc-name → short tag. Stories use freeform names like "Arc 1 — Strategy proliferation"
-# so we hash to a slug for stable color assignment downstream.
+# Arc-name → short tag. Stories use freeform names like "Arc 1 — Strategy
+# proliferation" so we hash to a slug for stable color assignment downstream.
 _ARC_HEADING_RE = re.compile(r"^\*\*Arc\s+(\d+)\s*[—-]\s*(.+?)\.\*\*\s*(.*)", re.DOTALL)
 # Match commit SHAs referenced in arc body (8-40 hex chars in backticks)
 _SHA_REF_RE = re.compile(r"`([0-9a-f]{7,40})`")
 # Match dates inside parentheses at the head of an arc, e.g. "(late March → early April 2026)"
 _DATE_RANGE_RE = re.compile(r"\(([^)]+\d{4}[^)]*)\)")
 
+# A gap of >= this many days between consecutive commits breaks the active-window
+# timeline into separate windows. Calibrated against comictagger (multi-year
+# SVN-to-Git gaps) — long enough to capture real dormancy without splitting on
+# every short vacation.
+_TIMELINE_GAP_THRESHOLD_DAYS = 365
+
 
 @dataclass
-class Commit:
+class _Commit:
     sha: str
     short_sha: str
     author: str
     author_email: str
-    timestamp: str  # ISO-8601
-    date: str  # YYYY-MM-DD
+    timestamp: str
+    date: str
     message_subject: str
     additions: int
     deletions: int
     files_changed_count: int
     pr_number: int | None
-    arcs: list[str] = field(default_factory=list)  # which arc slugs reference this sha
+    arcs: list[str] = field(default_factory=list)
 
 
 @dataclass
-class Todo:
+class _Todo:
     file_path: str
     kind: str
     line_number: int
@@ -77,14 +68,14 @@ class Todo:
 
 
 @dataclass
-class Arc:
+class _Arc:
     file_path: str
     arc_number: int
     name: str
     slug: str
     date_range: str | None
     body: str
-    commit_shas: list[str]  # full or short shas referenced in this arc's body
+    commit_shas: list[str]
 
 
 def _slugify(name: str) -> str:
@@ -92,7 +83,9 @@ def _slugify(name: str) -> str:
     return s[:40]
 
 
-def load_commits(cache_db: Path, file_filter: list[str] | None = None) -> list[Commit]:
+def _load_commits(
+    cache_db: Path, file_filter: list[str] | None = None
+) -> list[_Commit]:
     if not cache_db.exists():
         return []
     conn = sqlite3.connect(str(cache_db))
@@ -109,16 +102,15 @@ def load_commits(cache_db: Path, file_filter: list[str] | None = None) -> list[C
     finally:
         conn.close()
 
-    commits: list[Commit] = []
+    commits: list[_Commit] = []
     for row in rows:
         msg = row["message"] or ""
         subject = msg.splitlines()[0] if msg else ""
-        # Truncate long subjects so the JSON stays render-friendly.
         if len(subject) > 120:
             subject = subject[:117] + "..."
         files_changed = json.loads(row["files_changed"]) if row["files_changed"] else []
         commits.append(
-            Commit(
+            _Commit(
                 sha=row["sha"],
                 short_sha=row["sha"][:8],
                 author=row["author"],
@@ -132,23 +124,20 @@ def load_commits(cache_db: Path, file_filter: list[str] | None = None) -> list[C
                 pr_number=row["pr_number"],
             )
         )
-    # Deduplicate (sha may appear twice if the same file was mined with different
-    # filter perspectives). Newest wins.
-    by_sha: dict[str, Commit] = {}
+    # Deduplicate (the same SHA may appear under different file_path rows).
+    by_sha: dict[str, _Commit] = {}
     for c in commits:
         by_sha[c.sha] = c
     return sorted(by_sha.values(), key=lambda c: c.timestamp)
 
 
-def parse_arcs(story_md: Path) -> list[Arc]:
+def _parse_arcs(story_md: Path) -> list[_Arc]:
     """Pull the Major arcs section out of a per-file story.
 
-    Stories produced by `antiquarian story` follow a fixed structure with
-    `## Major arcs` as a heading and `**Arc N — Name.**` paragraphs underneath.
-    We slice that section, then split on the bold arc headers.
+    Stories follow a fixed structure with ``## Major arcs`` as a heading and
+    ``**Arc N — Name.**`` paragraphs underneath.
     """
     text = story_md.read_text(encoding="utf-8")
-    # Slice the major arcs section.
     arcs_match = re.search(
         r"^##\s+Major arcs\s*\n(.+?)(?=^##\s+\w|\Z)",
         text,
@@ -157,14 +146,10 @@ def parse_arcs(story_md: Path) -> list[Arc]:
     if not arcs_match:
         return []
     section = arcs_match.group(1)
-
-    # Convert the stories' relative path notation `src__itguy__deploy.py.md` back
-    # to its file path equivalent for downstream linking.
     file_path = story_md.stem.replace("__", "/")
 
-    # Split on `**Arc N —` boundaries. Keep the leading **.
     parts = re.split(r"\n(?=\*\*Arc\s+\d+\s*[—-])", section)
-    arcs: list[Arc] = []
+    arcs: list[_Arc] = []
     for part in parts:
         part = part.strip()
         if not part.startswith("**Arc"):
@@ -173,18 +158,15 @@ def parse_arcs(story_md: Path) -> list[Arc]:
         if not m:
             continue
         arc_num = int(m.group(1))
-        rest = m.group(2)  # "Strategy proliferation (late March → ...)"
+        rest = m.group(2)
         body = m.group(3).strip()
-        # Extract date range if present.
         dr_match = _DATE_RANGE_RE.search(rest)
         date_range = dr_match.group(1).strip() if dr_match else None
         name = _DATE_RANGE_RE.sub("", rest).strip()
         slug = _slugify(name)
-        commit_shas = list(
-            dict.fromkeys(_SHA_REF_RE.findall(part))
-        )  # dedup, preserve order
+        commit_shas = list(dict.fromkeys(_SHA_REF_RE.findall(part)))
         arcs.append(
-            Arc(
+            _Arc(
                 file_path=file_path,
                 arc_number=arc_num,
                 name=name,
@@ -197,11 +179,11 @@ def parse_arcs(story_md: Path) -> list[Arc]:
     return arcs
 
 
-def attach_arcs_to_commits(commits: list[Commit], arcs: list[Arc]) -> None:
+def _attach_arcs_to_commits(commits: list[_Commit], arcs: list[_Arc]) -> None:
     """Mark each commit with the arc(s) that reference it.
 
-    Stories reference commits by short or partial SHA in backticks. We match by
-    prefix so 8-char and 7-char references both connect.
+    Stories reference commits by short or partial SHA in backticks. Match by
+    prefix so 7-char and 8-char references both connect.
     """
     by_sha = {c.sha: c for c in commits}
     by_short = {c.sha[:8]: c for c in commits}
@@ -213,17 +195,12 @@ def attach_arcs_to_commits(commits: list[Commit], arcs: list[Arc]) -> None:
                 commit.arcs.append(arc.slug)
 
 
-def load_todos(repo_path: Path, files: list[str]) -> list[Todo]:
-    """Run extract_todos against the repo for the listed files.
-
-    Real TODOs from the live HEAD checkout. Files without TODOs simply produce
-    no rows — the absence is itself the signal.
-    """
-    todos: list[Todo] = []
+def _load_todos(repo_path: Path, files: list[str]) -> list[_Todo]:
+    todos: list[_Todo] = []
     for f in files:
         for t in extract_todos(repo_path, f):
             todos.append(
-                Todo(
+                _Todo(
                     file_path=f,
                     kind=t.kind,
                     line_number=t.line_number,
@@ -235,16 +212,15 @@ def load_todos(repo_path: Path, files: list[str]) -> list[Todo]:
                     age_days=t.age_days,
                 )
             )
-    # Sort by introduced_at ascending so visual bars line up chronologically.
     todos.sort(key=lambda t: t.introduced_at)
     return todos
 
 
-def build_swimlane(commits: list[Commit]) -> dict:
-    """Compute aggregate swimlane data (one row per author, time on X, marks per commit).
+def _build_swimlane(commits: list[_Commit]) -> dict:
+    """One row per author, time on X, marks per commit.
 
     Author email is sticky — same person can show two different display names
-    over time. We group by email but display the most recent name.
+    over time. Group by email but display the most recent name.
     """
     by_email: dict[str, dict] = defaultdict(
         lambda: {"author": "", "email": "", "commits": []}
@@ -252,7 +228,7 @@ def build_swimlane(commits: list[Commit]) -> dict:
     for c in commits:
         bucket = by_email[c.author_email]
         bucket["email"] = c.author_email
-        bucket["author"] = c.author  # last name wins; commits are time-sorted
+        bucket["author"] = c.author
         bucket["commits"].append(
             {
                 "sha": c.sha,
@@ -277,7 +253,6 @@ def build_swimlane(commits: list[Commit]) -> dict:
                 "commits": bucket["commits"],
             }
         )
-    # Sort lanes by first-commit ascending — earliest contributor on top.
     lanes.sort(key=lambda lane: lane["first_commit"])
     return {
         "lane_count": len(lanes),
@@ -287,22 +262,20 @@ def build_swimlane(commits: list[Commit]) -> dict:
     }
 
 
-def build_timeline(commits: list[Commit]) -> dict:
-    """Build dual-axis timeline metadata.
+def _build_timeline(commits: list[_Commit]) -> dict:
+    """Dual-axis timeline metadata: full lifespan + active windows.
 
     Two ranges:
-      - `full_span`: project lifespan (cache min → cache max). The thin reference
-        strip at the top of each atom in the viz stacks shows this.
-      - `active_windows`: contiguous clusters of commits — gaps larger than
-        N months collapse into separate windows. The visualized axis shows
-        only the union of these windows, but with explicit "gap" segments
-        between them so the dormancy is still visible structurally.
+      - ``full_span``: project lifespan (cache min → cache max). The thin
+        reference strip at the top of each atom shows this.
+      - ``active_windows``: contiguous commit clusters; gaps larger than
+        ``_TIMELINE_GAP_THRESHOLD_DAYS`` collapse into separate windows. The
+        visualized axis shows only the union of these windows with explicit
+        "gap" segments between them so dormancy stays structurally visible.
 
-    Why this matters: comictagger spans 2013-02 → 2022-11 with two big gaps
-    (Feb 2013 → Feb 2015, Feb 2015 → Apr 2022). A naive time axis renders 99%
-    empty space. A pure-active-window axis hides the dormancy. The dual-axis
-    approach is honest about both: full lifespan visible as a strip up top,
-    active clusters drawn at usable width below, with gap markers between.
+    Why: comictagger spans 2013-02 → 2022-11 with two big gaps. A naive time
+    axis renders 99% empty space. A pure-active-window axis hides the
+    dormancy. The dual-axis approach is honest about both.
     """
     if not commits:
         return {
@@ -317,10 +290,6 @@ def build_timeline(commits: list[Commit]) -> dict:
     full_min = timestamps[0]
     full_max = timestamps[-1]
 
-    # Cluster commits into windows. A gap of >= 365 days breaks a window —
-    # short of that, the visualization just shows blank space inside the window.
-    GAP_THRESHOLD_DAYS = 365
-
     def _parse(ts: str) -> datetime:
         return datetime.fromisoformat(ts)
 
@@ -333,7 +302,7 @@ def build_timeline(commits: list[Commit]) -> dict:
         prev = _parse(timestamps[i - 1])
         cur = _parse(timestamps[i])
         delta_days = (cur - prev).days
-        if delta_days >= GAP_THRESHOLD_DAYS:
+        if delta_days >= _TIMELINE_GAP_THRESHOLD_DAYS:
             windows.append(
                 {"start": cur_start, "end": cur_end, "commit_count": cur_count}
             )
@@ -365,15 +334,15 @@ def build_timeline(commits: list[Commit]) -> dict:
     }
 
 
-def build_per_file_lifespans(
-    cache_db: Path, files: list[str], commits: list[Commit]
+def _build_per_file_lifespans(
+    cache_db: Path, files: list[str], commits: list[_Commit]
 ) -> list[dict]:
     """Per-file first/last commit + commit count.
 
-    Used to detect `git log --follow` rename truncation: a file with a single
-    commit on a date >2y before any other surviving evidence is almost certainly
-    a rename boundary where pre-rename history dropped off. Surfaces in the UI
-    as a "history truncated at rename" indicator rather than papering over it.
+    Detects ``git log --follow`` rename truncation: a file with one commit on a
+    date > 1 year before any other surviving evidence is almost certainly a
+    rename boundary where pre-rename history dropped off. The renderer surfaces
+    this as a "history truncated at rename" indicator rather than papering over.
     """
     if not cache_db.exists():
         return []
@@ -395,7 +364,7 @@ def build_per_file_lifespans(
             others = [
                 datetime.fromisoformat(t) for t in all_firsts if t != r["first_ts"]
             ]
-            if others and (min(others) - first).days > 365:
+            if others and (min(others) - first).days > _TIMELINE_GAP_THRESHOLD_DAYS:
                 likely_truncated = True
         out.append(
             {
@@ -410,13 +379,12 @@ def build_per_file_lifespans(
     return out
 
 
-def build_arc_band(arcs: list[Arc], commits: list[Commit]) -> dict:
-    """Build per-arc SC ranking band data.
+def _build_arc_band(arcs: list[_Arc], commits: list[_Commit]) -> dict:
+    """Per-arc commit ranking.
 
-    For each arc, list the commits attached to it in chronological order, with
-    the decisive ones (those explicitly referenced in the arc body) marked.
-    Currently every arc-attached commit IS a decisive one — the story only
-    namechecks the load-bearing SHAs. We keep the field explicit so a future
+    For each arc, list the commits attached to it chronologically. Decisive
+    ones (explicitly referenced in the arc body) are marked. Currently every
+    arc-attached commit is decisive; the field stays explicit so a future
     SC-scoring pass can demote non-decisive supporting commits.
     """
     by_sha = {c.sha: c for c in commits}
@@ -428,8 +396,8 @@ def build_arc_band(arcs: list[Arc], commits: list[Commit]) -> dict:
         for ref in arc.commit_shas:
             commit = by_sha.get(ref) or by_short.get(ref[:8]) or by_seven.get(ref[:7])
             if commit is None:
-                # The arc references a SHA we don't have features for — that's
-                # a real gap in the cache. Mark it explicitly rather than drop.
+                # Arc references a SHA we don't have features for — real cache
+                # gap. Mark explicitly rather than drop.
                 arc_commits.append(
                     {
                         "sha": ref,
@@ -453,7 +421,6 @@ def build_arc_band(arcs: list[Arc], commits: list[Commit]) -> dict:
                     "missing": False,
                 }
             )
-        # Sort by timestamp where we have it; nulls last.
         arc_commits.sort(key=lambda c: c["timestamp"] or "9999")
         bands.append(
             {
@@ -466,21 +433,17 @@ def build_arc_band(arcs: list[Arc], commits: list[Commit]) -> dict:
                 "commit_count": len(arc_commits),
             }
         )
-    return {
-        "arc_count": len(bands),
-        "arcs": bands,
-    }
+    return {"arc_count": len(bands), "arcs": bands}
 
 
-def discover_stories(repo_path: Path) -> list[Path]:
-    """Return all story markdowns living under .antiquarian/stories/."""
+def _discover_stories(repo_path: Path) -> list[Path]:
     stories_dir = repo_path / ".antiquarian" / "stories"
     if not stories_dir.exists():
         return []
     return sorted(stories_dir.glob("*.md"))
 
 
-def discover_files_in_cache(cache_db: Path) -> list[str]:
+def _discover_files_in_cache(cache_db: Path) -> list[str]:
     if not cache_db.exists():
         return []
     conn = sqlite3.connect(str(cache_db))
@@ -491,105 +454,84 @@ def discover_files_in_cache(cache_db: Path) -> list[str]:
     return sorted(r[0] for r in rows)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--project", required=True, help="Project name (used for output dir)."
+def _pull_survey_excerpt(repo_path: Path) -> str | None:
+    """First arc paragraph from the most recent survey's Cross-file arcs section.
+
+    The renderer uses this as a pull-quote in the broadsheet header. We target
+    the cross-file arcs specifically because that's the most narratively
+    interesting prose in any survey output — an arc paragraph distills the
+    "this is what happened" beat across multiple files.
+
+    Returns None if there's no surveys/ dir, no survey file, or the regex
+    doesn't match (the survey came back in a different shape). Truncates at
+    ~480 chars at the nearest word boundary so the renderer doesn't have to
+    worry about pull-quote overflow.
+    """
+    surveys_dir = repo_path / ".antiquarian" / "surveys"
+    if not surveys_dir.exists():
+        return None
+    survey_files = sorted(surveys_dir.glob("*.md"))
+    if not survey_files:
+        return None
+    text = survey_files[-1].read_text(encoding="utf-8", errors="replace")
+    m = re.search(
+        r"##\s+Cross-file arcs\s*\n+(\*\*Arc\s+\w+\s*[—-][^\n]+\.\*\*[^\n]+)",
+        text,
     )
-    ap.add_argument(
-        "--repo", required=True, type=Path, help="Path to the project's repo."
-    )
-    ap.add_argument(
-        "--output-root",
-        type=Path,
-        default=Path(__file__).resolve().parent.parent / "output",
-        help="Output directory root (default: viz-playground/output/).",
-    )
-    args = ap.parse_args()
+    if not m:
+        return None
+    body = m.group(1)
+    if len(body) > 480:
+        body = body[:475].rsplit(" ", 1)[0] + "…"
+    return body
 
-    repo_path: Path = args.repo.resolve()
-    cache_db = repo_path / ".antiquarian" / "cache.db"
-    project_out = args.output_root / args.project / "data"
-    project_out.mkdir(parents=True, exist_ok=True)
 
-    cached_files = discover_files_in_cache(cache_db)
-    stories = discover_stories(repo_path)
+def extract_render_data(repo_path: Path) -> dict:
+    """Pull the cache.db + stories into a single dict ready for rendering.
 
-    print(f"[extract] project={args.project} repo={repo_path}", file=sys.stderr)
-    print(f"[extract] cache.db files: {len(cached_files)}", file=sys.stderr)
-    print(f"[extract] stories: {len(stories)}", file=sys.stderr)
+    Returns a dict with the atoms the broadsheet renderer consumes:
 
-    commits = load_commits(cache_db, file_filter=cached_files or None)
-    arcs: list[Arc] = []
+    - ``project``: repo directory name (used for the masthead)
+    - ``repo_path``: absolute path, for the renderer's pull-quote lookup
+    - ``generated_at``: ISO-8601 timestamp
+    - ``files``: sorted list of file paths in the cache
+    - ``commits``: deduplicated, chronologically sorted commit list
+    - ``todos``: TODO/FIXME annotations from the live HEAD
+    - ``arcs``: Major-arc paragraphs parsed out of per-file stories
+    - ``swimlane``: per-author lanes with commits attached
+    - ``arc_band``: per-arc commit groupings
+    - ``timeline``: dual-axis (full_span + active_windows + gaps)
+    - ``file_lifespans``: per-file first/last/count + rename-truncation flag
+    - ``survey_excerpt``: pull-quote from the most recent survey, if any
+
+    All fields are JSON-serializable; the dict can be persisted as JSON for
+    caching or inspection.
+    """
+    repo_path = repo_path.resolve()
+    cache_db = cache_path_for_repo(repo_path)
+
+    files = _discover_files_in_cache(cache_db)
+    stories = _discover_stories(repo_path)
+
+    commits = _load_commits(cache_db, file_filter=files or None)
+    arcs: list[_Arc] = []
     for story_path in stories:
-        arcs.extend(parse_arcs(story_path))
-    attach_arcs_to_commits(commits, arcs)
-    todos = load_todos(repo_path, cached_files)
+        arcs.extend(_parse_arcs(story_path))
+    _attach_arcs_to_commits(commits, arcs)
+    todos = _load_todos(repo_path, files)
 
-    swimlane = build_swimlane(commits)
-    arc_band = build_arc_band(arcs, commits)
-    timeline = build_timeline(commits)
-    file_lifespans = build_per_file_lifespans(cache_db, cached_files, commits)
-
-    # Emit each atom's data as a separate JSON file so the stacks can load only
-    # what they need.
-    (project_out / "commits.json").write_text(
-        json.dumps([asdict(c) for c in commits], indent=2), encoding="utf-8"
-    )
-    (project_out / "todos.json").write_text(
-        json.dumps([asdict(t) for t in todos], indent=2), encoding="utf-8"
-    )
-    (project_out / "arcs.json").write_text(
-        json.dumps([asdict(a) for a in arcs], indent=2), encoding="utf-8"
-    )
-    (project_out / "swimlane.json").write_text(
-        json.dumps(swimlane, indent=2), encoding="utf-8"
-    )
-    (project_out / "arc_band.json").write_text(
-        json.dumps(arc_band, indent=2), encoding="utf-8"
-    )
-    (project_out / "timeline.json").write_text(
-        json.dumps(timeline, indent=2), encoding="utf-8"
-    )
-    (project_out / "file_lifespans.json").write_text(
-        json.dumps(file_lifespans, indent=2), encoding="utf-8"
-    )
-
-    manifest = {
-        "project": args.project,
+    return {
+        "project": repo_path.name,
         "repo_path": str(repo_path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "files": cached_files,
+        "files": files,
         "stories": [s.name for s in stories],
-        "atoms": {
-            "swimlane": {
-                "data": "swimlane.json",
-                "lane_count": swimlane["lane_count"],
-                "commit_count": len(commits),
-            },
-            "todo_strip": {
-                "data": "todos.json",
-                "todo_count": len(todos),
-            },
-            "arc_band": {
-                "data": "arc_band.json",
-                "arc_count": arc_band["arc_count"],
-            },
-        },
-        "timeline": timeline,
-        "file_lifespans": file_lifespans,
+        "commits": [asdict(c) for c in commits],
+        "todos": [asdict(t) for t in todos],
+        "arcs": [asdict(a) for a in arcs],
+        "swimlane": _build_swimlane(commits),
+        "arc_band": _build_arc_band(arcs, commits),
+        "timeline": _build_timeline(commits),
+        "file_lifespans": _build_per_file_lifespans(cache_db, files, commits),
+        "survey_excerpt": _pull_survey_excerpt(repo_path),
     }
-    (project_out / "manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
-    )
-
-    print(
-        f"[extract] wrote {len(commits)} commits, {len(todos)} todos, {len(arcs)} arcs "
-        f"to {project_out}",
-        file=sys.stderr,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

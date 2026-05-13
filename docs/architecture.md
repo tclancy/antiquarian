@@ -13,21 +13,22 @@
 
 ```
 antiquarian/
-├── cli.py          # Typer entry points: story, survey, files
+├── cli.py          # Typer entry points: story, survey, files, render
 ├── pipeline.py     # Orchestration (generate_file_story, generate_codebase_survey)
 ├── mining.py       # PyDriller — uses `git log --follow` (NO --reverse, see #13)
 ├── prs.py          # gh CLI integration for PR enrichment
-├── narrative.py    # `claude -p` subprocess + sanitizer (_sanitize_for_claude)
+├── narrative.py    # `claude -p` subprocess + size-aware compressor (#36)
 ├── selection.py    # File selection (allow/block, --include/--exclude/--only)
 ├── cache.py        # SQLite store, schema-migrated
-├── profile.py      # build_author_baselines; regions to come (#52)
+├── profile.py      # build_author_baselines, build_regions, build_co_changes
+├── render_data.py  # Pull cache.db + stories into a render-ready dict
+├── render.py       # Antiquarian broadsheet — hand-rolled SVG
 ├── todos.py        # TODO/FIXME extraction via git blame
-├── models.py       # CommitFeatures, TodoAnnotation, RepoProfile, AuthorBaseline, …
+├── models.py       # CommitFeatures, AuthorBaseline, RegionDefinition, CoChange, …
 └── backends.py     # Git backend abstraction
 
 verification/       # Z3 specs — 21 invariants proven
 tests/              # pytest + Hypothesis (profiles: dev=30, ci=100, fuzz=1k, nightly=10k)
-viz-playground/     # Visualization spike — hand-rolled SVG won; #40 promotes it
 ```
 
 ## Survey output structure
@@ -101,6 +102,16 @@ Two known load-bearing facts about the pipeline:
 
 ## Visual output
 
-Three viz stacks were prototyped in `viz-playground/` (Observable Framework, Vega-Lite, hand-rolled SVG). The **hand-rolled SVG** won — it owns the visual vocabulary end-to-end: antiquarian broadsheet idiom, hatched lossy regions, oxide-red printer's-stamp accent, no library defaults, no CDN fonts. Promotion from playground to package is tracked in #40.
+Three viz stacks were prototyped in a now-deleted `viz-playground/` directory (Observable Framework, Vega-Lite, hand-rolled SVG). The **hand-rolled SVG** won the feel-test and was promoted in #40 to `antiquarian/render.py` + `antiquarian/render_data.py`. The other two stacks are gone.
 
-The broadsheet vibe is print-first by design; interactivity can come later if at all.
+The visual commitments — antiquarian broadsheet idiom, hatched lossy regions, oxide-red printer's-stamp accent, no library defaults, no CDN fonts — are locked in [`docs/visual-vocabulary.md`](visual-vocabulary.md). Update that doc *before* the renderer when changing a committed atom.
+
+The broadsheet vibe is print-first by design; interactivity belongs in a different surface (e.g., an Obsidian plugin) if at all.
+
+### How to render
+
+```bash
+uv run antiquarian render --repo /path/to/repo
+```
+
+Reads what `story` / `survey` already produced under `.antiquarian/` (cache.db + stories/) and writes a self-contained HTML page to `.antiquarian/render/index.html`. Does not call `claude -p` — pure transformation over data on disk.

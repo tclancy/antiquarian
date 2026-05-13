@@ -1,34 +1,34 @@
-"""Hand-rolled SVG variant — the antiquarian broadsheet.
+"""Antiquarian broadsheet — hand-rolled SVG renderer (the canonical visual output).
 
-Tests the floor for craft: if hand-rolled atoms feel more intentional than
-library output, that tells us the library is overhead. Pure-Python SVG strings,
-zero JS, project-controlled visual vocabulary throughout.
+Promoted from ``viz-playground/hand-svg/build.py`` per issue #40 after the
+playground feel-test made it clear this stack owned the project's visual
+vocabulary end-to-end. The other two stacks (Observable, Vega-Lite) have
+been deleted; this is what ``antiquarian render`` produces.
 
 Visual identity: **antiquarian broadsheet** — large serif masthead,
 small-caps dateline, drop caps, double-rule borders, woodblock-style
 hatched textures for lossy regions, italic side-note glyphs in the margins.
-This is the stack where the project's own visual vocabulary lives end-to-end:
-no library defaults, no CDN fonts (we lazy-load EB Garamond but degrade
-gracefully), no chart-grammar opinions. If the project ever ships a
-"canonical antiquarian story" output, this is what it should look like.
+Project-controlled visual vocabulary: no library defaults, no CDN fonts
+(EB Garamond is preferred, but the page degrades gracefully without it),
+no chart-grammar opinions.
 
-Tom's PR #11 feedback addressed here:
-  * The lossy region is first-class — every chart has gaps filled with the
-    hatched pattern with explicit "Xy gap" labels.
-  * "Diff size (LoC)" is in the swimlane legend.
-  * The dual-axis timeline strip (full project lifespan + active windows
-    only) sits in the masthead AND atop each atom.
-  * Multiple files (comictagger has 6) — multi-file label prefix and
-    rename-truncated indicator wired in.
+The committed visual atoms (see ``docs/visual-vocabulary.md``):
+  * The lossy region is first-class — gaps are filled with the diagonal
+    hatched pattern and labeled with their duration ("Xy gap").
+  * Diff size (LoC) is in the swimlane legend.
+  * Dual-axis timeline strip (full project lifespan + active windows only)
+    sits in the masthead AND atop each atom.
+  * Multi-file label prefix and rename-truncated indicator on swimlane bars.
+
+Library entry point: ``render_broadsheet(data: dict) -> str`` returns a
+complete self-contained HTML string. ``data`` is whatever
+``antiquarian.render_data.extract_render_data`` produced.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
 from datetime import datetime
-from pathlib import Path
 
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
@@ -936,71 +936,40 @@ def render_page(
 """
 
 
-def _pull_survey_excerpt(repo_path: Path | None) -> str | None:
-    """Grab one paragraph from a survey synthesis (if one exists) to display
-    as a pull-quote in the broadsheet. Best-effort — returns None if the
-    file shape doesn't match our regex.
+def render_broadsheet(data: dict) -> str:
+    """Render the broadsheet HTML page from extracted render data.
+
+    ``data`` is the dict returned by
+    ``antiquarian.render_data.extract_render_data`` — a JSON-shaped bundle
+    of commits, todos, arcs, swimlane lanes, arc-band rankings, timeline
+    metadata, file lifespans, and an optional survey excerpt.
+
+    Returns a self-contained HTML string with inline SVG. The page degrades
+    gracefully when EB Garamond fails to load (the only external resource).
     """
-    if not repo_path:
-        return None
-    surveys_dir = repo_path / ".antiquarian" / "surveys"
-    if not surveys_dir.exists():
-        return None
-    surveys = sorted(surveys_dir.glob("*.md"))
-    if not surveys:
-        return None
-    text = surveys[-1].read_text(encoding="utf-8", errors="replace")
-    import re
-
-    m = re.search(
-        r"##\s+Cross-file arcs\s*\n+(\*\*Arc\s+\w+\s*[—-][^\n]+\.\*\*[^\n]+)",
-        text,
-    )
-    if not m:
-        return None
-    body = m.group(1)
-    if len(body) > 480:
-        body = body[:475].rsplit(" ", 1)[0] + "…"
-    return _xml_escape(body)
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--project", required=True)
-    ap.add_argument("--data-dir", required=True, type=Path)
-    ap.add_argument("--output-dir", required=True, type=Path)
-    ap.add_argument(
-        "--repo",
-        type=Path,
-        default=None,
-        help="Project repo path — used to pull a survey excerpt for the pull-quote.",
-    )
-    args = ap.parse_args()
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest = json.loads((args.data_dir / "manifest.json").read_text())
-    todos = json.loads((args.data_dir / "todos.json").read_text())
-    swimlane = json.loads((args.data_dir / "swimlane.json").read_text())
-    arc_band = json.loads((args.data_dir / "arc_band.json").read_text())
-    timeline = json.loads((args.data_dir / "timeline.json").read_text())
-    file_lifespans = json.loads((args.data_dir / "file_lifespans.json").read_text())
-
-    masthead = render_timeline_masthead(timeline)
+    timeline = data["timeline"]
+    masthead_svg = render_timeline_masthead(timeline)
     atoms = {
-        "todo_strip": render_todo_strip(todos, timeline),
-        "swimlane": render_swimlane(swimlane, timeline, file_lifespans),
-        "arc_band": render_arc_band(arc_band, timeline),
+        "todo_strip": render_todo_strip(data["todos"], timeline),
+        "swimlane": render_swimlane(data["swimlane"], timeline, data["file_lifespans"]),
+        "arc_band": render_arc_band(data["arc_band"], timeline),
     }
-    survey_excerpt = _pull_survey_excerpt(args.repo)
+    raw_excerpt = data.get("survey_excerpt")
+    survey_excerpt = _xml_escape(raw_excerpt) if raw_excerpt else None
 
-    page = render_page(
-        args.project, manifest, atoms, timeline, masthead, survey_excerpt
+    # Stub manifest dict for render_page — kept for compatibility with the
+    # pre-promotion call shape, since render_page still reads files/stories/
+    # generated_at off the dict.
+    manifest = {
+        "files": data.get("files", []),
+        "stories": data.get("stories", []),
+        "generated_at": data.get("generated_at", ""),
+    }
+    return render_page(
+        data["project"],
+        manifest,
+        atoms,
+        timeline,
+        masthead_svg,
+        survey_excerpt,
     )
-    (args.output_dir / "index.html").write_text(page, encoding="utf-8")
-    print(f"[hand-svg] wrote {args.output_dir / 'index.html'}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

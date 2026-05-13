@@ -8,7 +8,7 @@ The point isn't another git-history visualizer. The point is the **why**: why wa
 
 ## Status
 
-Early. The MVP `antiquarian story <file>` and `antiquarian survey` commands are shipping per-file and multi-file narratives that pass eyeball-tests on three repos (`itguy`, `BetterBlue`, `comictagger`). The multi-pass codebase examination ("Parliament of Owls") and the hand-rolled SVG render-out are roadmap.
+Early. The MVP `antiquarian story <file>`, `antiquarian survey`, and `antiquarian render` commands are shipping per-file and multi-file narratives plus a hand-rolled SVG broadsheet, passing eyeball-tests on three repos (`itguy`, `BetterBlue`, `comictagger`). The multi-pass codebase examination ("Parliament of Owls") is in progress.
 
 Local-first by design — narrative synthesis goes through `claude -p` rather than burning API credits while the idea is still proving itself out.
 
@@ -21,6 +21,7 @@ uv run pre-commit install --hook-type pre-push
 
 uv run antiquarian story path/to/some/file.py
 uv run antiquarian survey
+uv run antiquarian render
 uv run pytest
 ```
 
@@ -29,8 +30,9 @@ uv run pytest
 | File | What it covers |
 |------|----------------|
 | [`docs/ethos.md`](docs/ethos.md) | Telephone-in-reverse, every-layer-is-approximation, voice rules — the lens every decision passes through. |
-| [`docs/architecture.md`](docs/architecture.md) | File map, multi-pass design (Parliament of Owls), survey output structure. |
+| [`docs/architecture.md`](docs/architecture.md) | File map, multi-pass design (Parliament of Owls), survey output structure, render pipeline. |
 | [`docs/prior-art.md`](docs/prior-art.md) | Research findings on Mining Software Repositories, local LLM viability, and the Repowise evaluation that landed us on "build from scratch, informed by Repowise." |
+| [`docs/visual-vocabulary.md`](docs/visual-vocabulary.md) | The commitments baked into the broadsheet renderer — lossy hatching, dual-axis timeline, palette, typography. |
 | [`docs/notes.md`](docs/notes.md) | Warnings about AI-written corpora, future-idea backlog, candidate signals. |
 | [`CLAUDE.md`](CLAUDE.md) | Agent-facing guide. Conventions, current Dispatch-bot status, what not to do. |
 
