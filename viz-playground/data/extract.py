@@ -392,7 +392,9 @@ def build_per_file_lifespans(
         first = datetime.fromisoformat(r["first_ts"])
         likely_truncated = False
         if r["n"] == 1 and len(all_firsts) > 1:
-            others = [datetime.fromisoformat(t) for t in all_firsts if t != r["first_ts"]]
+            others = [
+                datetime.fromisoformat(t) for t in all_firsts if t != r["first_ts"]
+            ]
             if others and (min(others) - first).days > 365:
                 likely_truncated = True
         out.append(
