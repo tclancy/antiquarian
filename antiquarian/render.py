@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from pathlib import Path
+from string import Template
 
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
@@ -1023,119 +1025,32 @@ def render_broadsheet(data: dict, *, stories_with_pages: set[str] | None = None)
     )
 
 
-# Story-page CSS — narrower max-width than the broadsheet, narrative-text
-# focused. Shares the palette and serif with the broadsheet so back-and-forth
-# navigation feels like one publication, not two surfaces stitched together.
-_STORY_PAGE_CSS = f"""
-:root {{
-  --ink: {PALETTE["ink"]};
-  --ink-dim: {PALETTE["ink_dim"]};
-  --rule: {PALETTE["rule"]};
-  --paper: {PALETTE["paper"]};
-  --paper-alt: {PALETTE["paper_alt"]};
-  --accent: {PALETTE["accent"]};
-  --serif: "EB Garamond", "Iowan Old Style", Palatino, Georgia, serif;
-}}
-* {{ box-sizing: border-box; }}
-html, body {{
-  background: var(--paper);
-  color: var(--ink);
-  margin: 0;
-  padding: 0;
-  font-family: var(--serif);
-  line-height: 1.6;
-}}
-.story {{
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 2rem 2.5rem 4rem;
-}}
-.dateline {{
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.4em;
-  font-weight: 500;
-  color: var(--ink-dim);
-  border-bottom: 1px solid var(--ink);
-  padding-bottom: 0.5rem;
-  margin-bottom: 0.5rem;
-}}
-.dateline a {{
-  color: var(--accent);
-  text-decoration: none;
-  border-bottom: 1px dotted var(--accent);
-}}
-.dateline a:hover {{ border-bottom-style: solid; }}
-h1.story-title {{
-  font-size: 2.2rem;
-  font-weight: 700;
-  letter-spacing: -0.005em;
-  line-height: 1.1;
-  margin: 0.5rem 0 0.5rem;
-}}
-h1.story-title code {{
-  font-family: ui-monospace, "SF Mono", Monaco, monospace;
-  font-size: 0.7em;
-  color: var(--accent);
-  background: var(--paper-alt);
-  padding: 0.1em 0.35em;
-  border-radius: 2px;
-}}
-.story-sub {{
-  font-style: italic;
-  color: var(--ink-dim);
-  margin: 0 0 1.5rem;
-}}
-.double-rule {{
-  border-top: 2px solid var(--ink);
-  border-bottom: 0.5px solid var(--ink);
-  margin: 1rem 0 1.5rem;
-  padding-bottom: 2px;
-}}
-.story-body h2 {{
-  font-size: 1.4rem;
-  font-weight: 600;
-  font-variant: small-caps;
-  letter-spacing: 0.1em;
-  color: var(--ink);
-  margin: 2.5rem 0 1rem;
-  padding-bottom: 0.3rem;
-  border-bottom: 1px solid var(--rule);
-}}
-.story-body h3 {{
-  font-size: 1.1rem;
-  font-weight: 600;
-  margin: 1.5rem 0 0.5rem;
-}}
-.story-body p {{
-  margin: 0 0 1rem;
-}}
-.story-body p:first-of-type::first-letter {{
-  font-size: 3.5rem;
-  font-weight: 700;
-  float: left;
-  line-height: 0.85;
-  padding: 0.3rem 0.5rem 0 0;
-  color: var(--accent);
-}}
-.story-body code {{
-  font-family: ui-monospace, "SF Mono", Monaco, monospace;
-  font-size: 0.85em;
-  color: var(--accent);
-}}
-.story-body strong {{ font-weight: 600; }}
-.story-body em {{ font-style: italic; }}
-.story-body ul, .story-body ol {{ margin: 0 0 1rem 1.5rem; padding: 0; }}
-.story-body li {{ margin-bottom: 0.3rem; }}
-.colophon {{
-  margin-top: 3rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--ink);
-  font-style: italic;
-  font-size: 0.85rem;
-  color: var(--ink-dim);
-}}
-"""
+# Story-page templates — kept as real .css/.html files under templates/ so
+# IDEs give them syntax highlighting and diffs are scoped to the template
+# rather than buried inside a Python string literal. Substitution uses
+# string.Template ($name) rather than .format() so CSS and HTML braces stay
+# literal.
+#
+# Both are read and prepared **once at module import time** rather than per
+# render call: _STORY_PAGE_CSS is the fully-palette-substituted string, and
+# _STORY_PAGE_HTML is a compiled Template object. Rendering 100 story pages
+# in a single survey reads the disk twice total, not 200 times.
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+_STORY_PAGE_CSS = Template(
+    (_TEMPLATES_DIR / "story_page.css").read_text(encoding="utf-8")
+).substitute(
+    ink=PALETTE["ink"],
+    ink_dim=PALETTE["ink_dim"],
+    rule=PALETTE["rule"],
+    paper=PALETTE["paper"],
+    paper_alt=PALETTE["paper_alt"],
+    accent=PALETTE["accent"],
+)
+
+_STORY_PAGE_HTML = Template(
+    (_TEMPLATES_DIR / "story_page.html").read_text(encoding="utf-8")
+)
 
 
 def render_story_page(
@@ -1155,6 +1070,10 @@ def render_story_page(
     about, but the conversion still escapes special characters in plain
     text. Removes the antiquarian cache-digest comment that ``pipeline.py``
     prepends to persisted stories before rendering.
+
+    The CSS and HTML scaffolding live as separate files under
+    ``antiquarian/templates/`` so editing them gets IDE syntax highlighting
+    and produces clean diffs.
     """
     # Strip the digest marker line if present — it's an HTML comment used
     # internally by the cache, not narrative content.
@@ -1168,30 +1087,12 @@ def render_story_page(
         extensions=["fenced_code", "tables"],
         output_format="html",
     )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>{_xml_escape(project)} — {_xml_escape(file_path)}</title>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
-  <style>{_STORY_PAGE_CSS}</style>
-</head>
-<body>
-  <article class="story">
-    <div class="dateline"><a href="../index.html">← back to broadsheet</a> · {_xml_escape(project)} field notes</div>
-    <h1 class="story-title"><code>{_xml_escape(file_path)}</code></h1>
-    <p class="story-sub">The story of a single file's evolution through git history.</p>
-    <div class="double-rule"></div>
-    <div class="story-body">
-{body_html}
-    </div>
-    <div class="colophon">
-      Reconstructed from surviving artifacts by Antiquarian. Where the
-      channel went dark, the narrative says so plainly rather than
-      confabulating around the gap.
-    </div>
-  </article>
-</body>
-</html>
-"""
+    project_escaped = _xml_escape(project)
+    file_path_escaped = _xml_escape(file_path)
+    return _STORY_PAGE_HTML.substitute(
+        title=f"{project_escaped} — {file_path_escaped}",
+        css=_STORY_PAGE_CSS,
+        project=project_escaped,
+        file_path=file_path_escaped,
+        body_html=body_html,
+    )

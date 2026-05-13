@@ -1,0 +1,118 @@
+/* Story-page styles — narrower max-width than the broadsheet, narrative-text
+ * focused. Shares the palette and serif with the broadsheet so back-and-forth
+ * navigation feels like one publication, not two surfaces stitched together.
+ *
+ * Loaded by antiquarian/render.py. The $$-prefixed names below are
+ * string.Template placeholders substituted at render time with values from
+ * the PALETTE dict; CSS variable definitions on :root then expose them to
+ * the rest of the file as --ink, --paper, etc. ($$ in a comment is
+ * string.Template's way to escape a literal dollar sign.)
+ */
+:root {
+  --ink: $ink;
+  --ink-dim: $ink_dim;
+  --rule: $rule;
+  --paper: $paper;
+  --paper-alt: $paper_alt;
+  --accent: $accent;
+  --serif: "EB Garamond", "Iowan Old Style", Palatino, Georgia, serif;
+}
+* { box-sizing: border-box; }
+html, body {
+  background: var(--paper);
+  color: var(--ink);
+  margin: 0;
+  padding: 0;
+  font-family: var(--serif);
+  line-height: 1.6;
+}
+.story {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2rem 2.5rem 4rem;
+}
+.dateline {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.4em;
+  font-weight: 500;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--ink);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.dateline a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+.dateline a:hover { border-bottom-style: solid; }
+h1.story-title {
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  line-height: 1.1;
+  margin: 0.5rem 0 0.5rem;
+}
+h1.story-title code {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.7em;
+  color: var(--accent);
+  background: var(--paper-alt);
+  padding: 0.1em 0.35em;
+  border-radius: 2px;
+}
+.story-sub {
+  font-style: italic;
+  color: var(--ink-dim);
+  margin: 0 0 1.5rem;
+}
+.double-rule {
+  border-top: 2px solid var(--ink);
+  border-bottom: 0.5px solid var(--ink);
+  margin: 1rem 0 1.5rem;
+  padding-bottom: 2px;
+}
+.story-body h2 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  font-variant: small-caps;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  margin: 2.5rem 0 1rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--rule);
+}
+.story-body h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+}
+.story-body p {
+  margin: 0 0 1rem;
+}
+.story-body p:first-of-type::first-letter {
+  font-size: 3.5rem;
+  font-weight: 700;
+  float: left;
+  line-height: 0.85;
+  padding: 0.3rem 0.5rem 0 0;
+  color: var(--accent);
+}
+.story-body code {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.85em;
+  color: var(--accent);
+}
+.story-body strong { font-weight: 600; }
+.story-body em { font-style: italic; }
+.story-body ul, .story-body ol { margin: 0 0 1rem 1.5rem; padding: 0; }
+.story-body li { margin-bottom: 0.3rem; }
+.colophon {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--ink);
+  font-style: italic;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
