@@ -73,6 +73,22 @@ class SignificantChange:
 
 
 @dataclass(frozen=True)
+class CoChange:
+    """A pair of files that changed together in one or more commits.
+
+    Pairs are stored in canonical order (``file_a < file_b``) so each
+    unordered pair has exactly one record. ``last_co_changed_at`` is the
+    most recent commit timestamp where this pair appeared together —
+    useful for "is this coupling still active or historical?" queries.
+    """
+
+    file_a: str
+    file_b: str
+    count: int
+    last_co_changed_at: datetime
+
+
+@dataclass(frozen=True)
 class TodoAnnotation:
     kind: Literal["TODO", "FIXME", "XXX", "HACK"]
     line_number: int

@@ -1,14 +1,20 @@
-"""Profilers — build per-author baselines and region definitions from commit features."""
+"""Structural profilers — per-author baselines, region grouping, file co-change."""
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from itertools import combinations
 from math import sqrt
 from statistics import median
 
-from antiquarian.models import AuthorBaseline, CommitFeatures, RegionDefinition
+from antiquarian.models import (
+    AuthorBaseline,
+    CoChange,
+    CommitFeatures,
+    RegionDefinition,
+)
 
 _PATH_TOKEN_RE = re.compile(
     r"[/\\]"  # contains a slash
@@ -226,3 +232,84 @@ def build_author_baselines(
         )
 
     return result
+
+
+# Commits touching this many files or more are almost always vendor bumps,
+# generated-file refreshes, or whole-repo refactors — they pair every file
+# with every other and add O(N²) low-information edges to the co-change
+# graph. The cap is the standard MSR-literature mitigation. Tunable per
+# call when needed (e.g., a survey that genuinely wants to see refactor
+# coupling).
+_MEGA_COMMIT_FILE_THRESHOLD = 50
+
+
+def build_co_changes(
+    commits: Sequence[CommitFeatures],
+    *,
+    max_files_per_commit: int = _MEGA_COMMIT_FILE_THRESHOLD,
+) -> list[CoChange]:
+    """For every pair of files that co-changed, count and most-recent timestamp.
+
+    Pure function — no I/O. Pairs are returned in canonical order
+    (``file_a < file_b`` lexicographically) so each unordered pair has
+    exactly one record. Sorted by ``count`` descending, then by pair
+    alphabetically for determinism.
+
+    Commits touching more than ``max_files_per_commit`` files are skipped
+    — they're typically refactors / vendor bumps that create O(N²)
+    low-information edges. Lower the cap for repos where you want stricter
+    coupling signal; raise it if you genuinely want to see refactor pairs.
+    """
+    if not commits:
+        return []
+
+    pair_count: dict[tuple[str, str], int] = defaultdict(int)
+    pair_last_seen: dict[tuple[str, str], object] = {}
+
+    for c in commits:
+        files = c.files_changed
+        if len(files) < 2 or len(files) > max_files_per_commit:
+            continue
+        # Dedupe within a commit so a file listed twice doesn't pair with itself
+        unique_sorted = sorted(set(files))
+        for a, b in combinations(unique_sorted, 2):
+            key = (a, b)
+            pair_count[key] += 1
+            existing = pair_last_seen.get(key)
+            if existing is None or c.timestamp > existing:
+                pair_last_seen[key] = c.timestamp
+
+    result = [
+        CoChange(
+            file_a=a,
+            file_b=b,
+            count=pair_count[(a, b)],
+            last_co_changed_at=pair_last_seen[(a, b)],  # type: ignore[arg-type]
+        )
+        for (a, b) in pair_count
+    ]
+    result.sort(key=lambda c: (-c.count, c.file_a, c.file_b))
+    return result
+
+
+def related_files(
+    file_path: str,
+    co_changes: Sequence[CoChange],
+    *,
+    top_n: int = 10,
+) -> list[tuple[str, int]]:
+    """Top ``top_n`` files most often co-changed with ``file_path``.
+
+    Returns ``[(other_path, count), ...]`` sorted by count descending.
+    Looks at both sides of each pair since the canonical-order constraint
+    means ``file_path`` may appear as either ``file_a`` or ``file_b``.
+    Returns an empty list if ``file_path`` has no co-change edges.
+    """
+    matches: list[tuple[str, int]] = []
+    for cc in co_changes:
+        if cc.file_a == file_path:
+            matches.append((cc.file_b, cc.count))
+        elif cc.file_b == file_path:
+            matches.append((cc.file_a, cc.count))
+    matches.sort(key=lambda pair: (-pair[1], pair[0]))
+    return matches[:top_n]
