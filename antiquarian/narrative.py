@@ -133,6 +133,31 @@ def _sanitize_for_claude(text: str) -> str:
     return text.strip()
 
 
+# First layer of the #36 size-aware compressor. Commit messages longer than
+# this cap get truncated to first-paragraph plus a "[…N more chars truncated]"
+# tail. The cap is calibrated to "release-notes / squashed-merge body" — the
+# threshold where the marginal byte is almost always lower-signal than the
+# bytes that come before it. The historian's voice rules already treat the
+# first line/paragraph as the most trustworthy part of any commit message;
+# this aligns the prompt with that bias.
+_COMMIT_MESSAGE_TRUNCATE_AT = 500
+
+
+def _compress_message(text: str, max_chars: int = _COMMIT_MESSAGE_TRUNCATE_AT) -> str:
+    """Truncate a commit/PR message to ``max_chars`` with a visible tail.
+
+    Preserves the first paragraph intact when possible. If even the first
+    paragraph exceeds ``max_chars``, hard-truncate at ``max_chars``.
+    """
+    if len(text) <= max_chars:
+        return text
+    truncated_bytes = len(text) - max_chars
+    first_para, sep, _ = text.partition("\n\n")
+    if sep and len(first_para) <= max_chars:
+        return f"{first_para}\n\n[…{truncated_bytes} more chars truncated]"
+    return f"{text[:max_chars]}\n[…{truncated_bytes} more chars truncated]"
+
+
 SYSTEM_PROMPT = """\
 You are Antiquarian, a software historian.
 
@@ -205,15 +230,18 @@ def _format_commit(c: CommitFeatures, index: int) -> str:
     if c.pr_number is not None:
         pr_section = f"\n\n**PR #{c.pr_number}**"
         if c.pr_body:
-            pr_section += f"\n```\n{_sanitize_for_claude(c.pr_body)}\n```"
+            pr_section += (
+                f"\n```\n{_compress_message(_sanitize_for_claude(c.pr_body))}\n```"
+            )
     files_summary = ", ".join(c.files_changed[:6])
     if len(c.files_changed) > 6:
         files_summary += f", ... ({len(c.files_changed)} files total)"
     sha = c.git_sha or c.id
+    message = _compress_message(_sanitize_for_claude(c.message))
     return (
         f"### [{index}] {sha[:8]} — {c.timestamp.date().isoformat()} — {c.author}\n"
         f"+{c.additions}/-{c.deletions} across: {files_summary}\n\n"
-        f"**Message:**\n```\n{_sanitize_for_claude(c.message)}\n```{pr_section}"
+        f"**Message:**\n```\n{message}\n```{pr_section}"
     )
 
 
