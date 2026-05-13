@@ -217,13 +217,17 @@ def generate_codebase_survey(
     log("[survey] building author baselines...")
     db_path = cache_path_for_repo(repo_path)
     all_commits: list[CommitFeatures] = []
+    seen_shas: set[str] = set()
     with open_cache(db_path) as conn:
         for fp in file_paths:
             shas = historical_shas(repo_path, fp)
             for sha in shas:
+                if sha in seen_shas:
+                    continue
                 cached = get_commit(conn, sha, fp)
                 if cached is not None:
                     all_commits.append(cached)
+                    seen_shas.add(sha)
     author_baselines = build_author_baselines(all_commits)
     log(f"[survey] {len(author_baselines)} author baseline(s) computed")
 
