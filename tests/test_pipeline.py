@@ -103,6 +103,147 @@ class TestGenerateFileStory:
         mock_mine.assert_not_called()
 
 
+class TestStoryDiskCache:
+    """Issue #35 — reuse on-disk story when commit set + TODOs unchanged."""
+
+    @patch("antiquarian.pipeline.extract_todos", return_value=iter([]))
+    @patch("antiquarian.pipeline.mine_file_history")
+    @patch("antiquarian.pipeline.historical_shas", return_value=["aaa111"])
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    @patch(
+        "antiquarian.pipeline.synthesize_narrative",
+        return_value="## Origin\nFresh narrative.",
+    )
+    def test_first_run_persists_with_digest_marker(
+        self,
+        mock_synth: MagicMock,
+        mock_gh: MagicMock,
+        mock_shas: MagicMock,
+        mock_mine: MagicMock,
+        mock_todos: MagicMock,
+        tmp_repo: Path,
+    ):
+        mock_mine.return_value = iter([_fake_commit("aaa111")])
+        _, story_path = generate_file_story(tmp_repo, "src/thing.py")
+        content = story_path.read_text(encoding="utf-8")
+        assert content.startswith("<!-- antiquarian-cache-digest: ")
+        assert "## Origin" in content
+        mock_synth.assert_called_once()
+
+    @patch("antiquarian.pipeline.extract_todos", return_value=iter([]))
+    @patch("antiquarian.pipeline.mine_file_history")
+    @patch("antiquarian.pipeline.historical_shas", return_value=["aaa111"])
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    @patch("antiquarian.pipeline.synthesize_narrative")
+    def test_second_run_reuses_cached_story_when_commits_unchanged(
+        self,
+        mock_synth: MagicMock,
+        mock_gh: MagicMock,
+        mock_shas: MagicMock,
+        mock_mine: MagicMock,
+        mock_todos: MagicMock,
+        tmp_repo: Path,
+    ):
+        mock_mine.return_value = iter([_fake_commit("aaa111")])
+        mock_synth.return_value = "## Origin\nNarrative."
+        narrative_1, story_path = generate_file_story(tmp_repo, "src/thing.py")
+        assert "Narrative." in narrative_1
+        assert mock_synth.call_count == 1
+
+        # Second run — same commit set. Should reuse.
+        mock_mine.return_value = iter([])
+        mock_synth.return_value = "## Origin\nDIFFERENT (should not appear)."
+        with patch(
+            "antiquarian.pipeline.get_commit", return_value=_fake_commit("aaa111")
+        ):
+            narrative_2, _ = generate_file_story(tmp_repo, "src/thing.py")
+        assert "Narrative." in narrative_2
+        assert "DIFFERENT" not in narrative_2
+        assert mock_synth.call_count == 1  # not called again
+
+    @patch("antiquarian.pipeline.extract_todos", return_value=iter([]))
+    @patch("antiquarian.pipeline.mine_file_history")
+    @patch("antiquarian.pipeline.historical_shas")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    @patch("antiquarian.pipeline.synthesize_narrative")
+    def test_new_commit_invalidates_cached_story(
+        self,
+        mock_synth: MagicMock,
+        mock_gh: MagicMock,
+        mock_shas: MagicMock,
+        mock_mine: MagicMock,
+        mock_todos: MagicMock,
+        tmp_repo: Path,
+    ):
+        mock_shas.return_value = ["aaa111"]
+        mock_mine.return_value = iter([_fake_commit("aaa111")])
+        mock_synth.return_value = "## Origin\nFirst run."
+        generate_file_story(tmp_repo, "src/thing.py")
+        assert mock_synth.call_count == 1
+
+        mock_shas.return_value = ["aaa111", "bbb222"]
+        mock_mine.return_value = iter([_fake_commit("bbb222")])
+        mock_synth.return_value = "## Origin\nSecond run with new commit."
+        with patch(
+            "antiquarian.pipeline.get_commit", return_value=_fake_commit("aaa111")
+        ):
+            narrative, _ = generate_file_story(tmp_repo, "src/thing.py")
+        assert "Second run" in narrative
+        assert mock_synth.call_count == 2
+
+    @patch("antiquarian.pipeline.extract_todos", return_value=iter([]))
+    @patch("antiquarian.pipeline.mine_file_history")
+    @patch("antiquarian.pipeline.historical_shas", return_value=["aaa111"])
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    @patch("antiquarian.pipeline.synthesize_narrative")
+    def test_no_cache_flag_bypasses_story_cache(
+        self,
+        mock_synth: MagicMock,
+        mock_gh: MagicMock,
+        mock_shas: MagicMock,
+        mock_mine: MagicMock,
+        mock_todos: MagicMock,
+        tmp_repo: Path,
+    ):
+        mock_mine.return_value = iter([_fake_commit("aaa111")])
+        mock_synth.return_value = "## Origin\nNarrative."
+        generate_file_story(tmp_repo, "src/thing.py")
+        assert mock_synth.call_count == 1
+
+        mock_mine.return_value = iter([_fake_commit("aaa111")])
+        mock_synth.return_value = "## Origin\nRegenerated."
+        narrative, _ = generate_file_story(tmp_repo, "src/thing.py", use_cache=False)
+        assert "Regenerated" in narrative
+        assert mock_synth.call_count == 2
+
+    @patch("antiquarian.pipeline.extract_todos", return_value=iter([]))
+    @patch("antiquarian.pipeline.mine_file_history")
+    @patch("antiquarian.pipeline.historical_shas", return_value=["aaa111"])
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    @patch(
+        "antiquarian.pipeline.synthesize_narrative",
+        return_value="## Origin\nFresh.",
+    )
+    def test_old_format_story_without_marker_is_regenerated(
+        self,
+        mock_synth: MagicMock,
+        mock_gh: MagicMock,
+        mock_shas: MagicMock,
+        mock_mine: MagicMock,
+        mock_todos: MagicMock,
+        tmp_repo: Path,
+    ):
+        stories_dir = tmp_repo / ".antiquarian" / "stories"
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        story_file = stories_dir / "src__thing.py.md"
+        story_file.write_text("## Origin\nLegacy story without marker.\n")
+
+        mock_mine.return_value = iter([_fake_commit("aaa111")])
+        narrative, _ = generate_file_story(tmp_repo, "src/thing.py")
+        assert "Fresh" in narrative
+        mock_synth.assert_called_once()
+
+
 class TestGenerateSurvey:
     def test_empty_file_list_raises(self, tmp_repo: Path):
         with pytest.raises(ValueError, match="at least one"):
