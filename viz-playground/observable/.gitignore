@@ -1,8 +1,0 @@
-node_modules/
-dist-*/
-src/.observablehq/
-# Generated per-build artifacts
-observablehq.config.*.js
-!observablehq.config.js
-src/data/*.json
-src/_prose.md

@@ -217,5 +217,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Viz playground — generated outputs per project
-viz-playground/output/
+# Antiquarian render output — regeneratable from cache.db + stories
+**/.antiquarian/render/

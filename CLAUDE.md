@@ -12,38 +12,41 @@ Authoritative docs live at `/Users/tom/Documents/notes/tclancy/Dispatch/Projects
 - **Triangulation beats single-source.** Commit + PR + co-changed test + nearby TODO is stronger than any one alone.
 - **Lossy regions are themselves signal.** Foreground them; don't paper over.
 - **Assume good intentions.** Banned vocab in narrative output: `blame / fault / culprit / should have / mistake`. Required voice: `introduced / wrote / chose / appears to have / the evidence suggests`. Hemingway, not LinkedIn.
-- **Build from scratch, informed by Repowise.** Don't fork. See `06 - Repowise Evaluation.md` for the why.
+- **Build from scratch, informed by Repowise.** Don't fork. See [`docs/prior-art.md`](docs/prior-art.md) for the why.
 
 ## Architecture
 
 ```
 antiquarian/
-├── cli.py          # Typer entry points: story, survey, files
+├── cli.py          # Typer entry points: story, survey, files, render
 ├── pipeline.py     # Orchestration (generate_file_story, generate_codebase_survey)
 ├── mining.py       # PyDriller — uses `git log --follow` (NO --reverse, see #13)
 ├── prs.py          # gh CLI integration for PR enrichment
-├── narrative.py    # `claude -p` subprocess + sanitizer (_sanitize_for_claude)
+├── narrative.py    # `claude -p` subprocess + size-aware compressor (#36)
 ├── selection.py    # File selection (allow/block, --include/--exclude/--only)
 ├── cache.py        # SQLite at <repo>/.antiquarian/cache.db; key=(commit_sha, file_path)
-├── profile.py      # build_author_baselines (#49), regions to come (#52)
+├── profile.py      # build_author_baselines, build_regions, build_co_changes
+├── render_data.py  # Pull cache.db + stories into a render-ready dict (#40)
+├── render.py       # Antiquarian broadsheet — hand-rolled SVG (#40)
 ├── todos.py        # TODO/FIXME extraction via git blame
-├── models.py       # CommitFeatures, TodoAnnotation, RepoProfile, AuthorBaseline, …
+├── models.py       # CommitFeatures, AuthorBaseline, RegionDefinition, CoChange, …
 └── backends.py     # Git backend abstraction
 
 verification/       # Z3 specs — 21 invariants proven (#22)
 tests/              # pytest + Hypothesis (profiles: dev=30, ci=100, fuzz=1k, nightly=10k)
-viz-playground/     # Visualization spike (#8/#11) — hand-rolled SVG won; #40 promotes it
+docs/               # Public canon — ethos, architecture, prior-art, visual-vocabulary, notes
 ```
 
 ## Survey output structure
 
-Synthesis produces five sections: (1) Files surveyed, (2) Cross-file arcs, (3) Coupling/divergence, (4) Where the channel went dark, (5) Dramatis Personae (#50, PR #56 pending).
+Synthesis produces five sections: (1) Files surveyed, (2) Cross-file arcs, (3) Coupling/divergence, (4) Where the channel went dark, (5) Dramatis Personae.
 
 ## Commands
 
 ```bash
 uv run antiquarian story <file>           # MVP per-file narrative
 uv run antiquarian survey                 # multi-file synthesis
+uv run antiquarian render                 # broadsheet HTML (reads existing cache/stories)
 uv run antiquarian files                  # show file selection
 uv run pytest                             # default Hypothesis profile=dev
 HYPOTHESIS_PROFILE=ci uv run pytest       # CI profile
