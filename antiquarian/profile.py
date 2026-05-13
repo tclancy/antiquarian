@@ -1,13 +1,14 @@
-"""Person profiler — build per-author baselines from commit features."""
+"""Profilers — build per-author baselines and region definitions from commit features."""
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from math import sqrt
 from statistics import median
 
-from antiquarian.models import AuthorBaseline, CommitFeatures
+from antiquarian.models import AuthorBaseline, CommitFeatures, RegionDefinition
 
 _PATH_TOKEN_RE = re.compile(
     r"[/\\]"  # contains a slash
@@ -70,6 +71,81 @@ def _regions_touched(commits: list[CommitFeatures]) -> dict[str, int]:
         for region in seen_regions:
             region_counts[region] += 1
     return dict(region_counts)
+
+
+def _region_for_path(path: str) -> str | None:
+    parts = path.split("/")
+    if len(parts) > 1:
+        return parts[0]
+    return None
+
+
+def _region_diff_size(commit: CommitFeatures, region: str) -> int:
+    """Total diff size for files belonging to a region in a commit."""
+    region_files = [f for f in commit.files_changed if _region_for_path(f) == region]
+    if not region_files:
+        return 0
+    fraction = len(region_files) / len(commit.files_changed)
+    return int((commit.additions + commit.deletions) * fraction)
+
+
+def _find_notable_evolutions(commits: list[CommitFeatures], region: str) -> list[str]:
+    if len(commits) < 2:
+        return []
+    diffs = [_region_diff_size(c, region) for c in commits]
+    mean = sum(diffs) / len(diffs)
+    variance = sum((d - mean) ** 2 for d in diffs) / (len(diffs) - 1)
+    sd = sqrt(variance) if variance > 0 else 0.0
+    if sd == 0.0:
+        return []
+    notable = []
+    for commit, diff in zip(commits, diffs):
+        z = (diff - mean) / sd
+        if z > 2.0:
+            sha = commit.git_sha if commit.git_sha else commit.id
+            notable.append(sha)
+    return notable
+
+
+def build_regions(
+    commits: Sequence[CommitFeatures],
+) -> list[RegionDefinition]:
+    """Cluster commits into regions based on top-level directory grouping.
+
+    Pure function — no I/O, no git subprocess calls.
+    """
+    if not commits:
+        return []
+
+    by_region: dict[str, list[CommitFeatures]] = defaultdict(list)
+    for commit in commits:
+        seen: set[str] = set()
+        for path in commit.files_changed:
+            region = _region_for_path(path)
+            if region is not None and region not in seen:
+                by_region[region].append(commit)
+                seen.add(region)
+
+    if not by_region:
+        return []
+
+    results: list[RegionDefinition] = []
+    for region, region_commits in by_region.items():
+        earliest = min(region_commits, key=lambda c: c.timestamp)
+        introduced_in = earliest.git_sha if earliest.git_sha else earliest.id
+        notable = _find_notable_evolutions(region_commits, region)
+
+        results.append(
+            RegionDefinition(
+                name=region,
+                path_prefix=f"{region}/",
+                introduced_in=introduced_in,
+                notable_evolutions=notable,
+            )
+        )
+
+    results.sort(key=lambda r: len(by_region[r.name]), reverse=True)
+    return results
 
 
 def build_author_baselines(
