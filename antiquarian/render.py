@@ -28,6 +28,7 @@ complete self-contained HTML string. ``data`` is whatever
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from string import Template
@@ -367,12 +368,16 @@ def _window_axis_labels(axis: dict, margin_left: int, axis_y: float) -> str:
 
 
 def render_todo_strip(todos: list[dict], timeline: dict) -> str:
-    """TODO-age strip — bars sized by age, sorted oldest at top."""
+    """TODO-age strip — bars sized by age, sorted oldest at top.
+
+    Returns an empty string when the codebase has zero TODOs; the broadsheet
+    layout then skips the chapter mark + atom block entirely rather than
+    surfacing an empty placeholder. Absence of TODOs is information, but the
+    page doesn't need a whole atom to say so — the existence of the file map
+    and swimlane already implies "here is what we have."
+    """
     if not todos:
-        return _empty_atom(
-            "TODO-age strip",
-            "This survey carries no TODO admissions across its files. The maintainers either fix what they notice, or decide the source isn't where to leave a note.",
-        )
+        return ""
 
     max_age = max(t["age_days"] for t in todos)
     bar_max = 720
@@ -715,6 +720,32 @@ def _story_md_to_html_name(story_md_filename: str) -> str:
     return story_md_filename + ".html"
 
 
+_ROMAN_NUMERALS = ("i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x")
+# The order matters — atoms appear top-to-bottom in this sequence on the
+# page. Empty atoms (e.g. todo_strip when the codebase has zero TODOs) are
+# dropped from the layout and the chapter-mark numbering shifts down so
+# there are no "i" / [missing] / "iii" gaps.
+_ATOM_ORDER = ("todo_strip", "swimlane", "arc_band")
+
+
+def _render_atom_sequence(atoms: dict[str, str]) -> str:
+    """Render the atoms list in order, skipping any that are empty.
+
+    Chapter marks (i, ii, iii…) are assigned to surviving atoms only.
+    """
+    parts: list[str] = []
+    n = 0
+    for key in _ATOM_ORDER:
+        body = atoms.get(key, "")
+        if not body:
+            continue
+        numeral = _ROMAN_NUMERALS[n] if n < len(_ROMAN_NUMERALS) else str(n + 1)
+        parts.append(f'<div class="chapter-mark">{numeral}</div>')
+        parts.append(f'<div class="atom">{body}</div>')
+        n += 1
+    return "\n    ".join(parts)
+
+
 def render_page(
     project: str,
     manifest: dict,
@@ -956,14 +987,7 @@ def render_page(
       should live — the one whose visual language we wholly own.
     </p>{survey_html}
 
-    <div class="chapter-mark">i</div>
-    <div class="atom">{atoms.get("todo_strip", "")}</div>
-
-    <div class="chapter-mark">ii</div>
-    <div class="atom">{atoms.get("swimlane", "")}</div>
-
-    <div class="chapter-mark">iii</div>
-    <div class="atom">{atoms.get("arc_band", "")}</div>
+    {_render_atom_sequence(atoms)}
 
     <div class="colophon">
       Hand-rolled SVG variant. Zero JavaScript, zero charting library. Every
@@ -1053,6 +1077,30 @@ _STORY_PAGE_HTML = Template(
 )
 
 
+# Pattern: a `## TODO/FIXME aging` section whose body matches the old
+# "no TODO/FIXME admissions" placeholder. Used to strip the section from
+# stories cached before the system-prompt change that stopped emitting it.
+# Conservative match — only strips if the placeholder phrase is present, so
+# real TODO/FIXME content survives and the skip-and-stub `Unrecoverable in
+# this session.` text (which is also a valid no-data state) survives too.
+_EMPTY_TODO_SECTION_RE = re.compile(
+    r"^##\s+TODO/FIXME aging\s*\n+[^\n]*"
+    r"currently carries no TODO/FIXME admissions[^\n]*\n*",
+    flags=re.MULTILINE,
+)
+
+
+def _strip_empty_todo_section(story_md: str) -> str:
+    """Drop the canonical 'no admissions' TODO section from a cached story.
+
+    The current system prompt omits the section when no annotations exist,
+    but stories synthesized before that change still carry the placeholder.
+    Strip it at render time so existing renders look right without a
+    re-run of ``claude -p`` against every file.
+    """
+    return _EMPTY_TODO_SECTION_RE.sub("", story_md)
+
+
 def render_story_page(
     file_path: str,
     story_md: str,
@@ -1079,6 +1127,11 @@ def render_story_page(
     # internally by the cache, not narrative content.
     if story_md.startswith("<!-- antiquarian-cache-digest:"):
         _, _, story_md = story_md.partition("\n")
+
+    # Strip the canonical "no TODO/FIXME admissions" placeholder section
+    # from stories cached before the system-prompt change that stopped
+    # emitting it.
+    story_md = _strip_empty_todo_section(story_md)
 
     import markdown as _markdown
 
