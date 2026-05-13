@@ -14,16 +14,38 @@ Local-first by design — narrative synthesis goes through `claude -p` rather th
 
 ## Getting started
 
+### Use it against your own repos
+
+`uv tool install` puts the `antiquarian` CLI on your PATH so it works from any directory. Use `--editable` while the project is still moving so a `git pull` here lights up in every checkout you run it against:
+
+```bash
+uv tool install --editable /path/to/this/checkout
+```
+
+Then, from any repo:
+
+```bash
+cd /path/to/some/other/repo
+
+antiquarian story src/main.py        # per-file narrative
+antiquarian survey                   # multi-file synthesis
+antiquarian render                   # broadsheet HTML
+```
+
+Output lands under `<that-repo>/.antiquarian/`. After a `git pull` here, `uv tool upgrade antiquarian` if entry-point shims got stale (rarely needed for editable installs).
+
+### Or work on Antiquarian itself
+
 ```bash
 uv sync --all-groups
 uv run pre-commit install
 uv run pre-commit install --hook-type pre-push
 
-uv run antiquarian story path/to/some/file.py
-uv run antiquarian survey
-uv run antiquarian render
 uv run pytest
+uv run antiquarian story path/to/some/file.py    # run against the repo you're in
 ```
+
+`uv run` resolves against the *current directory's* venv — so `uv run antiquarian survey` only works from inside an antiquarian checkout that has the package installed in its venv. Use the `uv tool install` path above for anywhere else.
 
 ## Docs
 
