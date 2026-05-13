@@ -10,11 +10,77 @@ import pytest
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import (
+    _compress_message,
     _run_claude_p,
     _sanitize_for_claude,
     build_survey_prompt,
     build_user_prompt,
 )
+
+
+class TestCompressMessage:
+    """Issue #36 MVP — truncate verbose commit messages."""
+
+    def test_short_message_unchanged(self):
+        msg = "Fix a typo"
+        assert _compress_message(msg) == msg
+
+    def test_message_exactly_at_cap_unchanged(self):
+        msg = "x" * 500
+        assert _compress_message(msg) == msg
+
+    def test_truncates_at_paragraph_when_first_para_fits(self):
+        first_para = "Initial release of BetterBlue v1.0"
+        body = "x" * 700
+        msg = f"{first_para}\n\n{body}"
+        out = _compress_message(msg)
+        assert out.startswith(first_para)
+        assert "truncated" in out
+        assert len(out) < len(msg)
+        # Truncated-byte count is accurate
+        truncated = len(msg) - 500
+        assert f"[…{truncated} more chars truncated]" in out
+
+    def test_hard_truncates_when_first_para_too_long(self):
+        msg = "x" * 1000  # no paragraph break
+        out = _compress_message(msg)
+        assert out.startswith("x" * 500)
+        assert "truncated" in out
+        # 500 chars + truncation tail
+        truncated = 500
+        assert f"[…{truncated} more chars truncated]" in out
+
+    def test_custom_cap(self):
+        msg = "abcdefghij" * 20  # 200 chars
+        out = _compress_message(msg, max_chars=50)
+        assert len(out) < len(msg)
+        assert "truncated" in out
+
+    def test_preserves_betterblue_v1_release_notes_first_line(self):
+        """The canonical motivating case: BetterBlue's v1.0 release notes."""
+        msg = (
+            "Initial release of BetterBlue v1.0\n\n"
+            "BetterBlue is a modern iOS app for controlling Hyundai and Kia "
+            "vehicles using BlueLink and Kia Connect services. This release "
+            "includes:\n\n"
+            "Features:\n"
+            "- Remote vehicle control (lock/unlock, climate, charging)\n"
+            "- Multi-powertrain support (BEV, gas, PHEV)\n"
+            "- Apple Watch app with full vehicle control\n"
+            "- iOS widgets for quick status monitoring\n"
+            "- HTTP request/response logging for debugging\n"
+            "- Dark mode and modern SwiftUI interface\n"
+            "- Multiple account management\n"
+            "- Fake vehicle mode for testing\n\n"
+            "Technical:\n"
+            "- Built with SwiftUI and SwiftData\n"
+            "- Uses async/await for modern Swift concurrency\n"
+            "- Comprehensive test coverage with fake API\n"
+            "- Clean architecture with separate BetterBlueKit package"
+        )
+        out = _compress_message(msg)
+        assert out.startswith("Initial release of BetterBlue v1.0")
+        assert len(out) < len(msg)
 
 
 class TestSanitizeForClaude:
