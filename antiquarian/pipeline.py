@@ -21,7 +21,7 @@ from antiquarian.cache import (
 from antiquarian.mining import historical_shas, mine_file_history
 from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import synthesize_narrative, synthesize_survey
-from antiquarian.profile import build_author_baselines
+from antiquarian.profile import build_author_baselines, build_co_changes, build_regions
 from antiquarian.prs import detect_github_repo, enrich_with_pr
 from antiquarian.todos import extract_todos
 
@@ -267,7 +267,7 @@ def generate_codebase_survey(
             f"due to claude -p failures: " + ", ".join(f"{p} ({r})" for p, r in skipped)
         )
 
-    log("[survey] building author baselines...")
+    log("[survey] building structural signals (authors, regions, co-changes)...")
     db_path = cache_path_for_repo(repo_path)
     all_commits: list[CommitFeatures] = []
     seen_shas: set[str] = set()
@@ -282,13 +282,20 @@ def generate_codebase_survey(
                     all_commits.append(cached)
                     seen_shas.add(sha)
     author_baselines = build_author_baselines(all_commits)
-    log(f"[survey] {len(author_baselines)} author baseline(s) computed")
+    regions = build_regions(all_commits)
+    co_changes = build_co_changes(all_commits)
+    log(
+        f"[survey] {len(author_baselines)} author baseline(s), "
+        f"{len(regions)} region(s), {len(co_changes)} co-change pair(s)"
+    )
 
     log(f"[survey] synthesizing codebase narrative from {len(file_stories)} stories...")
     survey = synthesize_survey(
         repo_name=repo_name,
         file_stories=file_stories,
         author_baselines=author_baselines,
+        regions=regions,
+        co_changes=co_changes,
         log=log,
         backend=backend,
     )

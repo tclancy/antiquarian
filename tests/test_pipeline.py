@@ -293,6 +293,41 @@ class TestGenerateSurvey:
         "antiquarian.pipeline.synthesize_survey",
         return_value="## Files surveyed\nDone.",
     )
+    @patch("antiquarian.pipeline.build_co_changes", return_value=[])
+    @patch("antiquarian.pipeline.build_regions", return_value=[])
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_pass_3_signals_passed_to_synthesizer(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_regions: MagicMock,
+        mock_co: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """#54 — survey synth receives regions and co_changes from pipeline."""
+        story_path = tmp_repo / "x.md"
+        mock_story.return_value = ("story", story_path)
+        (tmp_repo / "a.py").write_text("")
+
+        generate_codebase_survey(tmp_repo, ["a.py"])
+
+        kwargs = mock_survey.call_args.kwargs
+        assert "regions" in kwargs
+        assert "co_changes" in kwargs
+        # build_regions and build_co_changes were called once with all_commits
+        mock_regions.assert_called_once()
+        mock_co.assert_called_once()
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
     @patch("antiquarian.pipeline.generate_file_story")

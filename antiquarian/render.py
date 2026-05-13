@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from pathlib import Path
+from string import Template
 
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
@@ -696,6 +698,23 @@ def _empty_atom(title: str, message: str) -> str:
 </svg>"""
 
 
+def story_filename_for_file(file_path: str) -> str:
+    """Mirror of pipeline.py's safe_name convention, with .html extension.
+
+    Stories on disk live at ``.antiquarian/stories/<file_path with / → __>.md``;
+    the rendered HTML pages alongside them use the same stem with .html.
+    Exposed so the CLI and tests can share the mapping.
+    """
+    return file_path.replace("/", "__") + ".html"
+
+
+def _story_md_to_html_name(story_md_filename: str) -> str:
+    """Map a stories/*.md filename to its rendered HTML sibling."""
+    if story_md_filename.endswith(".md"):
+        return story_md_filename[:-3] + ".html"
+    return story_md_filename + ".html"
+
+
 def render_page(
     project: str,
     manifest: dict,
@@ -703,16 +722,41 @@ def render_page(
     timeline: dict,
     masthead: str,
     survey_excerpt: str | None,
+    stories_with_pages: set[str] | None = None,
 ) -> str:
+    """Render the main broadsheet HTML.
+
+    ``stories_with_pages`` is the set of story markdown filenames (e.g.
+    ``src__a.py.md``) that have rendered HTML pages alongside them. Filenames
+    in this set get a clickable link in the meta-table; the rest stay as plain
+    ``<code>``. None = treat as empty (no links).
+    """
     generated = manifest.get("generated_at", "")
     files = manifest.get("files", [])
     stories = manifest.get("stories", [])
+    linked = stories_with_pages or set()
 
-    file_lines = "".join(f"<li><code>{_xml_escape(f)}</code></li>" for f in files)
-    stories_lines = (
-        "".join(f"<li><code>{_xml_escape(s)}</code></li>" for s in stories)
-        or "<li><em>none</em></li>"
-    )
+    def _file_li(f: str) -> str:
+        """A file_path that has a story gets linked to its HTML page."""
+        safe = _story_md_to_html_name(f.replace("/", "__") + ".md")
+        if (f.replace("/", "__") + ".md") in linked:
+            return (
+                f'<li><a href="stories/{safe}"><code>{_xml_escape(f)}</code></a></li>'
+            )
+        return f"<li><code>{_xml_escape(f)}</code></li>"
+
+    file_lines = "".join(_file_li(f) for f in files)
+
+    def _story_li(story_md: str) -> str:
+        html_name = _story_md_to_html_name(story_md)
+        if story_md in linked:
+            return (
+                f'<li><a href="stories/{html_name}">'
+                f"<code>{_xml_escape(story_md)}</code></a></li>"
+            )
+        return f"<li><code>{_xml_escape(story_md)}</code></li>"
+
+    stories_lines = "".join(_story_li(s) for s in stories) or "<li><em>none</em></li>"
 
     full_start = full_end = ""
     if timeline.get("full_span"):
@@ -936,13 +980,18 @@ def render_page(
 """
 
 
-def render_broadsheet(data: dict) -> str:
+def render_broadsheet(data: dict, *, stories_with_pages: set[str] | None = None) -> str:
     """Render the broadsheet HTML page from extracted render data.
 
     ``data`` is the dict returned by
     ``antiquarian.render_data.extract_render_data`` — a JSON-shaped bundle
     of commits, todos, arcs, swimlane lanes, arc-band rankings, timeline
     metadata, file lifespans, and an optional survey excerpt.
+
+    ``stories_with_pages`` is the set of ``.md`` story filenames that have
+    rendered HTML siblings; filenames in this set become clickable links in
+    the meta-table (#46). The CLI populates this after writing the per-story
+    pages; callers that only want the index can omit it.
 
     Returns a self-contained HTML string with inline SVG. The page degrades
     gracefully when EB Garamond fails to load (the only external resource).
@@ -972,4 +1021,78 @@ def render_broadsheet(data: dict) -> str:
         timeline,
         masthead_svg,
         survey_excerpt,
+        stories_with_pages=stories_with_pages,
+    )
+
+
+# Story-page templates — kept as real .css/.html files under templates/ so
+# IDEs give them syntax highlighting and diffs are scoped to the template
+# rather than buried inside a Python string literal. Substitution uses
+# string.Template ($name) rather than .format() so CSS and HTML braces stay
+# literal.
+#
+# Both are read and prepared **once at module import time** rather than per
+# render call: _STORY_PAGE_CSS is the fully-palette-substituted string, and
+# _STORY_PAGE_HTML is a compiled Template object. Rendering 100 story pages
+# in a single survey reads the disk twice total, not 200 times.
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+_STORY_PAGE_CSS = Template(
+    (_TEMPLATES_DIR / "story_page.css").read_text(encoding="utf-8")
+).substitute(
+    ink=PALETTE["ink"],
+    ink_dim=PALETTE["ink_dim"],
+    rule=PALETTE["rule"],
+    paper=PALETTE["paper"],
+    paper_alt=PALETTE["paper_alt"],
+    accent=PALETTE["accent"],
+)
+
+_STORY_PAGE_HTML = Template(
+    (_TEMPLATES_DIR / "story_page.html").read_text(encoding="utf-8")
+)
+
+
+def render_story_page(
+    file_path: str,
+    story_md: str,
+    project: str,
+) -> str:
+    """Render a single per-file story.md as a styled HTML page (#46).
+
+    The page shares palette and typography with the broadsheet but uses a
+    narrower text column and no atoms — this is the long-form prose surface,
+    the broadsheet is the figure-led front page. A "← back to broadsheet"
+    link in the dateline navigates back to ``index.html``.
+
+    Markdown conversion uses Python-Markdown's safe defaults; the story
+    content comes from our own synthesizer so no untrusted HTML to worry
+    about, but the conversion still escapes special characters in plain
+    text. Removes the antiquarian cache-digest comment that ``pipeline.py``
+    prepends to persisted stories before rendering.
+
+    The CSS and HTML scaffolding live as separate files under
+    ``antiquarian/templates/`` so editing them gets IDE syntax highlighting
+    and produces clean diffs.
+    """
+    # Strip the digest marker line if present — it's an HTML comment used
+    # internally by the cache, not narrative content.
+    if story_md.startswith("<!-- antiquarian-cache-digest:"):
+        _, _, story_md = story_md.partition("\n")
+
+    import markdown as _markdown
+
+    body_html = _markdown.markdown(
+        story_md.strip(),
+        extensions=["fenced_code", "tables"],
+        output_format="html",
+    )
+    project_escaped = _xml_escape(project)
+    file_path_escaped = _xml_escape(file_path)
+    return _STORY_PAGE_HTML.substitute(
+        title=f"{project_escaped} — {file_path_escaped}",
+        css=_STORY_PAGE_CSS,
+        project=project_escaped,
+        file_path=file_path_escaped,
+        body_html=body_html,
     )

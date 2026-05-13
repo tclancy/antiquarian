@@ -4,6 +4,20 @@ The commitments baked into the broadsheet renderer (`antiquarian/render.py`). Th
 
 The aesthetic is part of the moat. There are a dozen git-history visualizers in the world; there are zero that look like a 19th-century broadsheet. That difference is the differentiation.
 
+## What this is
+
+**Broadsheet in the streets, Tufte in the sheets.**
+
+Three lineages, each with a specific job:
+
+- **Edward Tufte for the discipline.** *The Visual Display of Quantitative Information* and *Envisioning Information* set the rules every atom obeys: high data-ink ratio (every mark earns its place), multifunctioning graphical elements (the dual-axis timeline is both a chart axis *and* the structural signal of dense vs dormant periods — one mark, two jobs), show the data including what's missing (the lossy hatch is drawn at the same weight as the active windows because absence is also data), small multiples (atoms stack vertically with a shared time axis so the eye does the comparison), no chartjunk (no 3D, no decorative gradients, no animated reveals). When in doubt about a mark, ask "would Tufte cut this?" The answer is usually yes.
+
+- **Albrecht Dürer for the mark-making language.** The diagonal woodblock-style hatching for lossy regions isn't from a chart library — it's from Renaissance engraving, where Dürer made hatching the canonical way to give weight without color. We use it the same way: lossy regions have weight, even when they have no commits to plot. Density of stroke is signal, just as it was on a 16th-century copper plate.
+
+- **18th–19th-century broadsheet print culture for the page idiom.** The masthead, the small-caps dateline, the drop cap in oxide red, the double-rule borders, the parchment yellow paper, the printer's-chase pigment palette, the roman-numeral chapter marks between atoms. This is where the *look* lives — the discipline above is invisible until something violates it; the broadsheet idiom is the thing the reader actually sees first.
+
+The three don't fight. Tufte's rules tell us *what* belongs on the page; Dürer's tradition tells us *how* the marks are drawn; the broadsheet tells us *where they sit*. A chart-library default would do all three jobs badly at once.
+
 ## Atoms (the commitments)
 
 ### 1. Lossy regions are first-class

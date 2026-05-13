@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from antiquarian.models import AuthorBaseline, CommitFeatures, TodoAnnotation
+from antiquarian.models import (
+    AuthorBaseline,
+    CoChange,
+    CommitFeatures,
+    RegionDefinition,
+    TodoAnnotation,
+)
 
 if TYPE_CHECKING:
     from antiquarian.backends import NarrativeBackend
@@ -539,6 +545,7 @@ Produce a markdown document with exactly these top-level sections, in this order
 - Which files appear coupled in their evolution (co-changed, co-incident, share decisive moments)
 - Which appear independent
 - What the coupling pattern says about the codebase's architecture
+- When **Regions** and **File co-change pairs** are supplied as input data below, use them as EVIDENCE for this section. Name the regions where the work concentrates ("most evolution happens in `accounts/` and `fuels/`"). Name the strongest co-change pairs by file. Don't print the raw pair counts as a table — weave them into prose ("`deploy.py` and `config.py` travel together; they share 12 of `deploy.py`'s 18 commits"). Inputs are evidence; the output is narrative.
 - ~200-400 words
 
 ## Where the channel went dark
@@ -583,10 +590,38 @@ def _format_baseline(name: str, b: AuthorBaseline) -> str:
     )
 
 
+# Cap on how many co-change pairs we include in the survey prompt. Even a
+# small repo can produce hundreds; the LLM only needs the strongest signal.
+# 20 is calibrated to "enough to spot the structural couplings" without
+# pushing the survey prompt over its own size envelope.
+_CO_CHANGE_TOP_N = 20
+
+
+def _format_region(r: RegionDefinition) -> str:
+    notable_str = ""
+    if r.notable_evolutions:
+        notable_count = len(r.notable_evolutions)
+        sample = ", ".join(s[:8] for s in r.notable_evolutions[:3])
+        notable_str = f" Notable evolutions ({notable_count}): {sample}."
+    intro_str = ""
+    if r.introduced_in:
+        intro_str = f" Introduced in `{r.introduced_in[:8]}`."
+    return f"- **{r.name}/** (prefix `{r.path_prefix}`).{intro_str}{notable_str}"
+
+
+def _format_co_change(cc: CoChange) -> str:
+    return (
+        f"- `{cc.file_a}` ↔ `{cc.file_b}` — {cc.count} co-changes, "
+        f"last on {cc.last_co_changed_at.date().isoformat()}"
+    )
+
+
 def build_survey_prompt(
     repo_name: str,
     file_stories: Sequence[tuple[str, str]],
     author_baselines: dict[str, AuthorBaseline] | None = None,
+    regions: Sequence[RegionDefinition] | None = None,
+    co_changes: Sequence[CoChange] | None = None,
 ) -> str:
     today = datetime.now(timezone.utc).date().isoformat()
     sections = [
@@ -618,6 +653,24 @@ def build_survey_prompt(
         sections.append("---")
         sections.append("")
 
+    if regions:
+        sections.append("# Regions (top-level fiefdoms in this codebase)")
+        sections.append("")
+        for r in regions:
+            sections.append(_format_region(r))
+        sections.append("")
+        sections.append("---")
+        sections.append("")
+
+    if co_changes:
+        sections.append(f"# File co-change pairs (top {_CO_CHANGE_TOP_N} by count)")
+        sections.append("")
+        for cc in list(co_changes)[:_CO_CHANGE_TOP_N]:
+            sections.append(_format_co_change(cc))
+        sections.append("")
+        sections.append("---")
+        sections.append("")
+
     sections.append(
         "Now write the codebase-level synthesis per the structure in the system prompt. "
         "Begin directly with `## Files surveyed` — no preamble."
@@ -630,16 +683,26 @@ def synthesize_survey(
     repo_name: str,
     file_stories: Sequence[tuple[str, str]],
     author_baselines: dict[str, AuthorBaseline] | None = None,
+    regions: Sequence[RegionDefinition] | None = None,
+    co_changes: Sequence[CoChange] | None = None,
     timeout_seconds: int = 300,
     log: Callable[[str], None] = _noop,
     backend: NarrativeBackend | None = None,
 ) -> str:
-    """Build a survey prompt and return the codebase-level narrative via ``backend``."""
+    """Build a survey prompt and return the codebase-level narrative via ``backend``.
+
+    ``regions`` and ``co_changes`` (the Pass-3 structural signals from #52
+    and #48) inform the **Coupling and divergence** section of the output
+    when provided. They aren't separate output sections — they color the
+    existing one. See ``SURVEY_SYSTEM_PROMPT`` for the prompt-level rules.
+    """
     if backend is None:
         from antiquarian.backends import DEFAULT_BACKEND
 
         backend = DEFAULT_BACKEND
-    user_prompt = build_survey_prompt(repo_name, file_stories, author_baselines)
+    user_prompt = build_survey_prompt(
+        repo_name, file_stories, author_baselines, regions, co_changes
+    )
     return backend.synthesize(
         SURVEY_SYSTEM_PROMPT, user_prompt, timeout_seconds=timeout_seconds, log=log
     )
