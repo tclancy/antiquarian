@@ -167,6 +167,10 @@ def commit_features(draw: st.DrawFn) -> CommitFeatures:
             st.one_of(st.none(), st.integers(min_value=1, max_value=999_999))
         ),
         pr_body=draw(st.one_of(st.none(), commit_messages())),
+        is_revert=draw(st.booleans()),
+        commit_binge_window_minutes=draw(
+            st.one_of(st.none(), st.integers(min_value=0, max_value=525_600))
+        ),
     )
 
 

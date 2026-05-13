@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterator
 
@@ -10,6 +13,23 @@ from pydriller import Repository
 from ulid import ULID
 
 from antiquarian.models import CommitFeatures
+
+_REVERT_PATTERNS = [
+    re.compile(r'^Revert "', re.MULTILINE),
+    re.compile(r"^revert:\s", re.MULTILINE),
+    re.compile(r"Reverts? commit [0-9a-f]{7,}", re.IGNORECASE),
+]
+
+
+def _detect_revert(message: str, additions: int, deletions: int) -> bool:
+    for pat in _REVERT_PATTERNS:
+        if pat.search(message):
+            return True
+    if additions >= 5 and deletions >= 5:
+        smaller, larger = sorted([additions, deletions])
+        if larger / smaller <= 1.1:
+            return True
+    return False
 
 
 def historical_shas(repo_path: str | Path, file_path: str) -> list[str]:
@@ -70,4 +90,43 @@ def mine_file_history(
             deletions=commit.deletions,
             pr_number=None,
             pr_body=None,
+            is_revert=_detect_revert(commit.msg, commit.insertions, commit.deletions),
         )
+
+
+def compute_binge_windows(
+    commits: list[CommitFeatures],
+) -> list[CommitFeatures]:
+    """Enrich commits with nearest same-author neighbor distance in minutes.
+
+    Returns new CommitFeatures instances (frozen dataclass) with
+    commit_binge_window_minutes populated.
+    """
+    if not commits:
+        return []
+
+    by_author: dict[str, list[int]] = defaultdict(list)
+    for i, c in enumerate(commits):
+        by_author[c.author].append(i)
+
+    result: list[CommitFeatures] = []
+    for c in commits:
+        indices = by_author[c.author]
+        if len(indices) < 2:
+            result.append(c)
+            continue
+
+        author_commits = [commits[j] for j in indices]
+        author_commits.sort(key=lambda x: x.timestamp)
+        ts = c.timestamp
+        min_delta: int | None = None
+        for ac in author_commits:
+            if ac is c:
+                continue
+            delta = abs(int((ts - ac.timestamp).total_seconds())) // 60
+            if min_delta is None or delta < min_delta:
+                min_delta = delta
+
+        result.append(replace(c, commit_binge_window_minutes=min_delta))
+
+    return result
