@@ -24,6 +24,8 @@ class CommitFeatures:
     deletions: int
     pr_number: int | None
     pr_body: str | None
+    is_revert: bool = False
+    commit_binge_window_minutes: int | None = None
 
 
 @dataclass(frozen=True)

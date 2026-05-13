@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS commit_features (
     deletions INTEGER NOT NULL,
     pr_number INTEGER,
     pr_body TEXT,
+    is_revert INTEGER NOT NULL DEFAULT 0,
+    commit_binge_window_minutes INTEGER,
     PRIMARY KEY (sha, file_path)
 );
 
@@ -53,6 +55,12 @@ def cache_path_for_repo(repo_path: str | Path) -> Path:
     return Path(repo_path) / ".antiquarian" / "cache.db"
 
 
+_MIGRATIONS = [
+    "ALTER TABLE commit_features ADD COLUMN is_revert INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE commit_features ADD COLUMN commit_binge_window_minutes INTEGER",
+]
+
+
 @contextmanager
 def open_cache(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +68,11 @@ def open_cache(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA)
+        for migration in _MIGRATIONS:
+            try:
+                conn.execute(migration)
+            except sqlite3.OperationalError:
+                pass
         yield conn
         conn.commit()
     finally:
@@ -86,8 +99,9 @@ def put_commit(
         INSERT OR REPLACE INTO commit_features (
             sha, file_path, id, jj_change_id, jj_commit_id,
             author, author_email, timestamp, hour_of_day, day_of_week,
-            message, files_changed, additions, deletions, pr_number, pr_body
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            message, files_changed, additions, deletions, pr_number, pr_body,
+            is_revert, commit_binge_window_minutes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             features.git_sha,
@@ -106,6 +120,8 @@ def put_commit(
             features.deletions,
             features.pr_number,
             features.pr_body,
+            int(features.is_revert),
+            features.commit_binge_window_minutes,
         ),
     )
 
@@ -166,4 +182,6 @@ def _row_to_features(row: sqlite3.Row) -> CommitFeatures:
         deletions=row["deletions"],
         pr_number=row["pr_number"],
         pr_body=row["pr_body"],
+        is_revert=bool(row["is_revert"]),
+        commit_binge_window_minutes=row["commit_binge_window_minutes"],
     )
