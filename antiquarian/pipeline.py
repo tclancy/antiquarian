@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from antiquarian.cache import (
     cache_path_for_repo,
@@ -22,6 +22,9 @@ from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import synthesize_narrative, synthesize_survey
 from antiquarian.prs import detect_github_repo, enrich_with_pr
 from antiquarian.todos import extract_todos
+
+if TYPE_CHECKING:
+    from antiquarian.backends import NarrativeBackend
 
 # Inline marker prepended to every persisted story. Lets us detect a
 # stale cached story without sidecar files. Lives in an HTML comment so
@@ -92,6 +95,7 @@ def generate_file_story(
     use_cache: bool = True,
     fetch_prs: bool = True,
     log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
 ) -> tuple[str, Path]:
     """Mine + cache + extract TODOs + synthesize a per-file narrative.
 
@@ -162,6 +166,7 @@ def generate_file_story(
         commits=commits,
         todos=todos,
         log=log,
+        backend=backend,
     )
 
     story_file.write_text(
@@ -179,6 +184,7 @@ def generate_codebase_survey(
     use_cache: bool = True,
     fetch_prs: bool = True,
     log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
 ) -> tuple[str, Path]:
     """For each file, ensure its story exists, then synthesize a codebase narrative.
 
@@ -203,6 +209,7 @@ def generate_codebase_survey(
             use_cache=use_cache,
             fetch_prs=fetch_prs,
             log=lambda m: log(f"  {m}"),
+            backend=backend,
         )
         file_stories.append((fp, narrative))
 
@@ -211,6 +218,7 @@ def generate_codebase_survey(
         repo_name=repo_name,
         file_stories=file_stories,
         log=log,
+        backend=backend,
     )
 
     surveys_dir = repo_path / ".antiquarian" / "surveys"
