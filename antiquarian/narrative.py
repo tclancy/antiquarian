@@ -22,19 +22,32 @@ def _run_claude_p(
     timeout_seconds: int,
     *,
     max_attempts: int = 3,
+    max_calledprocess_attempts: int = 2,
     base_backoff_seconds: float = 5.0,
     log: Callable[[str], None] = _noop,
     sleep: Callable[[float], None] = time.sleep,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``claude -p`` with retry on transient timeouts (issue #31).
+    """Run ``claude -p`` with retry on transient failures.
 
-    Retries on ``subprocess.TimeoutExpired`` only — ``CalledProcessError`` is a
-    real upstream failure (the prompt is probably the cause) and not retried.
+    Retries both ``subprocess.TimeoutExpired`` (#31) and
+    ``subprocess.CalledProcessError`` (#39). The #31 design assumed non-zero
+    exits were permanent; real-world evidence on a tkc survey contradicted
+    that — the same prompt returned exit 1 once then exit 0 on the next
+    invocation — so we retry exit failures too, with a lower attempt cap
+    since they're more likely to be permanent than timeouts.
+
     Backoff is exponential with up to 20% jitter to avoid lockstep retries
     against a momentarily degraded upstream.
+
+    Caps:
+    - ``max_attempts`` — total attempts for ``TimeoutExpired`` (default 3)
+    - ``max_calledprocess_attempts`` — total attempts for ``CalledProcessError``
+      (default 2). Lower because a real permanent failure (bad prompt, auth,
+      etc.) shouldn't burn three calls before surfacing.
     """
-    last_exc: subprocess.TimeoutExpired | None = None
-    for attempt in range(1, max_attempts + 1):
+    timeout_attempt = 0
+    cpe_attempt = 0
+    while True:
         try:
             return subprocess.run(
                 list(args),
@@ -44,14 +57,15 @@ def _run_claude_p(
                 check=True,
                 timeout=timeout_seconds,
             )
-        except subprocess.TimeoutExpired as e:
-            last_exc = e
-            if attempt < max_attempts:
-                delay = base_backoff_seconds * (3 ** (attempt - 1))
+        except subprocess.TimeoutExpired:
+            timeout_attempt += 1
+            if timeout_attempt < max_attempts:
+                delay = base_backoff_seconds * (3 ** (timeout_attempt - 1))
                 wait = delay + random.uniform(0, delay * 0.2)
                 log(
                     f"[narrative] claude -p timed out "
-                    f"(attempt {attempt}/{max_attempts}); retrying in {wait:.1f}s"
+                    f"(timeout attempt {timeout_attempt}/{max_attempts}); "
+                    f"retrying in {wait:.1f}s"
                 )
                 sleep(wait)
             else:
@@ -59,8 +73,24 @@ def _run_claude_p(
                     f"[narrative] claude -p timed out on all "
                     f"{max_attempts} attempts; giving up"
                 )
-    assert last_exc is not None
-    raise last_exc
+                raise
+        except subprocess.CalledProcessError as e:
+            cpe_attempt += 1
+            if cpe_attempt < max_calledprocess_attempts:
+                delay = base_backoff_seconds * (3 ** (cpe_attempt - 1))
+                wait = delay + random.uniform(0, delay * 0.2)
+                log(
+                    f"[narrative] claude -p exited {e.returncode} "
+                    f"(exit attempt {cpe_attempt}/{max_calledprocess_attempts}); "
+                    f"retrying in {wait:.1f}s"
+                )
+                sleep(wait)
+            else:
+                log(
+                    f"[narrative] claude -p exited {e.returncode} on all "
+                    f"{max_calledprocess_attempts} attempts; giving up"
+                )
+                raise
 
 
 # Two patterns the sanitizer removes from commit messages and PR bodies before
