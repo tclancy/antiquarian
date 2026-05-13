@@ -73,6 +73,33 @@ class SignificantChange:
 
 
 @dataclass(frozen=True)
+class CoChange:
+    """A pair of files that changed together in one or more commits.
+
+    Pairs are stored in canonical order (``file_a < file_b``) so each
+    unordered pair has exactly one record. ``last_co_changed_at`` is the
+    most recent commit timestamp where this pair appeared together —
+    useful for "is this coupling still active or historical?" queries.
+
+    ``commit_shas`` retains the joint-occurrence evidence — the SHAs
+    (or UID fallback) of every commit where this pair appeared. Stored
+    because aggregation otherwise discards information: pair counts
+    alone can't distinguish "one commit touched A, B, and C" from
+    "three separate AB / AC / BC commits." Intersecting two pairs'
+    ``commit_shas`` reconstructs triples (and higher-order clusters) at
+    query time, and the SHA list also gives the narrative engine
+    concrete commits to anchor co-change claims to. ``count`` equals
+    ``len(commit_shas)`` but is precomputed for sort/filter speed.
+    """
+
+    file_a: str
+    file_b: str
+    count: int
+    last_co_changed_at: datetime
+    commit_shas: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TodoAnnotation:
     kind: Literal["TODO", "FIXME", "XXX", "HACK"]
     line_number: int
