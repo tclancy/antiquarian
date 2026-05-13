@@ -26,6 +26,12 @@ def _stderr(msg: str) -> None:
     typer.echo(msg, err=True)
 
 
+# Surveys above this size run an unattended `claude -p` call per file. The
+# warning emitted at this threshold is calibrated to "you almost certainly
+# meant --only here, not --include." See issue #29.
+_LARGE_SELECTION_THRESHOLD = 20
+
+
 def _resolve_file_path(file: str, repo_path: Path) -> str:
     file_path_abs = Path(file)
     if file_path_abs.is_absolute():
@@ -80,15 +86,27 @@ def story(
 def survey(
     repo: str = typer.Option(".", help="Path to the git repository."),
     include: list[str] = typer.Option(
-        [], "--include", help="Glob to include (additive). Repeatable."
+        [],
+        "--include",
+        help=(
+            "Glob to ADD to the default candidate set (the repo's tracked files). "
+            "Does NOT restrict — pairs with --exclude to subtract or --only to pin. "
+            "Repeatable."
+        ),
     ),
     exclude: list[str] = typer.Option(
-        [], "--exclude", help="Glob to exclude (subtractive). Repeatable."
+        [],
+        "--exclude",
+        help="Glob to SUBTRACT from the candidate set. Repeatable.",
     ),
     only: list[str] = typer.Option(
         [],
         "--only",
-        help="Exact path. When set (repeatable), ONLY these paths are surveyed.",
+        help=(
+            "Exact path. When set (repeatable), the candidate set is REPLACED "
+            "by these paths — all other filters are ignored. Use this when you "
+            "want 'just these N files' rather than 'everything matching X'."
+        ),
     ),
     respect_gitignore: bool = typer.Option(
         True,
@@ -119,6 +137,14 @@ def survey(
     for f in files:
         typer.echo(f"  - {f}", err=True)
 
+    if len(files) >= _LARGE_SELECTION_THRESHOLD and not only:
+        typer.echo(
+            f"[survey] WARNING: {len(files)} files will each take a claude -p call "
+            f"(~30–120s plus possible retries). If you meant 'just these N files', "
+            f"use --only <path> (repeatable) instead of --include.",
+            err=True,
+        )
+
     try:
         narrative, _ = generate_codebase_survey(
             repo_path,
@@ -140,16 +166,26 @@ def survey(
 def files(
     repo: str = typer.Option(".", help="Path to the git repository."),
     include: list[str] = typer.Option(
-        [], "--include", help="Glob to include (additive). Repeatable."
+        [],
+        "--include",
+        help=(
+            "Glob to ADD to the default candidate set (the repo's tracked files). "
+            "Does NOT restrict — pairs with --exclude to subtract or --only to pin. "
+            "Repeatable."
+        ),
     ),
     exclude: list[str] = typer.Option(
-        [], "--exclude", help="Glob to exclude (subtractive). Repeatable."
+        [],
+        "--exclude",
+        help="Glob to SUBTRACT from the candidate set. Repeatable.",
     ),
     only: list[str] = typer.Option(
         [],
         "--only",
-        help="Exact path. When set (repeatable), ONLY these paths are returned; "
-        "all other filters are bypassed.",
+        help=(
+            "Exact path. When set (repeatable), the candidate set is REPLACED "
+            "by these paths — all other filters are ignored."
+        ),
     ),
     respect_gitignore: bool = typer.Option(
         True,
