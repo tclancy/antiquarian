@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from statistics import median
 
 from antiquarian.models import AuthorBaseline, CommitFeatures
@@ -31,7 +32,9 @@ def _path_word_ratio(messages: list[str]) -> float:
 
 
 def _typical_hours(hours: list[int]) -> tuple[int, int]:
-    """IQR of hour_of_day values as (Q1, Q3)."""
+    """Approximate IQR of hour_of_day values as (Q1, Q3) via integer quartile indices."""
+    if not hours:
+        return (0, 0)
     if len(hours) == 1:
         return (hours[0], hours[0])
     s = sorted(hours)
@@ -70,7 +73,7 @@ def _regions_touched(commits: list[CommitFeatures]) -> dict[str, int]:
 
 
 def build_author_baselines(
-    commits: list[CommitFeatures],
+    commits: Sequence[CommitFeatures],
 ) -> dict[str, AuthorBaseline]:
     """Aggregate CommitFeatures into per-author baselines.
 
