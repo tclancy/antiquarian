@@ -39,7 +39,9 @@ tests/              # pytest + Hypothesis (profiles: dev=30, ci=100, fuzz=1k, ni
 2. **Cross-file arcs** — named arcs spanning multiple files.
 3. **Coupling and divergence** — which files travel together, which run independently.
 4. **Where the channel went dark** — time windows with thin evidence.
-5. **Dramatis Personae** — who shaped this codebase and how (lands with PR #56).
+5. **Dramatis Personae** — who shaped this codebase and how.
+
+The **Coupling and divergence** section is fed structural evidence from two Pass-3 profilers: regions (top-level fiefdoms from `build_regions`) and file co-change pairs (`build_co_changes`). These don't appear as their own output sections — they color the coupling discussion with concrete names and counts.
 
 ## Multi-pass codebase examination ("Parliament of Owls")
 
@@ -60,7 +62,7 @@ Passes 1 and 4 are in place. Passes 2 and 3 are where most of the structural wor
 |------|-------------------|
 | **2** — file in context | Free signals on `CommitFeatures` (#53, merged), Person profiler (#49, merged), Related Files (#48) |
 | **3** — fiefdom view | Region profiler (#52), Statistical SC detector (#51) per region |
-| **2 + 3** — People thread | Dramatis Personae section (#50, PR #56 pending) — runs through both passes with different jobs |
+| **2 + 3** — People thread | Dramatis Personae section (#50) — runs through both passes with different jobs |
 
 ### People as a thread, not a step
 

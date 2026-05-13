@@ -466,6 +466,66 @@ class TestBuildSurveyPrompt:
         prompt = build_survey_prompt("r", [("x.py", "story")], {})
         assert "Per-author baselines" not in prompt
 
+    def test_regions_included_when_provided(self):
+        from antiquarian.models import RegionDefinition
+
+        regions = [
+            RegionDefinition(
+                name="accounts",
+                path_prefix="accounts/",
+                introduced_in="abc11111",
+                notable_evolutions=["def22222"],
+            ),
+            RegionDefinition(
+                name="fuels",
+                path_prefix="fuels/",
+                introduced_in="aaa00000",
+                notable_evolutions=[],
+            ),
+        ]
+        prompt = build_survey_prompt("r", [("x.py", "story")], regions=regions)
+        assert "# Regions" in prompt
+        assert "**accounts/**" in prompt
+        assert "**fuels/**" in prompt
+        assert "abc11111" in prompt
+
+    def test_no_regions_omits_section(self):
+        prompt = build_survey_prompt("r", [("x.py", "story")])
+        assert "# Regions" not in prompt
+
+    def test_co_changes_included_when_provided(self):
+        from datetime import datetime, timezone
+        from antiquarian.models import CoChange
+
+        t = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        co_changes = [
+            CoChange("a.py", "b.py", 12, t, ("sha1",) * 12),
+            CoChange("c.py", "d.py", 4, t, ("sha2",) * 4),
+        ]
+        prompt = build_survey_prompt("r", [("x.py", "story")], co_changes=co_changes)
+        assert "co-change pairs" in prompt
+        assert "`a.py` ↔ `b.py`" in prompt
+        assert "12 co-changes" in prompt
+        assert "4 co-changes" in prompt
+
+    def test_co_changes_capped_at_top_n(self):
+        from datetime import datetime, timezone
+        from antiquarian.models import CoChange
+
+        t = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        # Generate 30 pairs; only top 20 should appear
+        co_changes = [
+            CoChange(f"a{i}.py", f"b{i}.py", 30 - i, t, ()) for i in range(30)
+        ]
+        prompt = build_survey_prompt("r", [("x.py", "story")], co_changes=co_changes)
+        # The 21st-ranked pair should be excluded
+        assert "a0.py" in prompt
+        assert "a25.py" not in prompt
+
+    def test_no_co_changes_omits_section(self):
+        prompt = build_survey_prompt("r", [("x.py", "story")])
+        assert "co-change pairs" not in prompt
+
 
 class TestSurveySystemPrompt:
     def test_dramatis_personae_section_required(self):
@@ -478,6 +538,12 @@ class TestSurveySystemPrompt:
 
         assert "Hemingway" in SURVEY_SYSTEM_PROMPT
         assert "Default to kind" in SURVEY_SYSTEM_PROMPT
+
+    def test_regions_and_co_changes_referenced_in_coupling_section(self):
+        from antiquarian.narrative import SURVEY_SYSTEM_PROMPT
+
+        assert "Regions" in SURVEY_SYSTEM_PROMPT
+        assert "co-change" in SURVEY_SYSTEM_PROMPT.lower()
 
 
 def _completed(stdout: str = "ok") -> subprocess.CompletedProcess[str]:

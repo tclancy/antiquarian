@@ -8,7 +8,11 @@ from pathlib import Path
 import typer
 
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
-from antiquarian.render import render_broadsheet
+from antiquarian.render import (
+    _story_md_to_html_name,
+    render_broadsheet,
+    render_story_page,
+)
 from antiquarian.render_data import extract_render_data
 from antiquarian.selection import select_files
 
@@ -247,8 +251,29 @@ def render(
         f"[render] {len(data['files'])} file(s), {len(data['commits'])} commit(s), "
         f"{len(data['arcs'])} arc(s), {len(data['todos'])} todo(s)"
     )
-    html = render_broadsheet(data)
+
+    # Render per-file story pages alongside the index so the broadsheet's
+    # "files surveyed" links resolve (#46). One HTML per story.md in the
+    # cache; index links only the ones that actually got rendered.
+    stories_dir = repo_path / ".antiquarian" / "stories"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    pages_dir = output_path.parent / "stories"
+    rendered_stories: set[str] = set()
+    if stories_dir.exists():
+        pages_dir.mkdir(parents=True, exist_ok=True)
+        for story_md_name in data.get("stories", []):
+            story_md_path = stories_dir / story_md_name
+            if not story_md_path.exists():
+                continue
+            file_path = story_md_name.replace("__", "/").removesuffix(".md")
+            story_md = story_md_path.read_text(encoding="utf-8")
+            story_html = render_story_page(file_path, story_md, data["project"])
+            target = pages_dir / _story_md_to_html_name(story_md_name)
+            target.write_text(story_html, encoding="utf-8")
+            rendered_stories.add(story_md_name)
+        _stderr(f"[render] {len(rendered_stories)} story page(s) → {pages_dir}")
+
+    html = render_broadsheet(data, stories_with_pages=rendered_stories)
     output_path.write_text(html, encoding="utf-8")
     _stderr(f"[render] wrote {output_path}")
     typer.echo(str(output_path))

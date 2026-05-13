@@ -21,7 +21,11 @@ import pytest
 from typer.testing import CliRunner
 
 from antiquarian.cli import app
-from antiquarian.render import render_broadsheet
+from antiquarian.render import (
+    _story_md_to_html_name,
+    render_broadsheet,
+    render_story_page,
+)
 from antiquarian.render_data import extract_render_data
 
 runner = CliRunner()
@@ -235,3 +239,91 @@ class TestRenderCli:
         )
         assert result.exit_code == 0, result.output + result.stderr
         assert custom_out.exists()
+
+
+class TestStoryPageRendering:
+    """Issue #46 — per-file stories rendered as HTML siblings, broadsheet links into them."""
+
+    def test_story_md_to_html_name(self):
+        assert _story_md_to_html_name("src__a.py.md") == "src__a.py.html"
+        # Non-.md inputs get a .html suffix appended (defensive default)
+        assert _story_md_to_html_name("plain") == "plain.html"
+
+    def test_render_story_page_produces_html(self):
+        md = (
+            "## Origin\n"
+            "The file was introduced in `aaa11111`.\n\n"
+            "## Major arcs\n"
+            "**Arc 1 — Initial sketch.** A first cut at the module.\n"
+        )
+        html = render_story_page("src/a.py", md, "myproject")
+        assert html.startswith("<!doctype html>")
+        # File path appears in the title and the H1
+        assert "src/a.py" in html
+        assert "myproject" in html
+        # Markdown converted to HTML
+        assert "<h2>Origin</h2>" in html
+        assert "<strong>Arc 1" in html
+        assert "<code>aaa11111</code>" in html
+        # Back-link to the broadsheet
+        assert 'href="../index.html"' in html
+
+    def test_render_story_page_strips_digest_marker(self):
+        """The pipeline prepends a cache-digest HTML comment; render should hide it."""
+        md = "<!-- antiquarian-cache-digest: abc123 -->\n## Origin\nThe story begins.\n"
+        html = render_story_page("f.py", md, "proj")
+        assert "antiquarian-cache-digest" not in html
+        assert "<h2>Origin</h2>" in html
+
+    def test_broadsheet_links_only_rendered_stories(self):
+        """A story md filename not in stories_with_pages stays plain."""
+        data = {
+            "project": "p",
+            "repo_path": "/tmp/p",
+            "generated_at": "2026-05-13T00:00:00+00:00",
+            "files": ["src/a.py", "src/b.py"],
+            "stories": ["src__a.py.md", "src__b.py.md"],
+            "commits": [],
+            "todos": [],
+            "arcs": [],
+            "swimlane": {
+                "lane_count": 0,
+                "lanes": [],
+                "time_min": None,
+                "time_max": None,
+            },
+            "arc_band": {"arc_count": 0, "arcs": []},
+            "timeline": {
+                "full_span": None,
+                "active_windows": [],
+                "gaps": [],
+                "active_total_days": 0,
+                "compression_ratio": 1.0,
+            },
+            "file_lifespans": [],
+            "survey_excerpt": None,
+        }
+        # Only src/a.py has a rendered HTML page
+        html = render_broadsheet(data, stories_with_pages={"src__a.py.md"})
+        assert 'href="stories/src__a.py.html"' in html
+        assert 'href="stories/src__b.py.html"' not in html
+
+    def test_render_cli_writes_story_pages(self, seeded_repo: Path):
+        """CLI render command produces stories/*.html alongside index.html."""
+        stories_dir = seeded_repo / ".antiquarian" / "stories"
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / "src__a.py.md").write_text(
+            "## Origin\nIntroduced in `aaa11111`.\n"
+        )
+        result = runner.invoke(app, ["render", "--repo", str(seeded_repo)])
+        assert result.exit_code == 0, result.output + result.stderr
+
+        render_dir = seeded_repo / ".antiquarian" / "render"
+        index = render_dir / "index.html"
+        story_page = render_dir / "stories" / "src__a.py.html"
+        assert index.exists()
+        assert story_page.exists()
+        # Index links the story
+        assert "stories/src__a.py.html" in index.read_text()
+        # Story page renders the markdown body
+        assert "<h2>Origin</h2>" in story_page.read_text()
