@@ -20,6 +20,7 @@ from antiquarian.cache import (
 from antiquarian.mining import historical_shas, mine_file_history
 from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import synthesize_narrative, synthesize_survey
+from antiquarian.profile import build_author_baselines
 from antiquarian.prs import detect_github_repo, enrich_with_pr
 from antiquarian.todos import extract_todos
 
@@ -213,10 +214,24 @@ def generate_codebase_survey(
         )
         file_stories.append((fp, narrative))
 
+    log("[survey] building author baselines...")
+    db_path = cache_path_for_repo(repo_path)
+    all_commits: list[CommitFeatures] = []
+    with open_cache(db_path) as conn:
+        for fp in file_paths:
+            shas = historical_shas(repo_path, fp)
+            for sha in shas:
+                cached = get_commit(conn, sha, fp)
+                if cached is not None:
+                    all_commits.append(cached)
+    author_baselines = build_author_baselines(all_commits)
+    log(f"[survey] {len(author_baselines)} author baseline(s) computed")
+
     log(f"[survey] synthesizing codebase narrative from {len(file_stories)} stories...")
     survey = synthesize_survey(
         repo_name=repo_name,
         file_stories=file_stories,
+        author_baselines=author_baselines,
         log=log,
         backend=backend,
     )

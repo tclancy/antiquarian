@@ -246,6 +246,97 @@ class TestBuildSurveyPrompt:
         assert "**Files surveyed:** 1" in prompt
         assert "Per-file story: `only.py`" in prompt
 
+    def test_baselines_included_when_provided(self):
+        from antiquarian.models import AuthorBaseline
+
+        baselines = {
+            "Alice": AuthorBaseline(
+                author="Alice",
+                sample_size=10,
+                tenure_days=180,
+                commit_share=0.7,
+                median_message_len=50,
+                median_files_changed=3,
+                path_word_ratio=0.2,
+                typical_hours=(9, 17),
+                typical_days=(0, 1, 2, 3, 4),
+                regions_touched={"src": 8, "tests": 5},
+            ),
+            "Bob": AuthorBaseline(
+                author="Bob",
+                sample_size=4,
+                tenure_days=30,
+                commit_share=0.3,
+                median_message_len=20,
+                median_files_changed=1,
+                path_word_ratio=0.1,
+                typical_hours=(14, 20),
+                typical_days=(3, 4),
+                regions_touched={"src": 3},
+            ),
+        }
+        prompt = build_survey_prompt("r", [("x.py", "story")], baselines)
+        assert "Per-author baselines" in prompt
+        assert "**Alice**" in prompt
+        assert "**Bob**" in prompt
+        assert "10 commits over 180d" in prompt
+        assert "70% share" in prompt
+
+    def test_baselines_sorted_by_commit_count(self):
+        from antiquarian.models import AuthorBaseline
+
+        baselines = {
+            "Minor": AuthorBaseline(
+                author="Minor",
+                sample_size=1,
+                tenure_days=0,
+                commit_share=0.1,
+                median_message_len=10,
+                median_files_changed=1,
+                path_word_ratio=0.0,
+                typical_hours=(10, 10),
+                typical_days=(0,),
+                regions_touched={"src": 1},
+            ),
+            "Major": AuthorBaseline(
+                author="Major",
+                sample_size=9,
+                tenure_days=100,
+                commit_share=0.9,
+                median_message_len=40,
+                median_files_changed=2,
+                path_word_ratio=0.1,
+                typical_hours=(8, 18),
+                typical_days=(0, 1, 2, 3, 4),
+                regions_touched={"src": 7},
+            ),
+        }
+        prompt = build_survey_prompt("r", [("x.py", "s")], baselines)
+        major_pos = prompt.index("**Major**")
+        minor_pos = prompt.index("**Minor**")
+        assert major_pos < minor_pos
+
+    def test_no_baselines_omits_section(self):
+        prompt = build_survey_prompt("r", [("x.py", "story")])
+        assert "Per-author baselines" not in prompt
+
+    def test_empty_baselines_omits_section(self):
+        prompt = build_survey_prompt("r", [("x.py", "story")], {})
+        assert "Per-author baselines" not in prompt
+
+
+class TestSurveySystemPrompt:
+    def test_dramatis_personae_section_required(self):
+        from antiquarian.narrative import SURVEY_SYSTEM_PROMPT
+
+        assert "## Dramatis Personae" in SURVEY_SYSTEM_PROMPT
+
+    def test_tone_rules_present(self):
+        from antiquarian.narrative import SURVEY_SYSTEM_PROMPT
+
+        assert "Hemingway" in SURVEY_SYSTEM_PROMPT
+        assert "Default to kind" in SURVEY_SYSTEM_PROMPT
+
 
 def _completed(stdout: str = "ok") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
