@@ -7,9 +7,12 @@ import re
 import subprocess
 import time
 from datetime import datetime, timezone
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
+
+if TYPE_CHECKING:
+    from antiquarian.backends import NarrativeBackend
 
 
 def _noop(_msg: str) -> None:
@@ -302,16 +305,22 @@ def synthesize_narrative(
     timeout_seconds: int = 300,
     *,
     log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
 ) -> str:
-    """Send the source data to ``claude -p`` and return the narrative markdown."""
+    """Build a per-file prompt and return the narrative markdown via ``backend``.
+
+    ``backend`` defaults to ``ClaudePBackend`` (the ``claude -p`` subprocess
+    wrapper). Pass a custom backend to use a different LLM provider; see
+    ``antiquarian/backends.py``.
+    """
+    if backend is None:
+        from antiquarian.backends import DEFAULT_BACKEND
+
+        backend = DEFAULT_BACKEND
     user_prompt = build_user_prompt(file_path, repo_name, commits, todos)
-    result = _run_claude_p(
-        ["claude", "-p", "--system-prompt", SYSTEM_PROMPT],
-        user_prompt,
-        timeout_seconds,
-        log=log,
+    return backend.synthesize(
+        SYSTEM_PROMPT, user_prompt, timeout_seconds=timeout_seconds, log=log
     )
-    return result.stdout.strip()
 
 
 SURVEY_SYSTEM_PROMPT = """\
@@ -418,13 +427,14 @@ def synthesize_survey(
     file_stories: Sequence[tuple[str, str]],
     timeout_seconds: int = 300,
     log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
 ) -> str:
-    """Send per-file stories to ``claude -p`` and return a codebase-level narrative."""
+    """Build a survey prompt and return the codebase-level narrative via ``backend``."""
+    if backend is None:
+        from antiquarian.backends import DEFAULT_BACKEND
+
+        backend = DEFAULT_BACKEND
     user_prompt = build_survey_prompt(repo_name, file_stories)
-    result = _run_claude_p(
-        ["claude", "-p", "--system-prompt", SURVEY_SYSTEM_PROMPT],
-        user_prompt,
-        timeout_seconds,
-        log=log,
+    return backend.synthesize(
+        SURVEY_SYSTEM_PROMPT, user_prompt, timeout_seconds=timeout_seconds, log=log
     )
-    return result.stdout.strip()
