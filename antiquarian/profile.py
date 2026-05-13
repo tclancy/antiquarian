@@ -263,7 +263,7 @@ def build_co_changes(
     if not commits:
         return []
 
-    pair_count: dict[tuple[str, str], int] = defaultdict(int)
+    pair_shas: dict[tuple[str, str], list[str]] = defaultdict(list)
     pair_last_seen: dict[tuple[str, str], object] = {}
 
     for c in commits:
@@ -272,9 +272,10 @@ def build_co_changes(
             continue
         # Dedupe within a commit so a file listed twice doesn't pair with itself
         unique_sorted = sorted(set(files))
+        sha = c.git_sha or c.id
         for a, b in combinations(unique_sorted, 2):
             key = (a, b)
-            pair_count[key] += 1
+            pair_shas[key].append(sha)
             existing = pair_last_seen.get(key)
             if existing is None or c.timestamp > existing:
                 pair_last_seen[key] = c.timestamp
@@ -283,10 +284,11 @@ def build_co_changes(
         CoChange(
             file_a=a,
             file_b=b,
-            count=pair_count[(a, b)],
+            count=len(pair_shas[(a, b)]),
             last_co_changed_at=pair_last_seen[(a, b)],  # type: ignore[arg-type]
+            commit_shas=tuple(pair_shas[(a, b)]),
         )
-        for (a, b) in pair_count
+        for (a, b) in pair_shas
     ]
     result.sort(key=lambda c: (-c.count, c.file_a, c.file_b))
     return result

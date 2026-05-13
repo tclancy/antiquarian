@@ -151,16 +151,97 @@ class TestBuildCoChanges:
         for cc in result:
             assert cc.file_a != cc.file_b
 
+    def test_commit_shas_recorded(self):
+        commits = [
+            _commit(sha="abc11111", files=["x.py", "y.py"]),
+            _commit(sha="def22222", files=["x.py", "y.py"]),
+        ]
+        result = build_co_changes(commits)
+        assert len(result) == 1
+        assert result[0].commit_shas == ("abc11111", "def22222")
+
+    def test_commit_shas_fall_back_to_uid_when_no_git_sha(self):
+        """If a CommitFeatures has no git_sha, the project-native id is used."""
+        c = CommitFeatures(
+            id="01ULIDLIKE",
+            git_sha=None,
+            jj_change_id=None,
+            jj_commit_id=None,
+            author="dev",
+            author_email="d@e.com",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            hour_of_day=10,
+            day_of_week=2,
+            message="m",
+            files_changed=["a.py", "b.py"],
+            additions=1,
+            deletions=0,
+            pr_number=None,
+            pr_body=None,
+        )
+        result = build_co_changes([c])
+        assert result[0].commit_shas == ("01ULIDLIKE",)
+
+    def test_count_equals_len_commit_shas(self):
+        """Invariant: count is always derivable from commit_shas."""
+        commits = [_commit(sha=f"sha{i:02d}", files=["x.py", "y.py"]) for i in range(7)]
+        result = build_co_changes(commits)
+        assert result[0].count == len(result[0].commit_shas)
+
+    def test_triple_recoverable_from_pair_intersections(self):
+        """The motivating use case from issue #48 review.
+
+        Pair counts alone can't distinguish "one commit touched A, B, C"
+        from "three separate AB / AC / BC commits." With commit_shas
+        retained, intersecting two pairs' SHA sets recovers the triple
+        exactly.
+        """
+        # Scenario A: one triple commit + three pair commits
+        commits = [
+            _commit(sha="triple00", files=["a.py", "b.py", "c.py"]),
+            _commit(sha="ab000001", files=["a.py", "b.py"]),
+            _commit(sha="ac000001", files=["a.py", "c.py"]),
+            _commit(sha="bc000001", files=["b.py", "c.py"]),
+        ]
+        pairs = {(cc.file_a, cc.file_b): cc for cc in build_co_changes(commits)}
+        ab = set(pairs[("a.py", "b.py")].commit_shas)
+        ac = set(pairs[("a.py", "c.py")].commit_shas)
+        bc = set(pairs[("b.py", "c.py")].commit_shas)
+        # Intersection across all three pair-evidence sets recovers
+        # commits that touched all three files
+        triple_commits = ab & ac & bc
+        assert triple_commits == {"triple00"}
+
+        # Scenario B: same pair counts (2/2/2) but no shared commit
+        commits_b = [
+            _commit(sha="ab000001", files=["a.py", "b.py"]),
+            _commit(sha="ab000002", files=["a.py", "b.py"]),
+            _commit(sha="ac000001", files=["a.py", "c.py"]),
+            _commit(sha="ac000002", files=["a.py", "c.py"]),
+            _commit(sha="bc000001", files=["b.py", "c.py"]),
+            _commit(sha="bc000002", files=["b.py", "c.py"]),
+        ]
+        pairs_b = {(cc.file_a, cc.file_b): cc for cc in build_co_changes(commits_b)}
+        ab = set(pairs_b[("a.py", "b.py")].commit_shas)
+        ac = set(pairs_b[("a.py", "c.py")].commit_shas)
+        bc = set(pairs_b[("b.py", "c.py")].commit_shas)
+        # No commit touched all three
+        assert ab & ac & bc == set()
+
 
 class TestRelatedFiles:
     def _sample_pairs(self) -> list[CoChange]:
         t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def shas(n: int) -> tuple[str, ...]:
+            return tuple(f"sha{i}" for i in range(n))
+
         return [
-            CoChange("a.py", "b.py", 5, t),
-            CoChange("a.py", "c.py", 3, t),
-            CoChange("a.py", "d.py", 1, t),
-            CoChange("b.py", "c.py", 2, t),
-            CoChange("c.py", "d.py", 4, t),
+            CoChange("a.py", "b.py", 5, t, shas(5)),
+            CoChange("a.py", "c.py", 3, t, shas(3)),
+            CoChange("a.py", "d.py", 1, t, shas(1)),
+            CoChange("b.py", "c.py", 2, t, shas(2)),
+            CoChange("c.py", "d.py", 4, t, shas(4)),
         ]
 
     def test_empty_input(self):
@@ -239,3 +320,10 @@ class TestBuildCoChangesProperties:
     def test_deterministic(self, commits) -> None:
         """Same input → same output, byte-for-byte."""
         assert build_co_changes(commits) == build_co_changes(commits)
+
+    @given(commits=st.lists(commit_features(), max_size=15))
+    @settings(max_examples=50)
+    def test_count_equals_len_commit_shas(self, commits) -> None:
+        """The two ought to be the same for every output record."""
+        for cc in build_co_changes(commits):
+            assert cc.count == len(cc.commit_shas)
