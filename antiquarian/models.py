@@ -30,6 +30,8 @@ class CommitFeatures:
 class AuthorBaseline:
     author: str
     sample_size: int
+    tenure_days: int
+    commit_share: float
     median_message_len: int
     median_files_changed: int
     path_word_ratio: float
