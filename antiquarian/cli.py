@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import subprocess
+from enum import Enum
 from pathlib import Path
 
 import typer
 
 from antiquarian.detect import StatisticalBaselineDetector
 from antiquarian.mining import mine_repo_history
+from antiquarian.models import AuthorBaseline, SignificantChange, CommitFeatures
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
 from antiquarian.profile import build_author_baselines
 from antiquarian.selection import select_files
+
+
+class DetectorType(str, Enum):
+    statistical = "statistical"
+
 
 app = typer.Typer(
     name="antiquarian",
@@ -209,20 +216,65 @@ def files(
     typer.echo(f"[selected] {len(selected)} file(s)", err=True)
 
 
+def _format_header(
+    detector_name: str,
+    num_results: int,
+    num_commits: int,
+    num_authors: int,
+) -> list[str]:
+    return [
+        f"# Significant Changes ({num_results} of {num_commits} commits)\n",
+        f"**Detector:** {detector_name}",
+        f"**Authors:** {num_authors}",
+        f"**Commits analyzed:** {num_commits}\n",
+    ]
+
+
+def _format_baselines(baselines: dict[str, AuthorBaseline]) -> list[str]:
+    lines = ["## Author Baselines\n"]
+    for author, bl in sorted(baselines.items(), key=lambda x: -x[1].commit_share):
+        lines.append(
+            f"- **{author}** — {bl.sample_size} commits ({bl.commit_share:.0%}), "
+            f"tenure {bl.tenure_days}d, "
+            f"median msg {bl.median_message_len} chars, "
+            f"median {bl.median_files_changed} files/commit"
+        )
+    lines.append("")
+    return lines
+
+
+def _format_significant_change(
+    rank: int,
+    sc_item: SignificantChange,
+    sha_to_commit: dict[str, CommitFeatures],
+) -> list[str]:
+    sha = sc_item.commits[0] if sc_item.commits else "?"
+    commit = sha_to_commit.get(sha)
+    subject = commit.message.split("\n")[0][:80] if commit else "?"
+    author = commit.author if commit else "?"
+    region = sc_item.region or "root"
+
+    lines = [
+        f"### {rank}. `{sha[:10]}` (score: {sc_item.score:.2f})",
+        f"**Author:** {author} | **Region:** {region}",
+        f"**Subject:** {subject}",
+        "**Reasons:**",
+    ]
+    lines.extend(f"  - {reason}" for reason in sc_item.reasons)
+    lines.append("")
+    return lines
+
+
 @app.command()
 def sc(
     repo: str = typer.Option(".", help="Path to the git repository."),
-    detector: str = typer.Option(
-        "statistical", help="Detector to use (currently: statistical)."
+    detector: DetectorType = typer.Option(
+        DetectorType.statistical, help="Detector to use."
     ),
     top: int = typer.Option(20, "--top", help="Number of top significant changes."),
 ) -> None:
     """Detect significant changes — commits that deviate from author baselines."""
     repo_path = Path(repo).resolve()
-
-    if detector != "statistical":
-        typer.echo(f"Error: unknown detector '{detector}'", err=True)
-        raise typer.Exit(code=1)
 
     _stderr(f"[sc] Mining repo history from {repo_path} ...")
     commits = mine_repo_history(repo_path)
@@ -236,39 +288,16 @@ def sc(
 
     det = StatisticalBaselineDetector()
     results = det.detect(commits, baselines, top_n=top, log=_stderr)
-
     sha_to_commit = {c.git_sha: c for c in commits if c.git_sha}
 
-    typer.echo(f"# Significant Changes ({len(results)} of {len(commits)} commits)\n")
-    typer.echo(f"**Detector:** {detector}")
-    typer.echo(f"**Authors:** {len(baselines)}")
-    typer.echo(f"**Commits analyzed:** {len(commits)}\n")
-
-    typer.echo("## Author Baselines\n")
-    for author, bl in sorted(baselines.items(), key=lambda x: -x[1].commit_share):
-        typer.echo(
-            f"- **{author}** — {bl.sample_size} commits ({bl.commit_share:.0%}), "
-            f"tenure {bl.tenure_days}d, "
-            f"median msg {bl.median_message_len} chars, "
-            f"median {bl.median_files_changed} files/commit"
-        )
-    typer.echo()
-
-    typer.echo("## Top Significant Changes\n")
+    output = _format_header(detector.value, len(results), len(commits), len(baselines))
+    output.extend(_format_baselines(baselines))
+    output.append("## Top Significant Changes\n")
     for i, sc_item in enumerate(results, 1):
-        sha = sc_item.commits[0] if sc_item.commits else "?"
-        commit = sha_to_commit.get(sha)
-        subject = commit.message.split("\n")[0][:80] if commit else "?"
-        author = commit.author if commit else "?"
-        region = sc_item.region or "root"
+        output.extend(_format_significant_change(i, sc_item, sha_to_commit))
 
-        typer.echo(f"### {i}. `{sha[:10]}` (score: {sc_item.score:.2f})")
-        typer.echo(f"**Author:** {author} | **Region:** {region}")
-        typer.echo(f"**Subject:** {subject}")
-        typer.echo("**Reasons:**")
-        for reason in sc_item.reasons:
-            typer.echo(f"  - {reason}")
-        typer.echo()
+    for line in output:
+        typer.echo(line)
 
 
 if __name__ == "__main__":

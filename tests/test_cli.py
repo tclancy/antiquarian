@@ -79,8 +79,8 @@ class TestScCommand:
         result = runner.invoke(
             app, ["sc", "--repo", str(tmp_path), "--detector", "nonexistent"]
         )
-        assert result.exit_code == 1
-        assert "unknown detector" in result.stderr
+        assert result.exit_code == 2
+        assert "nonexistent" in (result.stdout + result.stderr)
 
     def test_sc_help_shows_options(self):
         result = runner.invoke(app, ["sc", "--help"])

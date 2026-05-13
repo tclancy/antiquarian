@@ -11,6 +11,10 @@ from ulid import ULID
 
 from antiquarian.models import AuthorBaseline, CommitFeatures, SignificantChange
 
+_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+_Z_THRESHOLD = 1.5
+
 
 def _noop(_msg: str) -> None:
     pass
@@ -50,6 +54,79 @@ def _hour_distance(hour: int, q1: int, q3: int) -> int:
     return min(below, above)
 
 
+def _score_message_length(
+    commit: CommitFeatures,
+    stats: dict[str, tuple[float, float]],
+    baseline: AuthorBaseline,
+) -> tuple[float, str | None]:
+    msg_len = float(len(commit.message))
+    msg_mean, msg_sd = stats["message_len"]
+    msg_z = abs(_z_score(msg_len, msg_mean, msg_sd))
+    if msg_z <= _Z_THRESHOLD:
+        return 0.0, None
+    ratio = (
+        msg_len / baseline.median_message_len
+        if baseline.median_message_len > 0
+        else msg_len
+    )
+    return msg_z, f"message {ratio:.1f}x author's median length"
+
+
+def _score_files_changed(
+    commit: CommitFeatures,
+    stats: dict[str, tuple[float, float]],
+    baseline: AuthorBaseline,
+) -> tuple[float, str | None]:
+    files_count = float(len(commit.files_changed))
+    files_mean, files_sd = stats["files_changed"]
+    files_z = abs(_z_score(files_count, files_mean, files_sd))
+    if files_z <= _Z_THRESHOLD:
+        return 0.0, None
+    return files_z, (
+        f"touched {int(files_count)} files; "
+        f"author's median is {baseline.median_files_changed}"
+    )
+
+
+def _score_diff_size(
+    commit: CommitFeatures,
+    stats: dict[str, tuple[float, float]],
+) -> tuple[float, str | None]:
+    diff_size = float(commit.additions + commit.deletions)
+    diff_mean, diff_sd = stats["diff_size"]
+    diff_z = abs(_z_score(diff_size, diff_mean, diff_sd))
+    if diff_z <= _Z_THRESHOLD:
+        return 0.0, None
+    return diff_z, f"diff size {int(diff_size)} lines (z={diff_z:.1f})"
+
+
+def _score_hour_of_day(
+    commit: CommitFeatures,
+    baseline: AuthorBaseline,
+) -> tuple[float, str | None]:
+    hour_dist = _hour_distance(
+        commit.hour_of_day, baseline.typical_hours[0], baseline.typical_hours[1]
+    )
+    if hour_dist <= 3:
+        return 0.0, None
+    return hour_dist / 3.0, (
+        f"committed at hour {commit.hour_of_day}; "
+        f"typical window is {baseline.typical_hours[0]}–{baseline.typical_hours[1]}"
+    )
+
+
+def _score_day_of_week(
+    commit: CommitFeatures,
+    baseline: AuthorBaseline,
+) -> tuple[float, str | None]:
+    if not baseline.typical_days or commit.day_of_week in baseline.typical_days:
+        return 0.0, None
+    return 1.0, (
+        f"committed on {_DAY_NAMES[commit.day_of_week]}; "
+        f"typical days: {', '.join(_DAY_NAMES[d] for d in baseline.typical_days)}"
+    )
+
+
 class StatisticalBaselineDetector:
     """Score each commit by how unusual it is relative to its author's baseline.
 
@@ -77,15 +154,15 @@ class StatisticalBaselineDetector:
         log(f"[sc] {len(commits)} commits, {len(by_author)} authors")
 
         scored: list[tuple[float, CommitFeatures, list[str]]] = []
-        for commit in commits:
-            stats = author_stats.get(commit.author)
-            baseline = baselines.get(commit.author)
+        for author, author_commits in by_author.items():
+            stats = author_stats.get(author)
+            baseline = baselines.get(author)
             if stats is None or baseline is None:
                 continue
-
-            score, reasons = self._score_commit(commit, stats, baseline)
-            if score > 0:
-                scored.append((score, commit, reasons))
+            for commit in author_commits:
+                score, reasons = self._score_commit(commit, stats, baseline)
+                if score > 0:
+                    scored.append((score, commit, reasons))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:top_n]
@@ -132,55 +209,15 @@ class StatisticalBaselineDetector:
         baseline: AuthorBaseline,
     ) -> tuple[float, list[str]]:
         """Return (composite_score, [reason_strings])."""
-        reasons: list[str] = []
-        total = 0.0
-
-        msg_len = float(len(commit.message))
-        msg_mean, msg_sd = stats["message_len"]
-        msg_z = abs(_z_score(msg_len, msg_mean, msg_sd))
-        if msg_z > 1.5:
-            ratio = (
-                msg_len / baseline.median_message_len
-                if baseline.median_message_len > 0
-                else msg_len
-            )
-            reasons.append(f"message {ratio:.1f}x author's median length")
-            total += msg_z
-
-        files_count = float(len(commit.files_changed))
-        files_mean, files_sd = stats["files_changed"]
-        files_z = abs(_z_score(files_count, files_mean, files_sd))
-        if files_z > 1.5:
-            reasons.append(
-                f"touched {int(files_count)} files; author's median is {baseline.median_files_changed}"
-            )
-            total += files_z
-
-        diff_size = float(commit.additions + commit.deletions)
-        diff_mean, diff_sd = stats["diff_size"]
-        diff_z = abs(_z_score(diff_size, diff_mean, diff_sd))
-        if diff_z > 1.5:
-            reasons.append(f"diff size {int(diff_size)} lines (z={diff_z:.1f})")
-            total += diff_z
-
-        hour_dist = _hour_distance(
-            commit.hour_of_day, baseline.typical_hours[0], baseline.typical_hours[1]
-        )
-        if hour_dist > 3:
-            reasons.append(
-                f"committed at hour {commit.hour_of_day}; "
-                f"typical window is {baseline.typical_hours[0]}–{baseline.typical_hours[1]}"
-            )
-            total += hour_dist / 3.0
-
-        if commit.day_of_week not in baseline.typical_days and baseline.typical_days:
-            day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-            reasons.append(
-                f"committed on {day_names[commit.day_of_week]}; "
-                f"typical days: {', '.join(day_names[d] for d in baseline.typical_days)}"
-            )
-            total += 1.0
-
+        signals = [
+            _score_message_length(commit, stats, baseline),
+            _score_files_changed(commit, stats, baseline),
+            _score_diff_size(commit, stats),
+            _score_hour_of_day(commit, baseline),
+            _score_day_of_week(commit, baseline),
+        ]
+        reasons = [reason for _, reason in signals if reason is not None]
+        total = sum(score for score, _ in signals)
         return total, reasons
 
     def _primary_region(self, commit: CommitFeatures) -> str | None:
