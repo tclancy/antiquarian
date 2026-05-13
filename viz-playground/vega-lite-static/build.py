@@ -99,9 +99,7 @@ def build_active_scale(timeline: dict, pixel_width: int) -> dict:
             }
         )
 
-    win_durations = [
-        max(1.0, (w["end"] - w["start"]).total_seconds()) for w in windows
-    ]
+    win_durations = [max(1.0, (w["end"] - w["start"]).total_seconds()) for w in windows]
     total_dur = sum(win_durations) or 1
     total_gap_px = len(gaps) * GAP_PX
     remaining_px = max(120, pixel_width - total_gap_px)
@@ -189,7 +187,9 @@ def spec_timeline_strip(timeline: dict, width: int = 760) -> dict:
     full_start = datetime.fromisoformat(timeline["full_span"]["start"])
     full_end = datetime.fromisoformat(timeline["full_span"]["end"])
 
-    bg = [{"y": "lifespan", "start": full_start.isoformat(), "end": full_end.isoformat()}]
+    bg = [
+        {"y": "lifespan", "start": full_start.isoformat(), "end": full_end.isoformat()}
+    ]
     actives = [
         {
             "y": "lifespan",
@@ -1035,11 +1035,7 @@ HTML_TEMPLATE = """<!doctype html>
 
 
 def _xml_escape(s: str) -> str:
-    return (
-        s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def main() -> int:
@@ -1072,9 +1068,10 @@ def main() -> int:
         total_lines += body.count("\n") + 1
         (specs_dir / name).write_text(body, encoding="utf-8")
 
-    files_inline = " ".join(
-        f"<code>{_xml_escape(f)}</code>" for f in manifest.get("files", [])
-    ) or "<em>none</em>"
+    files_inline = (
+        " ".join(f"<code>{_xml_escape(f)}</code>" for f in manifest.get("files", []))
+        or "<em>none</em>"
+    )
     stories_inline = (
         " ".join(f"<code>{_xml_escape(s)}</code>" for s in manifest.get("stories", []))
         or "<em>none</em>"
@@ -1087,7 +1084,9 @@ def main() -> int:
         generated=manifest.get("generated_at", ""),
         files_inline=files_inline,
         stories_inline=stories_inline,
-        timeline_strip_spec=_xml_escape(json.dumps(specs["timeline_strip.vl.json"], indent=2)),
+        timeline_strip_spec=_xml_escape(
+            json.dumps(specs["timeline_strip.vl.json"], indent=2)
+        ),
         todo_strip_spec=_xml_escape(json.dumps(specs["todo_strip.vl.json"], indent=2)),
         swimlane_spec=_xml_escape(json.dumps(specs["swimlane.vl.json"], indent=2)),
         arc_band_spec=_xml_escape(json.dumps(specs["arc_band.vl.json"], indent=2)),
@@ -1095,9 +1094,7 @@ def main() -> int:
         **{k: v for k, v in PALETTE.items()},
     )
     (args.output_dir / "index.html").write_text(html, encoding="utf-8")
-    print(
-        f"[vega-lite] wrote {args.output_dir / 'index.html'} + {len(specs)} specs"
-    )
+    print(f"[vega-lite] wrote {args.output_dir / 'index.html'} + {len(specs)} specs")
     return 0
 
 

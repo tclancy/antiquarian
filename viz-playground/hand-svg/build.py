@@ -152,9 +152,7 @@ def build_active_scale(timeline: dict, pixel_width: int):
                 "x_end": x0 + GAP_PX,
                 "days": g["days"],
                 "label": (
-                    f"{g['days'] / 365:.1f}y"
-                    if g["days"] >= 365
-                    else f"{g['days']}d"
+                    f"{g['days'] / 365:.1f}y" if g["days"] >= 365 else f"{g['days']}d"
                 ),
                 "long_label": (
                     f"the silence — {g['days']} days"
@@ -245,8 +243,8 @@ def render_timeline_masthead(timeline: dict) -> str:
         f'<line x1="{margin_left}" y1="20" x2="{width - margin_right}" y2="20" stroke="{PALETTE["ink"]}" stroke-width="0.8"/>',
         f'<line x1="{margin_left}" y1="23" x2="{width - margin_right}" y2="23" stroke="{PALETTE["ink"]}" stroke-width="0.4"/>',
         f'<text x="{margin_left}" y="14" font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" font-size="11" font-style="italic" fill="{PALETTE["ink_dim"]}">'
-        f'A reconstructed lifespan, from {full_start.strftime("%B %Y")} to {full_end.strftime("%B %Y")}'
-        f' — {timeline["full_span"]["days"]} days of surviving record.</text>',
+        f"A reconstructed lifespan, from {full_start.strftime('%B %Y')} to {full_end.strftime('%B %Y')}"
+        f" — {timeline['full_span']['days']} days of surviving record.</text>",
     ]
 
     bar_y = 40
@@ -271,8 +269,8 @@ def render_timeline_masthead(timeline: dict) -> str:
         parts.append(
             f'<rect x="{x1}" y="{bar_y + 2}" width="{width_px}" height="{bar_h - 4}" '
             f'fill="{PALETTE["accent"]}" opacity="0.92">'
-            f'<title>{w["commit_count"]} commits, {_iso_to_dt(w["start"]).date()} – {_iso_to_dt(w["end"]).date()}</title>'
-            f'</rect>'
+            f"<title>{w['commit_count']} commits, {_iso_to_dt(w['start']).date()} – {_iso_to_dt(w['end']).date()}</title>"
+            f"</rect>"
         )
 
     start_year = full_start.year
@@ -298,14 +296,16 @@ def render_timeline_masthead(timeline: dict) -> str:
         f'<text x="20" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">active commit windows</text>'
         f'<rect x="190" y="0" width="14" height="10" fill="url(#lossy-hatch)" stroke="{PALETTE["rule"]}" stroke-width="0.5"/>'
         f'<text x="210" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">dormancy (≥1y)</text>'
-        f'</g>'
+        f"</g>"
     )
 
     parts.append("</svg>")
     return "".join(parts)
 
 
-def _atom_timeline_strip(timeline: dict, width: int, margin_left: int, chart_w: int) -> str:
+def _atom_timeline_strip(
+    timeline: dict, width: int, margin_left: int, chart_w: int
+) -> str:
     """Per-atom narrow reference strip — sits above each chart."""
     if not timeline or not timeline.get("full_span"):
         return ""
@@ -423,7 +423,7 @@ def render_todo_strip(todos: list[dict], timeline: dict) -> str:
             f'<rect x="{margin_left}" y="{y + 6}" width="{bar_len}" height="{row_h - 12}" '
             f'fill="{color}" stroke="{PALETTE["ink"]}" stroke-width="0.4" opacity="0.9">'
             f"<title>{_xml_escape(t['text'])} (introduced {_xml_escape(t['introduced_at'][:10])} by {_xml_escape(t['introduced_by'])})</title>"
-            f'</rect>'
+            f"</rect>"
         )
         parts.append(
             f'<text x="{margin_left + bar_len + 8}" y="{y + row_h / 2 + 4}" '
@@ -440,7 +440,7 @@ def render_todo_strip(todos: list[dict], timeline: dict) -> str:
         f'<rect x="80" y="-9" width="14" height="11" fill="#c9a87a"/><text x="98" y="0" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">&lt; 1 year</text>'
         f'<rect x="180" y="-9" width="14" height="11" fill="{PALETTE["accent_dim"]}"/><text x="198" y="0" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">1–3 years</text>'
         f'<rect x="290" y="-9" width="14" height="11" fill="{PALETTE["accent"]}"/><text x="308" y="0" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">&gt; 3 years (archaeological)</text>'
-        f'</g>'
+        f"</g>"
     )
 
     parts.append("</svg>")
@@ -465,9 +465,7 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
     axis = build_active_scale(timeline, chart_w)
     max_diff = (
         max(
-            (c["additions"] + c["deletions"])
-            for lane in lanes
-            for c in lane["commits"]
+            (c["additions"] + c["deletions"]) for lane in lanes for c in lane["commits"]
         )
         or 1
     )
@@ -581,7 +579,7 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
         f'<circle cx="640" cy="-3" r="6" fill="{PALETTE["lane"]}"/>'
         f'<text x="652" y="1" font-family="EB Garamond, serif" font-style="italic" font-size="11" '
         f'fill="{PALETTE["ink_dim"]}">supporting commit</text>'
-        f'</g>'
+        f"</g>"
     )
 
     parts.append("</svg>")
@@ -710,11 +708,9 @@ def render_page(
     files = manifest.get("files", [])
     stories = manifest.get("stories", [])
 
-    file_lines = "".join(
-        f'<li><code>{_xml_escape(f)}</code></li>' for f in files
-    )
+    file_lines = "".join(f"<li><code>{_xml_escape(f)}</code></li>" for f in files)
     stories_lines = (
-        "".join(f'<li><code>{_xml_escape(s)}</code></li>' for s in stories)
+        "".join(f"<li><code>{_xml_escape(s)}</code></li>" for s in stories)
         or "<li><em>none</em></li>"
     )
 
@@ -998,7 +994,9 @@ def main() -> int:
     }
     survey_excerpt = _pull_survey_excerpt(args.repo)
 
-    page = render_page(args.project, manifest, atoms, timeline, masthead, survey_excerpt)
+    page = render_page(
+        args.project, manifest, atoms, timeline, masthead, survey_excerpt
+    )
     (args.output_dir / "index.html").write_text(page, encoding="utf-8")
     print(f"[hand-svg] wrote {args.output_dir / 'index.html'}")
     return 0
