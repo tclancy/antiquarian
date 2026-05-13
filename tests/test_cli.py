@@ -6,6 +6,7 @@ this file owns the parts that only exist in the CLI layer.
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -13,6 +14,17 @@ from typer.testing import CliRunner
 from antiquarian.cli import app
 
 runner = CliRunner()
+
+# Typer renders --help through Rich, which inserts ANSI escapes between
+# characters in option names when color is enabled (e.g. "--top" can render
+# as "-\x1b[0m\x1b[1;36m-top"). Locally pytest captures with color off so
+# substring matches work; CI runs with color on and they don't. Strip ANSI
+# before substring assertions so the tests pass in either environment.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _fake_survey(*_args, **_kwargs):
@@ -84,8 +96,9 @@ class TestScCommand:
 
     def test_sc_help_shows_options(self):
         result = runner.invoke(app, ["sc", "--help"])
-        assert "statistical" in result.stdout
-        assert "--top" in result.stdout
+        out = _strip_ansi(result.stdout)
+        assert "statistical" in out
+        assert "--top" in out
 
     def test_sc_runs_on_real_repo(self, tmp_path):
         """Smoke test: sc against a tiny git repo with a few commits."""
