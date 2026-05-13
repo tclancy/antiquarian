@@ -10,7 +10,9 @@ import pytest
 
 from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import (
+    THRESHOLD_BYTES,
     _compress_message,
+    _is_low_info_commit,
     _run_claude_p,
     _sanitize_for_claude,
     build_survey_prompt,
@@ -209,6 +211,146 @@ class TestBuildUserPrompt:
         prompt = build_user_prompt("widget.py", "r", [c], [])
         assert "**PR #99**" in prompt
         assert "Added the widget component" in prompt
+
+
+class TestSizeAwareCompressor:
+    """Issue #36 — prompt compression when build_user_prompt exceeds THRESHOLD_BYTES."""
+
+    def test_small_prompt_uncompressed(self):
+        """A prompt that already fits passes through unchanged."""
+        commits = [_commit(sha="aaaaaaaa", message="initial commit")]
+        prompt = build_user_prompt("f.py", "r", commits, [])
+        assert len(prompt) <= THRESHOLD_BYTES
+        # No "Also touched" trail appears when nothing was dropped
+        assert "Also touched in" not in prompt
+        # Original commit count line reflects all commits
+        assert "**Commit count:** 1" in prompt
+
+    def test_oversize_drops_low_info_commits(self):
+        """A low-info commit (short msg, tiny diff) drops into the trail when needed."""
+        commits = [
+            _commit(
+                sha="11111111",
+                message="A real substantive change with meaningful description",
+                additions=200,
+                deletions=10,
+            ),
+            _commit(sha="22222222", message="typo", additions=1, deletions=1),
+        ]
+        # Threshold sized to fit "substantive + trail" (~593 B) but not
+        # "both commits in default render" (~610 B) — forces phase 2 only.
+        prompt = build_user_prompt("f.py", "r", commits, [], threshold_bytes=600)
+        assert "Also touched in" in prompt
+        assert "22222222" in prompt
+        # The substantive commit survives as a real block
+        assert "### [1] 11111111" in prompt
+
+    def test_oversize_preserves_all_shas_somewhere(self):
+        """No commit is silently dropped — every SHA appears either as a header or trail."""
+        commits = [
+            _commit(
+                sha=f"sha{i:05d}",
+                message="real change " * 30,
+                additions=50,
+                deletions=20,
+            )
+            for i in range(8)
+        ]
+        prompt = build_user_prompt("f.py", "r", commits, [], threshold_bytes=2500)
+        for c in commits:
+            assert c.git_sha[:8] in prompt
+
+    def test_threshold_respected_for_typical_inputs(self):
+        """A realistic-sized commit history compresses under the threshold."""
+        # 10 commits, each with ~1 KB of message — uncompressed prompt ~10 KB+.
+        commits = [
+            _commit(
+                sha=f"abcd{i:04d}",
+                message=(f"Commit {i}: " + "blah " * 200),
+                additions=50,
+                deletions=20,
+            )
+            for i in range(10)
+        ]
+        prompt = build_user_prompt("f.py", "r", commits, [])
+        assert len(prompt) <= THRESHOLD_BYTES, (
+            f"prompt was {len(prompt)} bytes, threshold {THRESHOLD_BYTES}"
+        )
+
+    def test_custom_threshold_honored(self):
+        commits = [
+            _commit(
+                sha=f"abcd{i:04d}",
+                message=(f"Commit {i}: " + "blah " * 100),
+                additions=50,
+                deletions=20,
+            )
+            for i in range(5)
+        ]
+        prompt_strict = build_user_prompt(
+            "f.py", "r", commits, [], threshold_bytes=2000
+        )
+        prompt_loose = build_user_prompt(
+            "f.py", "r", commits, [], threshold_bytes=100_000
+        )
+        assert len(prompt_strict) <= 2000
+        # Loose threshold preserves more — at minimum, less compression happened
+        assert "Also touched in" not in prompt_loose
+
+    def test_idempotent_inputs_give_identical_prompts(self):
+        """Running with the same inputs twice yields byte-identical output."""
+        commits = [
+            _commit(sha="aaaaaaaa", message="first", additions=10, deletions=2),
+            _commit(
+                sha="bbbbbbbb", message="second " * 200, additions=100, deletions=20
+            ),
+        ]
+        # Pin the date so the prompt is deterministic across the two calls
+        first = build_user_prompt("f.py", "r", commits, [])
+        second = build_user_prompt("f.py", "r", commits, [])
+        assert first == second
+
+    def test_dropped_count_reflected_in_trail(self):
+        commits = [
+            _commit(
+                sha="big00001",
+                message="A real substantive change",
+                additions=200,
+                deletions=10,
+            ),
+            _commit(sha="lo000001", message="x", additions=1, deletions=0),
+            _commit(sha="lo000002", message="y", additions=1, deletions=0),
+        ]
+        # Phase 2 yields ~575 B (substantive + 2-SHA trail); phase 1 is 666 B
+        prompt = build_user_prompt("f.py", "r", commits, [], threshold_bytes=600)
+        assert "Also touched in" in prompt
+        assert "2 commit(s) elided" in prompt
+        assert "lo000001" in prompt
+        assert "lo000002" in prompt
+
+
+class TestIsLowInfoCommit:
+    """The cheap heuristic that picks compression candidates."""
+
+    def test_short_msg_tiny_diff_is_low_info(self):
+        c = _commit(message="fix typo", additions=1, deletions=1)
+        assert _is_low_info_commit(c) is True
+
+    def test_long_msg_not_low_info(self):
+        c = _commit(
+            message="This commit explains a real architectural change in detail",
+            additions=1,
+            deletions=1,
+        )
+        assert _is_low_info_commit(c) is False
+
+    def test_big_diff_not_low_info_even_with_short_msg(self):
+        c = _commit(message="wip", additions=300, deletions=100)
+        assert _is_low_info_commit(c) is False
+
+    def test_whitespace_only_msg_is_low_info(self):
+        c = _commit(message="   \n  ", additions=1, deletions=0)
+        assert _is_low_info_commit(c) is True
 
 
 class TestBuildSurveyPrompt:
