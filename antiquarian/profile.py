@@ -11,7 +11,7 @@ from antiquarian.models import AuthorBaseline, CommitFeatures
 
 _PATH_TOKEN_RE = re.compile(
     r"[/\\]"  # contains a slash
-    r"|\.(?:py|js|ts|tsx|jsx|rs|go|rb|java|c|cpp|h|hpp|css|html|md|yml|yaml|toml|json|sql|sh|txt)$"
+    r"|\.\w{1,6}$"  # ends with a dot + 1-6 word characters (file extension)
 )
 
 
@@ -32,7 +32,7 @@ def _path_word_ratio(messages: list[str]) -> float:
 
 
 def _typical_hours(hours: list[int]) -> tuple[int, int]:
-    """Approximate IQR of hour_of_day values as (Q1, Q3) via integer quartile indices."""
+    """IQR of hour_of_day values (Q1, Q3). Hours are from git commit timestamps, not normalized to any timezone."""
     if not hours:
         return (0, 0)
     if len(hours) == 1:
