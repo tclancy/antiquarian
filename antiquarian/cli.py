@@ -7,7 +7,10 @@ from pathlib import Path
 
 import typer
 
+from antiquarian.detect import StatisticalBaselineDetector
+from antiquarian.mining import mine_repo_history
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
+from antiquarian.profile import build_author_baselines
 from antiquarian.selection import select_files
 
 app = typer.Typer(
@@ -204,6 +207,68 @@ def files(
     for path in selected:
         typer.echo(path)
     typer.echo(f"[selected] {len(selected)} file(s)", err=True)
+
+
+@app.command()
+def sc(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    detector: str = typer.Option(
+        "statistical", help="Detector to use (currently: statistical)."
+    ),
+    top: int = typer.Option(20, "--top", help="Number of top significant changes."),
+) -> None:
+    """Detect significant changes — commits that deviate from author baselines."""
+    repo_path = Path(repo).resolve()
+
+    if detector != "statistical":
+        typer.echo(f"Error: unknown detector '{detector}'", err=True)
+        raise typer.Exit(code=1)
+
+    _stderr(f"[sc] Mining repo history from {repo_path} ...")
+    commits = mine_repo_history(repo_path)
+    if not commits:
+        typer.echo("No commits found.", err=True)
+        raise typer.Exit(code=1)
+
+    _stderr(f"[sc] {len(commits)} commits found. Building author baselines ...")
+    baselines = build_author_baselines(commits)
+    _stderr(f"[sc] {len(baselines)} author(s) profiled. Running detector ...")
+
+    det = StatisticalBaselineDetector()
+    results = det.detect(commits, baselines, top_n=top, log=_stderr)
+
+    sha_to_commit = {c.git_sha: c for c in commits if c.git_sha}
+
+    typer.echo(f"# Significant Changes ({len(results)} of {len(commits)} commits)\n")
+    typer.echo(f"**Detector:** {detector}")
+    typer.echo(f"**Authors:** {len(baselines)}")
+    typer.echo(f"**Commits analyzed:** {len(commits)}\n")
+
+    typer.echo("## Author Baselines\n")
+    for author, bl in sorted(baselines.items(), key=lambda x: -x[1].commit_share):
+        typer.echo(
+            f"- **{author}** — {bl.sample_size} commits ({bl.commit_share:.0%}), "
+            f"tenure {bl.tenure_days}d, "
+            f"median msg {bl.median_message_len} chars, "
+            f"median {bl.median_files_changed} files/commit"
+        )
+    typer.echo()
+
+    typer.echo("## Top Significant Changes\n")
+    for i, sc_item in enumerate(results, 1):
+        sha = sc_item.commits[0] if sc_item.commits else "?"
+        commit = sha_to_commit.get(sha)
+        subject = commit.message.split("\n")[0][:80] if commit else "?"
+        author = commit.author if commit else "?"
+        region = sc_item.region or "root"
+
+        typer.echo(f"### {i}. `{sha[:10]}` (score: {sc_item.score:.2f})")
+        typer.echo(f"**Author:** {author} | **Region:** {region}")
+        typer.echo(f"**Subject:** {subject}")
+        typer.echo("**Reasons:**")
+        for reason in sc_item.reasons:
+            typer.echo(f"  - {reason}")
+        typer.echo()
 
 
 if __name__ == "__main__":
