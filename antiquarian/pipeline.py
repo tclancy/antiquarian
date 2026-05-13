@@ -18,13 +18,71 @@ from antiquarian.cache import (
     put_commit,
 )
 from antiquarian.mining import historical_shas, mine_file_history
+from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import synthesize_narrative, synthesize_survey
 from antiquarian.prs import detect_github_repo, enrich_with_pr
 from antiquarian.todos import extract_todos
 
+# Inline marker prepended to every persisted story. Lets us detect a
+# stale cached story without sidecar files. Lives in an HTML comment so
+# Markdown renderers ignore it.
+_DIGEST_MARKER_PREFIX = "<!-- antiquarian-cache-digest: "
+_DIGEST_MARKER_SUFFIX = " -->"
+
 
 def _noop(_msg: str) -> None:
     pass
+
+
+def _story_digest(
+    commits: Sequence[CommitFeatures], todos: Sequence[TodoAnnotation]
+) -> str:
+    """SHA1 over the inputs that determine a story's content.
+
+    Two stories with the same digest were produced from the same commit
+    set and the same TODO set, so the cached version remains valid.
+    """
+    h = hashlib.sha1()
+    for c in commits:
+        h.update((c.git_sha or c.id).encode())
+        h.update(b"\0")
+    h.update(b"||todos||")
+    for t in todos:
+        h.update(t.kind.encode())
+        h.update(b"\0")
+        h.update(str(t.line_number).encode())
+        h.update(b"\0")
+        h.update(t.text.encode())
+        h.update(b"\0")
+        h.update(t.introduced_commit.encode())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _read_cached_story(story_file: Path) -> tuple[str, str] | None:
+    """Return ``(digest, narrative)`` from a persisted story, or ``None``.
+
+    ``narrative`` is the file content with the digest marker line stripped,
+    matching what ``synthesize_narrative`` would have produced.
+    """
+    if not story_file.exists():
+        return None
+    try:
+        text = story_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    first, _, rest = text.partition("\n")
+    if not (
+        first.startswith(_DIGEST_MARKER_PREFIX)
+        and first.endswith(_DIGEST_MARKER_SUFFIX)
+    ):
+        return None
+    digest = first[len(_DIGEST_MARKER_PREFIX) : -len(_DIGEST_MARKER_SUFFIX)].strip()
+    return digest, rest.rstrip("\n")
+
+
+def _format_story_with_marker(narrative: str, digest: str) -> str:
+    return f"{_DIGEST_MARKER_PREFIX}{digest}{_DIGEST_MARKER_SUFFIX}\n{narrative}\n"
 
 
 def generate_file_story(
@@ -84,6 +142,19 @@ def generate_file_story(
     todos = list(extract_todos(repo_path, file_path))
     log(f"[todos] found {len(todos)} annotation(s)")
 
+    stories_dir = repo_path / ".antiquarian" / "stories"
+    stories_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = file_path.replace("/", "__") + ".md"
+    story_file = stories_dir / safe_name
+
+    current_digest = _story_digest(commits, todos)
+
+    if use_cache:
+        cached = _read_cached_story(story_file)
+        if cached is not None and cached[0] == current_digest:
+            log(f"[narrative] reusing cached story at {story_file}")
+            return cached[1], story_file
+
     log("[narrative] sending to claude -p (this may take a minute)...")
     narrative = synthesize_narrative(
         file_path=file_path,
@@ -93,11 +164,9 @@ def generate_file_story(
         log=log,
     )
 
-    stories_dir = repo_path / ".antiquarian" / "stories"
-    stories_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = file_path.replace("/", "__") + ".md"
-    story_file = stories_dir / safe_name
-    story_file.write_text(narrative + "\n", encoding="utf-8")
+    story_file.write_text(
+        _format_story_with_marker(narrative, current_digest), encoding="utf-8"
+    )
     log(f"[wrote] {story_file}")
 
     return narrative, story_file
