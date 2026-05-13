@@ -250,18 +250,73 @@ class TestRunClaudeP:
         assert len(logs) == 3
         assert "giving up" in logs[-1]
 
-    def test_no_retry_on_called_process_error(self) -> None:
+    def test_retries_called_process_error_then_succeeds(self) -> None:
+        """Issue #39 — non-zero exits can be transient too."""
         logs: list[str] = []
-        err = subprocess.CalledProcessError(
-            returncode=2, cmd=["claude"], stderr="bad prompt"
-        )
-        with patch("antiquarian.narrative.subprocess.run", side_effect=err) as mock_run:
-            with pytest.raises(subprocess.CalledProcessError):
+        sleeps: list[float] = []
+        err = subprocess.CalledProcessError(returncode=1, cmd=["claude"], stderr="")
+        with patch(
+            "antiquarian.narrative.subprocess.run",
+            side_effect=[err, _completed("recovered")],
+        ) as mock_run:
+            result = _run_claude_p(
+                ["claude", "-p"],
+                "hi",
+                300,
+                base_backoff_seconds=0.01,
+                log=logs.append,
+                sleep=sleeps.append,
+            )
+        assert result.stdout == "recovered"
+        assert mock_run.call_count == 2
+        assert len(logs) == 1
+        assert "exited 1" in logs[0]
+        assert "retrying" in logs[0]
+
+    def test_raises_called_process_error_after_max_attempts(self) -> None:
+        logs: list[str] = []
+        err = subprocess.CalledProcessError(returncode=2, cmd=["claude"], stderr="bad")
+        with patch(
+            "antiquarian.narrative.subprocess.run", side_effect=[err, err]
+        ) as mock_run:
+            with pytest.raises(subprocess.CalledProcessError) as info:
                 _run_claude_p(
-                    ["claude", "-p"], "hi", 300, log=logs.append, sleep=lambda _s: None
+                    ["claude", "-p"],
+                    "hi",
+                    300,
+                    base_backoff_seconds=0.01,
+                    log=logs.append,
+                    sleep=lambda _s: None,
                 )
-        assert mock_run.call_count == 1
-        assert logs == []
+        assert info.value.returncode == 2
+        assert mock_run.call_count == 2
+        # 1 "retrying" log + 1 "giving up" log
+        assert len(logs) == 2
+        assert "giving up" in logs[-1]
+
+    def test_separate_caps_for_timeout_and_called_process_error(self) -> None:
+        """Timeout cap is 3 by default; CPE cap is 2. Different counters."""
+        logs: list[str] = []
+        side_effects = [
+            _timeout(),
+            subprocess.CalledProcessError(returncode=1, cmd=["claude"]),
+            _completed("ok"),
+        ]
+        with patch(
+            "antiquarian.narrative.subprocess.run", side_effect=side_effects
+        ) as mock_run:
+            result = _run_claude_p(
+                ["claude", "-p"],
+                "hi",
+                300,
+                base_backoff_seconds=0.01,
+                log=logs.append,
+                sleep=lambda _s: None,
+            )
+        assert result.stdout == "ok"
+        assert mock_run.call_count == 3
+        assert any("timed out" in m for m in logs)
+        assert any("exited 1" in m for m in logs)
 
     def test_custom_max_attempts_honored(self) -> None:
         with patch(
