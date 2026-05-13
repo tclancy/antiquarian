@@ -8,6 +8,7 @@ The CLI wraps these functions for I/O; the survey command composes
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -178,6 +179,30 @@ def generate_file_story(
     return narrative, story_file
 
 
+def _stub_narrative_for_skipped(file_path: str, reason: str) -> str:
+    """Voice-rule-compliant stub for a file the narrative engine couldn't process.
+
+    The survey synthesizer already has a "Where the channel went dark" section
+    in its system prompt; a stub that frames the gap in those terms gets
+    naturally absorbed into that section. We avoid persisting these stubs to
+    disk — see ``generate_codebase_survey`` — so a subsequent run gets a
+    fresh attempt rather than caching the failure.
+    """
+    return (
+        "## Origin\n"
+        "The narrative engine could not reconstruct this file's history "
+        f"within the session's budget. The channel went dark here.\n\n"
+        "## Major arcs\n"
+        "The rationale for this file's evolution is unrecoverable from the "
+        f"surviving artifacts within the current session's compute budget. "
+        f"Reason: {reason}.\n\n"
+        "## TODO/FIXME aging\n"
+        "Unrecoverable in this session.\n\n"
+        "## People & ownership\n"
+        "Unrecoverable in this session.\n"
+    )
+
+
 def generate_codebase_survey(
     repo_path: Path,
     file_paths: Sequence[str],
@@ -192,6 +217,16 @@ def generate_codebase_survey(
     Returns ``(survey_markdown, path_to_persisted_survey)``. The synthesis input
     is the per-file markdown stories — prose-intermediate composition per the
     issue #7 design.
+
+    Per #34, if a single file's narrative synthesis hangs or errors past the
+    retry budget, the survey does NOT tank — it substitutes a "channel went
+    dark" stub for that file and continues. The stub is in-memory only (not
+    persisted), so subsequent runs get a fresh attempt. The stub is voice-
+    rule-compliant so the survey synthesis can absorb it into its
+    "Where the channel went dark" section without confabulation.
+
+    Single-file ``generate_file_story`` calls still propagate the exception —
+    that path is for interactive debugging and should fail loudly.
     """
     if not file_paths:
         raise ValueError("survey requires at least one file path")
@@ -202,17 +237,35 @@ def generate_codebase_survey(
     log(f"[survey] {repo_name}: {len(file_paths)} file(s)")
 
     file_stories: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
     for i, fp in enumerate(file_paths, start=1):
         log(f"[survey] ({i}/{len(file_paths)}) {fp}")
-        narrative, _ = generate_file_story(
-            repo_path,
-            fp,
-            use_cache=use_cache,
-            fetch_prs=fetch_prs,
-            log=lambda m: log(f"  {m}"),
-            backend=backend,
-        )
+        try:
+            narrative, _ = generate_file_story(
+                repo_path,
+                fp,
+                use_cache=use_cache,
+                fetch_prs=fetch_prs,
+                log=lambda m: log(f"  {m}"),
+                backend=backend,
+            )
+        except subprocess.TimeoutExpired:
+            reason = "claude -p timed out after all retry attempts"
+            log(f"[survey] {fp} — {reason}; stubbing and continuing (#34)")
+            narrative = _stub_narrative_for_skipped(fp, reason)
+            skipped.append((fp, "timeout"))
+        except subprocess.CalledProcessError as e:
+            reason = f"claude -p exited {e.returncode} after all retry attempts"
+            log(f"[survey] {fp} — {reason}; stubbing and continuing (#34)")
+            narrative = _stub_narrative_for_skipped(fp, reason)
+            skipped.append((fp, f"exit-{e.returncode}"))
         file_stories.append((fp, narrative))
+
+    if skipped:
+        log(
+            f"[survey] {len(skipped)} of {len(file_paths)} file(s) stubbed "
+            f"due to claude -p failures: " + ", ".join(f"{p} ({r})" for p, r in skipped)
+        )
 
     log("[survey] building author baselines...")
     db_path = cache_path_for_repo(repo_path)
