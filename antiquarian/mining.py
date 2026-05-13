@@ -1,4 +1,4 @@
-"""Mine commit features from a git repository for a specific file."""
+"""Mine commit features from a git repository."""
 
 from __future__ import annotations
 
@@ -71,3 +71,35 @@ def mine_file_history(
             pr_number=None,
             pr_body=None,
         )
+
+
+def mine_repo_history(
+    repo_path: str | Path,
+) -> list[CommitFeatures]:
+    """Return CommitFeatures for every commit in the repository, oldest first."""
+    results: list[CommitFeatures] = []
+    for commit in Repository(str(repo_path)).traverse_commits():
+        ts = commit.committer_date
+        files_changed = [m.new_path or m.old_path for m in commit.modified_files]
+
+        results.append(
+            CommitFeatures(
+                id=str(ULID()),
+                git_sha=commit.hash,
+                jj_change_id=None,
+                jj_commit_id=None,
+                author=commit.author.name,
+                author_email=commit.author.email,
+                timestamp=ts,
+                hour_of_day=ts.hour,
+                day_of_week=ts.weekday(),
+                message=commit.msg,
+                files_changed=[f for f in files_changed if f is not None],
+                additions=commit.insertions,
+                deletions=commit.deletions,
+                pr_number=None,
+                pr_body=None,
+            )
+        )
+
+    return results

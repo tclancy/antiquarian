@@ -6,6 +6,7 @@ this file owns the parts that only exist in the CLI layer.
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -13,6 +14,17 @@ from typer.testing import CliRunner
 from antiquarian.cli import app
 
 runner = CliRunner()
+
+# Typer renders --help through Rich, which inserts ANSI escapes between
+# characters in option names when color is enabled (e.g. "--top" can render
+# as "-\x1b[0m\x1b[1;36m-top"). Locally pytest captures with color off so
+# substring matches work; CI runs with color on and they don't. Strip ANSI
+# before substring assertions so the tests pass in either environment.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _fake_survey(*_args, **_kwargs):
@@ -70,6 +82,58 @@ class TestSurveyLargeSelectionWarning:
             result = runner.invoke(app, ["survey", "--repo", str(tmp_path)])
         assert result.exit_code == 0
         assert "WARNING" not in result.stderr
+
+
+class TestScCommand:
+    """SC command — detector output shape and error handling."""
+
+    def test_unknown_detector_exits_with_error(self, tmp_path):
+        result = runner.invoke(
+            app, ["sc", "--repo", str(tmp_path), "--detector", "nonexistent"]
+        )
+        assert result.exit_code == 2
+        assert "nonexistent" in (result.stdout + result.stderr)
+
+    def test_sc_help_shows_options(self):
+        result = runner.invoke(app, ["sc", "--help"])
+        out = _strip_ansi(result.stdout)
+        assert "statistical" in out
+        assert "--top" in out
+
+    def test_sc_runs_on_real_repo(self, tmp_path):
+        """Smoke test: sc against a tiny git repo with a few commits."""
+        import subprocess
+
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+
+        for i in range(5):
+            (tmp_path / f"file{i}.py").write_text(f"# file {i}\n" * (i + 1))
+            subprocess.run(
+                ["git", "add", "."], cwd=tmp_path, capture_output=True, check=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", f"commit {i}"],
+                cwd=tmp_path,
+                capture_output=True,
+                check=True,
+            )
+
+        result = runner.invoke(app, ["sc", "--repo", str(tmp_path), "--top", "3"])
+        assert result.exit_code == 0
+        assert "Significant Changes" in result.stdout
+        assert "Author Baselines" in result.stdout
 
 
 class TestHelpTextDistinguishesFilters:
