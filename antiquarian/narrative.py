@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from antiquarian.models import CommitFeatures, TodoAnnotation
+from antiquarian.models import AuthorBaseline, CommitFeatures, TodoAnnotation
 
 if TYPE_CHECKING:
     from antiquarian.backends import NarrativeBackend
@@ -382,18 +382,46 @@ Produce a markdown document with exactly these top-level sections, in this order
 - If the channel held throughout, say so
 - ~100-200 words
 
+## Dramatis Personae
+- One entry per contributor, formatted as: **`Author Name`** — [apt but kind Hemingway-style descriptor]. [One or two sentences max.]
+- The per-author baseline data (tenure, commit share, regions, typical hours/days, message stats) is provided below the per-file stories. Use it as EVIDENCE for the prose, not as output. Don't print "authored 27% of commits across 2014–2021." Say "the survivor who carried the project through three Django upgrades" and let the reader trust there's a metric behind the claim.
+- Default to kind. "The survivor who carried the project through three Django upgrades" reads very differently from "the only person willing to touch this." Hemingway, not LinkedIn.
+- Tell the truth. Kind ≠ flattering. If the evidence suggests someone was a one-PR-and-vanished onboarding contributor, say so plainly.
+- Length cap: 2 sentences per contributor. Anything longer dilutes the format.
+- If the repo has a single contributor, still write the section — a solo maintainer is a signal worth naming.
+- ~50-200 words depending on contributor count
+
 # What to avoid
 
 - Don't restate the per-file narratives. Reference them, don't recap.
 - Don't invent cross-file relationships to fill space.
 - Don't editorialize ("a beautiful refactor", "interesting choice"). State evidence.
+- Don't print raw author metrics (commit counts, percentages, hours). The Dramatis Personae uses metrics as evidence for prose descriptions, not as tabular output.
 - Brevity beats padding.
 """
+
+
+def _format_baseline(name: str, b: AuthorBaseline) -> str:
+    days_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+    typical_days_str = ", ".join(days_map.get(d, str(d)) for d in b.typical_days)
+    regions_str = ", ".join(
+        f"{r} ({c})" for r, c in sorted(b.regions_touched.items(), key=lambda x: -x[1])
+    )
+    return (
+        f"- **{name}**: {b.sample_size} commits over {b.tenure_days}d "
+        f"({b.commit_share:.0%} share). "
+        f"Typical hours {b.typical_hours[0]:02d}–{b.typical_hours[1]:02d}, "
+        f"typical days: {typical_days_str}. "
+        f"Median msg {b.median_message_len} chars, "
+        f"median files/commit {b.median_files_changed}. "
+        f"Regions: {regions_str}."
+    )
 
 
 def build_survey_prompt(
     repo_name: str,
     file_stories: Sequence[tuple[str, str]],
+    author_baselines: dict[str, AuthorBaseline] | None = None,
 ) -> str:
     today = datetime.now(timezone.utc).date().isoformat()
     sections = [
@@ -414,6 +442,17 @@ def build_survey_prompt(
         sections.append("---")
         sections.append("")
 
+    if author_baselines:
+        sections.append("# Per-author baselines (for Dramatis Personae)")
+        sections.append("")
+        for name, baseline in sorted(
+            author_baselines.items(), key=lambda x: -x[1].sample_size
+        ):
+            sections.append(_format_baseline(name, baseline))
+        sections.append("")
+        sections.append("---")
+        sections.append("")
+
     sections.append(
         "Now write the codebase-level synthesis per the structure in the system prompt. "
         "Begin directly with `## Files surveyed` — no preamble."
@@ -425,6 +464,7 @@ def synthesize_survey(
     *,
     repo_name: str,
     file_stories: Sequence[tuple[str, str]],
+    author_baselines: dict[str, AuthorBaseline] | None = None,
     timeout_seconds: int = 300,
     log: Callable[[str], None] = _noop,
     backend: NarrativeBackend | None = None,
@@ -434,7 +474,7 @@ def synthesize_survey(
         from antiquarian.backends import DEFAULT_BACKEND
 
         backend = DEFAULT_BACKEND
-    user_prompt = build_survey_prompt(repo_name, file_stories)
+    user_prompt = build_survey_prompt(repo_name, file_stories, author_baselines)
     return backend.synthesize(
         SURVEY_SYSTEM_PROMPT, user_prompt, timeout_seconds=timeout_seconds, log=log
     )

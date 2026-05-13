@@ -253,12 +253,16 @@ class TestGenerateSurvey:
         "antiquarian.pipeline.synthesize_survey",
         return_value="## Files surveyed\nSynthesis.",
     )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
     @patch("antiquarian.pipeline.generate_file_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_happy_path(
         self,
         mock_gh: MagicMock,
         mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
@@ -284,12 +288,16 @@ class TestGenerateSurvey:
         "antiquarian.pipeline.synthesize_survey",
         return_value="## Files surveyed\nDone.",
     )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
     @patch("antiquarian.pipeline.generate_file_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_log_callback_invoked(
         self,
         mock_gh: MagicMock,
         mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
