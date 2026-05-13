@@ -6,6 +6,7 @@ run without network access, a real Claude subscription, or a populated repo.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,7 +14,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from antiquarian.models import CommitFeatures
-from antiquarian.pipeline import generate_codebase_survey, generate_file_story
+from antiquarian.pipeline import (
+    _stub_narrative_for_skipped,
+    generate_codebase_survey,
+    generate_file_story,
+)
 
 
 def _fake_commit(sha: str, file_path: str = "src/thing.py") -> CommitFeatures:
@@ -308,3 +313,157 @@ class TestGenerateSurvey:
         generate_codebase_survey(tmp_repo, ["a.py"], log=messages.append)
 
         assert any("[survey]" in m for m in messages)
+
+
+class TestSurveySkipAndStub:
+    """Issue #34 — survey continues past a single file's unrecoverable hang."""
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_timeout_is_stubbed_not_raised(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """A TimeoutExpired from one file shouldn't sink the whole survey."""
+        ok_path = tmp_repo / ".antiquarian" / "stories" / "ok.md"
+        ok_path.parent.mkdir(parents=True, exist_ok=True)
+        ok_path.write_text("Story OK")
+        mock_story.side_effect = [
+            ("## Origin\nReal story.", ok_path),
+            subprocess.TimeoutExpired(cmd=["claude"], timeout=300),
+        ]
+        (tmp_repo / "a.py").write_text("")
+        (tmp_repo / "b.py").write_text("")
+
+        survey, _ = generate_codebase_survey(tmp_repo, ["a.py", "b.py"])
+
+        assert "Done." in survey
+        # Both files still made it into the synthesis call
+        stories_arg = mock_survey.call_args.kwargs["file_stories"]
+        assert len(stories_arg) == 2
+        # The hung file got the stub
+        hung_story = dict(stories_arg)["b.py"]
+        assert "channel went dark" in hung_story
+        assert "timed out" in hung_story
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_called_process_error_is_stubbed(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        err = subprocess.CalledProcessError(returncode=2, cmd=["claude"], stderr="bad")
+        mock_story.side_effect = err
+        (tmp_repo / "a.py").write_text("")
+
+        survey, _ = generate_codebase_survey(tmp_repo, ["a.py"])
+
+        assert "Done." in survey
+        stories_arg = mock_survey.call_args.kwargs["file_stories"]
+        assert len(stories_arg) == 1
+        stub = stories_arg[0][1]
+        assert "channel went dark" in stub
+        assert "exited 2" in stub
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_skip_is_logged_for_visibility(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        mock_story.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+        (tmp_repo / "stuck.py").write_text("")
+
+        messages: list[str] = []
+        generate_codebase_survey(tmp_repo, ["stuck.py"], log=messages.append)
+
+        assert any("stubbing" in m for m in messages)
+        assert any("#34" in m for m in messages)
+        # Final summary line counts the skip
+        assert any("1 of 1 file(s) stubbed" in m for m in messages)
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_stub_not_persisted_to_disk(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """A subsequent run should retry — don't cache the failure to disk."""
+        mock_story.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+        (tmp_repo / "stuck.py").write_text("")
+
+        generate_codebase_survey(tmp_repo, ["stuck.py"])
+
+        stories_dir = tmp_repo / ".antiquarian" / "stories"
+        # The mocked generate_file_story never wrote a story; nothing should
+        # have been persisted on its behalf by the survey path either.
+        if stories_dir.exists():
+            for child in stories_dir.iterdir():
+                content = child.read_text(encoding="utf-8")
+                assert "channel went dark" not in content
+
+
+class TestStubNarrative:
+    def test_has_four_required_sections(self):
+        stub = _stub_narrative_for_skipped("f.py", "claude -p timed out")
+        assert "## Origin" in stub
+        assert "## Major arcs" in stub
+        assert "## TODO/FIXME aging" in stub
+        assert "## People & ownership" in stub
+
+    def test_voice_rules_respected(self):
+        """Stub uses voice-rule-compliant framing — channel went dark, not 'failed'."""
+        stub = _stub_narrative_for_skipped("f.py", "claude -p timed out")
+        # Banned vocabulary
+        for banned in ("blame", "fault", "culprit", "mistake", "failed to"):
+            assert banned not in stub.lower()
+        # Hedged language
+        assert "could not reconstruct" in stub or "unrecoverable" in stub
+
+    def test_reason_included(self):
+        stub = _stub_narrative_for_skipped("f.py", "claude -p exited 2")
+        assert "claude -p exited 2" in stub
