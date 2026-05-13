@@ -6,6 +6,7 @@ import random
 import re
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -108,10 +109,12 @@ def _run_claude_p(
 # byte-count reduction; the trailers were coincidental content in the bytes
 # that happened to push Account.swift's prompt over the threshold.
 #
-# This sanitizer is kept as-is until #36 lands a proper size-aware compressor
-# that targets `len(prompt)` directly. Don't add new patterns here on the
-# assumption that specific content triggers anything — file-size is what
-# matters. See #36 for the replacement design.
+# The proper size-aware compressor is now ``build_user_prompt``'s phase-2-onwards
+# logic (#36) — that's the load-bearing fix. This sanitizer is kept as cheap
+# belt-and-suspenders: the trailers carry zero historian value, so stripping
+# them is free byte savings before the compressor even has to think about
+# dropping commits. Don't add new patterns here assuming specific content
+# triggers anything — file-size is what matters.
 _CLAUDE_HANG_PATTERNS = [
     re.compile(r"🤖 Generated with \[Claude Code\]\(https://claude\.ai/code\)\s*"),
     re.compile(r"Co-Authored-By: Claude <noreply@anthropic\.com>\s*"),
@@ -122,9 +125,11 @@ def _sanitize_for_claude(text: str) -> str:
     """Strip two trailer lines from commit/PR content (legacy of #16).
 
     Originally believed to fix a content-driven hang in ``claude -p``; later
-    shown to work via byte-count reduction (see #16 wrap-up, superseded by
-    #36). Kept until the size-aware compressor lands so we don't regress
-    today's working prompt sizes.
+    shown to work via byte-count reduction (see #16 wrap-up). #36's
+    size-aware compressor is now the load-bearing fix; this sanitizer
+    survives as cheap belt-and-suspenders — the trailers carry zero
+    historian value, so stripping them is free byte savings before the
+    compressor has to start dropping commits.
 
     The parameterized form (``Co-Authored-By: Claude Opus 4.7 (1M context)
     <…>`` used by ``dispatch-bot[bot]`` commits) is intentionally preserved
@@ -159,6 +164,62 @@ def _compress_message(text: str, max_chars: int = _COMMIT_MESSAGE_TRUNCATE_AT) -
     if sep and len(first_para) <= max_chars:
         return f"{first_para}\n\n[…{truncated_bytes} more chars truncated]"
     return f"{text[:max_chars]}\n[…{truncated_bytes} more chars truncated]"
+
+
+# #36 — second layer. The prompt as a whole gets a byte ceiling. If exceeded,
+# we compress in priority order (drop low-info commits → tighten render →
+# drop more commits in size order) until under the ceiling. Calibrated from
+# the #16 wrap-up empirical data: Account.swift sanitized at 6,754 B succeeds
+# 100% of the time; adding 103 B of innocuous content drops success to 20%.
+# 6,500 leaves a small margin and is a starting knob — tune empirically as
+# the corpus grows.
+THRESHOLD_BYTES = 6500
+
+
+@dataclass(frozen=True)
+class _RenderConfig:
+    """Per-stage knobs for how individual commits format into the prompt.
+
+    Three tightening levels are defined below. The compressor walks from
+    looser to tighter, returning the first variant that fits the byte ceiling.
+    """
+
+    message_max_chars: int
+    pr_body_max_chars: int
+    files_changed_max: int
+
+
+_DEFAULT_RENDER = _RenderConfig(
+    message_max_chars=_COMMIT_MESSAGE_TRUNCATE_AT,
+    pr_body_max_chars=_COMMIT_MESSAGE_TRUNCATE_AT,
+    files_changed_max=6,
+)
+_TIGHTER_RENDER = _RenderConfig(
+    message_max_chars=200, pr_body_max_chars=200, files_changed_max=3
+)
+_TIGHTEST_RENDER = _RenderConfig(
+    message_max_chars=80, pr_body_max_chars=80, files_changed_max=1
+)
+
+
+def _is_low_info_commit(c: CommitFeatures) -> bool:
+    """Cheap heuristic: short message + tiny diff = likely typo / vendor bump / merge noise.
+
+    Commits flagged here are the first to drop when the prompt is too large.
+    Threshold values are conservative — false positives here just mean we
+    keep a slightly larger prompt than needed; false negatives mean we drop
+    a load-bearing commit and lose narrative signal. Prefer false positives.
+    """
+    return len(c.message.strip()) <= 30 and (c.additions + c.deletions) <= 5
+
+
+def _commit_size_score(c: CommitFeatures) -> int:
+    """Cheap proxy for information content; smaller is lower-information.
+
+    Used in phase 3 to drop commits in size order when low-info dropping and
+    tighter render configs aren't enough to fit the prompt under the ceiling.
+    """
+    return len(c.message) + c.additions + c.deletions
 
 
 SYSTEM_PROMPT = """\
@@ -228,19 +289,24 @@ Produce a markdown document with exactly these top-level sections, in this order
 """
 
 
-def _format_commit(c: CommitFeatures, index: int) -> str:
+def _format_commit(
+    c: CommitFeatures, index: int, config: _RenderConfig = _DEFAULT_RENDER
+) -> str:
     pr_section = ""
     if c.pr_number is not None:
         pr_section = f"\n\n**PR #{c.pr_number}**"
         if c.pr_body:
-            pr_section += (
-                f"\n```\n{_compress_message(_sanitize_for_claude(c.pr_body))}\n```"
+            pr_body = _compress_message(
+                _sanitize_for_claude(c.pr_body), config.pr_body_max_chars
             )
-    files_summary = ", ".join(c.files_changed[:6])
-    if len(c.files_changed) > 6:
+            pr_section += f"\n```\n{pr_body}\n```"
+    files_summary = ", ".join(c.files_changed[: config.files_changed_max])
+    if len(c.files_changed) > config.files_changed_max:
         files_summary += f", ... ({len(c.files_changed)} files total)"
     sha = c.git_sha or c.id
-    message = _compress_message(_sanitize_for_claude(c.message))
+    message = _compress_message(
+        _sanitize_for_claude(c.message), config.message_max_chars
+    )
     return (
         f"### [{index}] {sha[:8]} — {c.timestamp.date().isoformat()} — {c.author}\n"
         f"+{c.additions}/-{c.deletions} across: {files_summary}\n\n"
@@ -256,11 +322,15 @@ def _format_todo(t: TodoAnnotation) -> str:
     )
 
 
-def build_user_prompt(
+def _render_prompt(
     file_path: str,
     repo_name: str,
-    commits: Sequence[CommitFeatures],
+    kept: Sequence[CommitFeatures],
     todos: Sequence[TodoAnnotation],
+    dropped_shas: Sequence[str],
+    config: _RenderConfig,
+    *,
+    total_commits: int,
 ) -> str:
     today = datetime.now(timezone.utc).date().isoformat()
     sections = [
@@ -269,14 +339,22 @@ def build_user_prompt(
         f"**File:** `{file_path}`",
         f"**Repository:** {repo_name}",
         f"**Today's date:** {today}",
-        f"**Commit count:** {len(commits)}",
+        f"**Commit count:** {total_commits}",
         f"**TODO/FIXME count currently in file:** {len(todos)}",
         "",
         "## Commit history (oldest first)",
         "",
     ]
-    for i, c in enumerate(commits, start=1):
-        sections.append(_format_commit(c, i))
+    for i, c in enumerate(kept, start=1):
+        sections.append(_format_commit(c, i, config))
+        sections.append("")
+
+    if dropped_shas:
+        trail = ", ".join(s[:8] for s in dropped_shas)
+        sections.append(
+            f"**Also touched in (compressed for size, {len(dropped_shas)} "
+            f"commit(s) elided):** {trail}"
+        )
         sections.append("")
 
     sections.append("## TODO/FIXME annotations currently in the file")
@@ -295,6 +373,93 @@ def build_user_prompt(
     )
 
     return "\n".join(sections)
+
+
+def build_user_prompt(
+    file_path: str,
+    repo_name: str,
+    commits: Sequence[CommitFeatures],
+    todos: Sequence[TodoAnnotation],
+    *,
+    threshold_bytes: int = THRESHOLD_BYTES,
+) -> str:
+    """Build a per-file historian prompt, compressing if it exceeds ``threshold_bytes``.
+
+    Compression order (per issue #36):
+
+    1. Default render — full message/PR body up to 500 chars, top 6 files. If
+       the prompt fits the ceiling, return as-is.
+    2. Drop low-info commits (short message + tiny diff) into an "Also touched"
+       trail at the end of the commit history.
+    3. Tighten the render config — shorter message/PR body caps, fewer files
+       listed. Two stages: 200-char and 80-char.
+    4. Drop the lowest-information commits one by one (by message length plus
+       diff lines) until the prompt fits.
+
+    Every dropped commit's SHA appears in the trail so traceability is
+    preserved. The original ``Commit count`` line counts all commits, not
+    just the ones rendered in detail.
+
+    If even zero-commits-plus-trail under the tightest config exceeds the
+    ceiling, returns the best-effort result rather than raising — the
+    backstop is the retry/backoff in ``_run_claude_p``.
+    """
+    commits = list(commits)
+    total = len(commits)
+
+    # Phase 1: default render — try once before any compression.
+    prompt = _render_prompt(
+        file_path, repo_name, commits, todos, [], _DEFAULT_RENDER, total_commits=total
+    )
+    if len(prompt) <= threshold_bytes:
+        return prompt
+
+    # Phase 2: drop low-info commits into the trail.
+    kept: list[CommitFeatures] = []
+    dropped: list[str] = []
+    for c in commits:
+        if _is_low_info_commit(c):
+            dropped.append(c.git_sha or c.id)
+        else:
+            kept.append(c)
+    prompt = _render_prompt(
+        file_path, repo_name, kept, todos, dropped, _DEFAULT_RENDER, total_commits=total
+    )
+    if len(prompt) <= threshold_bytes:
+        return prompt
+
+    # Phase 3: tighten the render config.
+    for config in (_TIGHTER_RENDER, _TIGHTEST_RENDER):
+        prompt = _render_prompt(
+            file_path, repo_name, kept, todos, dropped, config, total_commits=total
+        )
+        if len(prompt) <= threshold_bytes:
+            return prompt
+
+    # Phase 4: drop more commits in size order, smallest first. Keep
+    # chronological order in the rendered subset.
+    dropped_set = set(dropped)
+    size_order = sorted(kept, key=_commit_size_score)
+    for c in size_order:
+        sha_or_id = c.git_sha or c.id
+        dropped_set.add(sha_or_id)
+        dropped.append(sha_or_id)
+        kept_in_order = [k for k in commits if (k.git_sha or k.id) not in dropped_set]
+        prompt = _render_prompt(
+            file_path,
+            repo_name,
+            kept_in_order,
+            todos,
+            dropped,
+            _TIGHTEST_RENDER,
+            total_commits=total,
+        )
+        if len(prompt) <= threshold_bytes:
+            return prompt
+
+    # Phase 5: even zero commits + trail under tightest config can't fit
+    # (pathological: huge file_path / repo_name / todo list). Best-effort.
+    return prompt
 
 
 def synthesize_narrative(

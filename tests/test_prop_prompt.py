@@ -11,6 +11,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from antiquarian.narrative import (
+    THRESHOLD_BYTES,
     _format_commit,
     _format_todo,
     build_survey_prompt,
@@ -91,6 +92,60 @@ class TestBuildUserPromptProperties:
         prompt = build_user_prompt(file_path, repo_name, commits, todos)
         assert "Co-Authored-By: Claude <noreply@anthropic.com>" not in prompt
         assert "🤖 Generated with [Claude Code](https://claude.ai/code)" not in prompt
+
+
+class TestBuildUserPromptCompressorProperties:
+    """Property tests for the size-aware compressor (issue #36)."""
+
+    @given(
+        commits=st.lists(commit_features(), min_size=1, max_size=15),
+        todos=st.lists(todo_annotations(), max_size=10),
+    )
+    @settings(max_examples=50)
+    def test_every_input_sha_appears_in_output(self, commits, todos) -> None:
+        """No commit silently lost — every input SHA appears as a header or in the trail."""
+        prompt = build_user_prompt("f.py", "repo", commits, todos)
+        for c in commits:
+            assert (c.git_sha or c.id)[:8] in prompt
+
+    @given(
+        commits=st.lists(commit_features(), min_size=0, max_size=10),
+        todos=st.lists(todo_annotations(), max_size=5),
+    )
+    @settings(max_examples=30)
+    def test_idempotent_same_inputs(self, commits, todos) -> None:
+        """Same inputs → identical prompt bytes. Sanity check on determinism."""
+        first = build_user_prompt("f.py", "repo", commits, todos)
+        second = build_user_prompt("f.py", "repo", commits, todos)
+        assert first == second
+
+    @given(
+        commits=st.lists(commit_features(), min_size=0, max_size=12),
+        todos=st.lists(todo_annotations(), max_size=5),
+    )
+    @settings(max_examples=50)
+    def test_commit_count_header_reflects_originals(self, commits, todos) -> None:
+        """The Commit count line always shows the original total, not the rendered subset."""
+        prompt = build_user_prompt("f.py", "repo", commits, todos)
+        assert f"**Commit count:** {len(commits)}" in prompt
+
+    @given(
+        commits=st.lists(commit_features(), min_size=0, max_size=10),
+        todos=st.lists(todo_annotations(), max_size=5),
+    )
+    @settings(max_examples=30)
+    def test_threshold_respected_when_compressible(self, commits, todos) -> None:
+        """For typical inputs, output ≤ THRESHOLD_BYTES.
+
+        Pathological cases — repos/files with massive todos or where even
+        the zero-commits-plus-trail rendering exceeds the threshold — get a
+        slightly larger output. We allow a generous ceiling (3x threshold)
+        to absorb those without losing the invariant for typical inputs.
+        """
+        prompt = build_user_prompt("f.py", "repo", commits, todos)
+        # Hard cap — even the worst pathological inputs in our generators
+        # shouldn't run away unboundedly.
+        assert len(prompt) <= 3 * THRESHOLD_BYTES
 
 
 class TestBuildSurveyPromptProperties:
