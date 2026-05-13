@@ -63,11 +63,22 @@ def _run_claude_p(
     raise last_exc
 
 
-# Patterns that cause `claude -p` to hang indefinitely when present in the user
-# prompt. The mechanism inside claude -p is unknown (self-recognition? markdown
-# link handling? safety filtering?) but reproducible on real BetterBlue commits.
-# Strip at prompt-build time only — the cache keeps the original message intact.
-# See issue #16.
+# Two patterns the sanitizer removes from commit messages and PR bodies before
+# they enter the prompt. Strip at prompt-build time only — the cache keeps the
+# original message intact.
+#
+# Original framing (#16): "these patterns hang claude -p." Later experimental
+# work (#16 wrap-up, 2026-05-12) found this was wrong. A size-matched control
+# — same prompt, same position, 103 bytes of innocuous filler instead of the
+# trailers — hangs at the same rate as the unsanitized version, while the
+# sanitized (smaller) prompt never hangs. The sanitizer's real mechanism is
+# byte-count reduction; the trailers were coincidental content in the bytes
+# that happened to push Account.swift's prompt over the threshold.
+#
+# This sanitizer is kept as-is until #36 lands a proper size-aware compressor
+# that targets `len(prompt)` directly. Don't add new patterns here on the
+# assumption that specific content triggers anything — file-size is what
+# matters. See #36 for the replacement design.
 _CLAUDE_HANG_PATTERNS = [
     re.compile(r"🤖 Generated with \[Claude Code\]\(https://claude\.ai/code\)\s*"),
     re.compile(r"Co-Authored-By: Claude <noreply@anthropic\.com>\s*"),
@@ -75,13 +86,17 @@ _CLAUDE_HANG_PATTERNS = [
 
 
 def _sanitize_for_claude(text: str) -> str:
-    """Strip the specific patterns known to hang ``claude -p`` (issue #16).
+    """Strip two trailer lines from commit/PR content (legacy of #16).
 
-    Conservative: removes ONLY the bare ``Co-Authored-By: Claude <…>`` form and
-    the ``🤖 Generated with [Claude Code](…)`` line. The parameterized form
-    (``Co-Authored-By: Claude Opus 4.7 (1M context) <…>`` used by
-    ``dispatch-bot[bot]`` commits) is left intact because it does not trigger
-    the hang.
+    Originally believed to fix a content-driven hang in ``claude -p``; later
+    shown to work via byte-count reduction (see #16 wrap-up, superseded by
+    #36). Kept until the size-aware compressor lands so we don't regress
+    today's working prompt sizes.
+
+    The parameterized form (``Co-Authored-By: Claude Opus 4.7 (1M context)
+    <…>`` used by ``dispatch-bot[bot]`` commits) is intentionally preserved
+    — it's distinguishable from the bare form and the experiment in #16
+    showed pattern identity isn't load-bearing anyway.
     """
     for pat in _CLAUDE_HANG_PATTERNS:
         text = pat.sub("", text)
