@@ -7,12 +7,14 @@ run without network access, a real Claude subscription, or a populated repo.
 from __future__ import annotations
 
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from antiquarian.cache import open_cache
 from antiquarian.models import CommitFeatures
 from antiquarian.pipeline import (
     _stub_narrative_for_skipped,
@@ -502,3 +504,225 @@ class TestStubNarrative:
     def test_reason_included(self):
         stub = _stub_narrative_for_skipped("f.py", "claude -p exited 2")
         assert "claude -p exited 2" in stub
+
+
+class TestCacheWALMode:
+    """Issue #80 — WAL mode enables safe concurrent reads/writes."""
+
+    def test_open_cache_enables_wal(self, tmp_path: Path):
+        db_path = tmp_path / ".antiquarian" / "cache.db"
+        with open_cache(db_path) as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            assert mode == "wal"
+
+    def test_open_cache_sets_busy_timeout(self, tmp_path: Path):
+        db_path = tmp_path / ".antiquarian" / "cache.db"
+        with open_cache(db_path) as conn:
+            timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            assert timeout == 5000
+
+
+class TestParallelSurvey:
+    """Issue #80 — parallel per-file story generation with ThreadPoolExecutor."""
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nParallel done.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_parallel_produces_same_result_as_sequential(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        story_path = tmp_repo / ".antiquarian" / "stories" / "a.md"
+        story_path.parent.mkdir(parents=True, exist_ok=True)
+        story_path.write_text("Story")
+        mock_story.return_value = ("Story", story_path)
+        (tmp_repo / "a.py").write_text("")
+        (tmp_repo / "b.py").write_text("")
+
+        survey, _ = generate_codebase_survey(tmp_repo, ["a.py", "b.py"], max_workers=2)
+
+        assert "Parallel done." in survey
+        assert mock_story.call_count == 2
+        stories_arg = mock_survey.call_args.kwargs["file_stories"]
+        assert len(stories_arg) == 2
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_parallel_preserves_file_ordering(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """File stories must appear in the original file_paths order for deterministic synthesis."""
+        stories = {"a.py": "Story A", "b.py": "Story B", "c.py": "Story C"}
+
+        def mock_gen(repo_path, fp, **kwargs):
+            return stories[fp], tmp_repo / f"{fp}.md"
+
+        mock_story.side_effect = mock_gen
+        for f in stories:
+            (tmp_repo / f).write_text("")
+
+        generate_codebase_survey(tmp_repo, ["a.py", "b.py", "c.py"], max_workers=4)
+
+        stories_arg = mock_survey.call_args.kwargs["file_stories"]
+        assert [fp for fp, _ in stories_arg] == ["a.py", "b.py", "c.py"]
+        assert [s for _, s in stories_arg] == ["Story A", "Story B", "Story C"]
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_parallel_timeout_stubbed_like_sequential(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        ok_path = tmp_repo / ".antiquarian" / "stories" / "ok.md"
+        ok_path.parent.mkdir(parents=True, exist_ok=True)
+        ok_path.write_text("OK")
+
+        def mock_gen(repo_path, fp, **kwargs):
+            if fp == "b.py":
+                raise subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+            return "## Origin\nReal.", ok_path
+
+        mock_story.side_effect = mock_gen
+        (tmp_repo / "a.py").write_text("")
+        (tmp_repo / "b.py").write_text("")
+
+        generate_codebase_survey(tmp_repo, ["a.py", "b.py"], max_workers=2)
+
+        stories_arg = mock_survey.call_args.kwargs["file_stories"]
+        assert len(stories_arg) == 2
+        assert "channel went dark" in dict(stories_arg)["b.py"]
+        assert "Real." in dict(stories_arg)["a.py"]
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_parallel_log_is_threadsafe(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """No interleaved log lines — each message is a complete string."""
+        mock_story.return_value = ("s", tmp_repo / "x.md")
+        for name in ("a.py", "b.py", "c.py", "d.py"):
+            (tmp_repo / name).write_text("")
+
+        messages: list[str] = []
+        lock = threading.Lock()
+
+        def recording_log(msg: str) -> None:
+            with lock:
+                messages.append(msg)
+
+        generate_codebase_survey(
+            tmp_repo,
+            ["a.py", "b.py", "c.py", "d.py"],
+            max_workers=4,
+            log=recording_log,
+        )
+
+        assert any("[survey]" in m for m in messages)
+        for msg in messages:
+            assert isinstance(msg, str)
+            assert "\n" not in msg or msg.count("\n") == 0
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_workers_capped_at_file_count(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """max_workers=8 with 2 files should only use 2 threads."""
+        mock_story.return_value = ("s", tmp_repo / "x.md")
+        (tmp_repo / "a.py").write_text("")
+        (tmp_repo / "b.py").write_text("")
+
+        messages: list[str] = []
+        generate_codebase_survey(
+            tmp_repo, ["a.py", "b.py"], max_workers=8, log=messages.append
+        )
+
+        header = [m for m in messages if "file(s)" in m and "worker" in m]
+        assert len(header) == 1
+        assert "2 workers" in header[0]
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=("x", "y"))
+    def test_max_workers_1_uses_sequential_path(
+        self,
+        mock_gh: MagicMock,
+        mock_story: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """max_workers=1 (default) falls back to sequential loop — no worker count in header."""
+        mock_story.return_value = ("s", tmp_repo / "x.md")
+        (tmp_repo / "a.py").write_text("")
+
+        messages: list[str] = []
+        generate_codebase_survey(tmp_repo, ["a.py"], max_workers=1, log=messages.append)
+
+        header = [m for m in messages if "file(s)" in m and m.startswith("[survey]")]
+        assert len(header) >= 1
+        assert "x/y: 1 file(s)" in header[0]
+        assert "worker" not in header[0]

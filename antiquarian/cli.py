@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -126,6 +127,13 @@ def survey(
     no_prs: bool = typer.Option(
         False, "--no-prs", help="Skip PR description fetching via gh."
     ),
+    workers: int = typer.Option(
+        4,
+        "--workers",
+        min=1,
+        max=16,
+        help="Number of parallel workers for per-file story generation.",
+    ),
 ) -> None:
     """Synthesize a codebase-level narrative from per-file stories."""
     repo_path = Path(repo).resolve()
@@ -160,6 +168,7 @@ def survey(
             files,
             use_cache=not no_cache,
             fetch_prs=not no_prs,
+            max_workers=workers,
             log=_stderr,
         )
     except FileNotFoundError as e:
@@ -224,6 +233,13 @@ def render(
         "-o",
         help="Output HTML path. Defaults to <repo>/.antiquarian/render/index.html.",
     ),
+    workers: int = typer.Option(
+        4,
+        "--workers",
+        min=1,
+        max=16,
+        help="Number of parallel workers for story page rendering.",
+    ),
 ) -> None:
     """Render the antiquarian broadsheet — a self-contained HTML page (#40).
 
@@ -264,16 +280,24 @@ def render(
     rendered_stories: set[str] = set()
     if stories_dir.exists():
         pages_dir.mkdir(parents=True, exist_ok=True)
-        for story_md_name in data.get("stories", []):
-            story_md_path = stories_dir / story_md_name
-            if not story_md_path.exists():
-                continue
+        candidates = [n for n in data.get("stories", []) if (stories_dir / n).exists()]
+
+        def _render_one_story(story_md_name: str) -> str:
             file_path = story_md_name.replace("__", "/").removesuffix(".md")
-            story_md = story_md_path.read_text(encoding="utf-8")
+            story_md = (stories_dir / story_md_name).read_text(encoding="utf-8")
             story_html = render_story_page(file_path, story_md, data["project"])
             target = pages_dir / _story_md_to_html_name(story_md_name)
             target.write_text(story_html, encoding="utf-8")
-            rendered_stories.add(story_md_name)
+            return story_md_name
+
+        effective = min(workers, len(candidates)) if candidates else 1
+        if effective > 1:
+            with ThreadPoolExecutor(max_workers=effective) as pool:
+                for name in pool.map(_render_one_story, candidates):
+                    rendered_stories.add(name)
+        else:
+            for name in candidates:
+                rendered_stories.add(_render_one_story(name))
         _stderr(f"[render] {len(rendered_stories)} story page(s) → {pages_dir}")
 
     survey_rendered = False
