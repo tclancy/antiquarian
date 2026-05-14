@@ -1005,7 +1005,6 @@ def render_page(
 
     <div class="meta-table">
       <span class="k">files surveyed</span><div><ul>{file_lines}</ul></div>
-      <span class="k">stories on file</span><div><ul>{stories_lines}</ul></div>
       <span class="k">codebase survey</span><div>{'<a href="survey.html">full narrative synthesis</a>' if has_survey else "<em>none — run <code>antiquarian survey</code> then <code>render</code></em>"}</div>
       <span class="k">generated</span><code>{_xml_escape(generated)}</code>
     </div>
