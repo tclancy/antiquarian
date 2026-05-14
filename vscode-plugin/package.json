@@ -1,0 +1,30 @@
+{
+  "name": "antiquarian-vscode",
+  "displayName": "Antiquarian",
+  "description": "On-demand file-history annotation from Antiquarian (proof of concept — issue #69).",
+  "version": "0.0.1",
+  "publisher": "tclancy",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "antiquarian.showStory",
+        "title": "Antiquarian: Show story for this file"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.4.0"
+  }
+}
