@@ -57,6 +57,7 @@ uv run antiquarian story path/to/some/file.py    # run against the repo you're i
 | [`docs/visual-vocabulary.md`](docs/visual-vocabulary.md) | The commitments baked into the broadsheet renderer — lossy hatching, dual-axis timeline, palette, typography. |
 | [`docs/notes.md`](docs/notes.md) | Warnings about AI-written corpora, future-idea backlog, candidate signals. |
 | [`CLAUDE.md`](CLAUDE.md) | Agent-facing guide. Conventions, current Dispatch-bot status, what not to do. |
+| [`examples/`](examples/) | Template snippets for automating Antiquarian against your repo — pre-push hook, GitHub Actions workflow. |
 
 Working notes and the running session log live in Obsidian — these `docs/` files are the canon.
 

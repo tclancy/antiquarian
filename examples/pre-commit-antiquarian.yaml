@@ -1,0 +1,44 @@
+# Antiquarian pre-push hook — example snippet for issue #75.
+#
+# Copy this `repos:` entry into your own .pre-commit-config.yaml. It runs
+# `antiquarian story <file>` for every changed file at push time,
+# regenerating the per-file narrative for anything you've touched since
+# the last push. The pipeline's digest cache short-circuits files whose
+# inputs haven't actually changed, so no claude -p calls get wasted on
+# pre-push runs where the same content is re-pushed.
+#
+# WARNING — the friction is real. A 5-file changeset means 5 sequential
+# `claude -p` calls, ~30-300s each. A push that touches 20 files could
+# block your terminal for 10-100 minutes. That's the price of eager
+# story refresh. The `files:` regex below is the lever for keeping the
+# blast radius small — restrict it to source files you actually want
+# narratives for, not lock files / generated code / CHANGELOG entries.
+#
+# Setup:
+#   1. `uv tool install --editable /path/to/antiquarian` (so the CLI is
+#      on PATH everywhere; see the project README).
+#   2. Append the `repos:` entry below to your own .pre-commit-config.yaml.
+#   3. `pre-commit install --hook-type pre-push` in your repo (one-time
+#      per clone).
+#
+# Skip a push without regenerating: `git push --no-verify`.
+
+repos:
+  - repo: local
+    hooks:
+      - id: antiquarian-story
+        name: Antiquarian story refresh (pre-push)
+        # Loop so each changed file becomes one `antiquarian story` call.
+        # pre-commit otherwise passes all filenames as one argv list,
+        # which our CLI doesn't accept (single-file Argument).
+        entry: sh -c 'for f in "$@"; do antiquarian story "$f" || exit 1; done' --
+        language: system
+        pass_filenames: true
+        stages: [pre-push]
+        # Narrow this to the files you actually want narratives for.
+        # Defaults below cover Python + a handful of other source-y
+        # extensions; tune for your repo. Lock files, generated code,
+        # and CHANGELOG-likes belong in your own excludes — we don't
+        # want to pre-decide that for you.
+        files: '\.(py|js|ts|tsx|jsx|rs|go|swift|rb|java|kt)$'
+        exclude: '^(.*\.lock|.*[-_]lock\..*|CHANGELOG.*|.*\.min\.(js|css))$'
