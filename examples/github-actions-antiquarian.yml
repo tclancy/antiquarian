@@ -1,0 +1,91 @@
+# Antiquarian GitHub Actions workflow — example for issue #75.
+#
+# Copy this to `.github/workflows/antiquarian.yml` in your own repo.
+# It runs on every push to main, re-renders the broadsheet from
+# whatever .antiquarian/ cache and stories you've already committed,
+# and publishes to the gh-pages branch.
+#
+# DOES NOT regenerate stories. Story synthesis still goes through
+# `claude -p`, which uses interactive session login — there's no way
+# to run that in CI today. Once a pluggable API-key-based backend
+# lands in `antiquarian/backends.py` (see issue #75 thread), the
+# commented-out step at the bottom of this file becomes uncommentable.
+#
+# Setup:
+#   1. Commit your `.antiquarian/cache.db` and `.antiquarian/stories/`
+#      from a local `antiquarian survey` run.
+#   2. Drop this file at `.github/workflows/antiquarian.yml`.
+#   3. After the first successful run, visit Settings → Pages and
+#      configure the source as "Deploy from a branch" → gh-pages →
+#      root. (The `antiquarian ghpublish` step prints the URL.)
+#
+# What the user is opting into:
+#   - The rendered broadsheet (incl. per-file story HTML) goes to
+#     the open internet via GitHub Pages on every push to main.
+#   - Commit messages, author emails, PR bodies that the stories
+#     reference are part of that. The current ghpublish command does
+#     not redact anything. If that's not what you want, don't use this.
+
+name: Antiquarian publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# We push to the gh-pages branch from inside this job.
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The renderer reads cache.db + stories/ from .antiquarian/;
+          # full history isn't needed unless you uncomment the story
+          # regen step below. Shallow checkout is fine for render+publish.
+          fetch-depth: 1
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install antiquarian
+        # Pin a release tag in your own copy of this workflow; the
+        # `main` ref here is what a beta tester would use.
+        run: uv tool install git+https://github.com/tclancy/antiquarian@main
+
+      - name: Render broadsheet
+        run: antiquarian render
+
+      - name: Configure git credentials for push
+        # ghpublish does `git push <remote-url> HEAD:gh-pages`. The
+        # remote URL it reads from the checkout doesn't carry the
+        # Actions token — rewrite origin so the token is on the URL.
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+      - name: Publish to gh-pages
+        run: antiquarian ghpublish
+
+      # --- Future: story regeneration in CI ---------------------------------
+      # Requires the pluggable API-key backend that doesn't exist yet
+      # (#75, point 1). Once it lands, expect something like:
+      #
+      #   - name: Regenerate stories for changed files
+      #     env:
+      #       ANTIQUARIAN_BACKEND: anthropic-sdk
+      #       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      #     run: |
+      #       git fetch origin ${{ github.event.before }} --depth=1
+      #       git diff --name-only ${{ github.event.before }} HEAD | \
+      #         while read f; do
+      #           antiquarian story "$f" || true
+      #         done
+      #       antiquarian render
+      #       antiquarian ghpublish
+      #
+      # Leaving commented and labeled rather than silently absent so
+      # the gap is obvious to anyone copying this workflow.

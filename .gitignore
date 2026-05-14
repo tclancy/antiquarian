@@ -217,5 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Antiquarian render output — regeneratable from cache.db + stories
-**/.antiquarian/render/
+# Antiquarian's own outputs when run against itself during dev — cache,
+# stories, surveys, renders. All regeneratable from git history; nothing
+# in here belongs in source control.
+**/.antiquarian/
