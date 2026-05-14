@@ -762,6 +762,7 @@ def render_page(
     masthead: str,
     survey_excerpt: str | None,
     stories_with_pages: set[str] | None = None,
+    story_descriptions: dict[str, str] | None = None,
 ) -> str:
     """Render the main broadsheet HTML.
 
@@ -769,33 +770,27 @@ def render_page(
     ``src__a.py.md``) that have rendered HTML pages alongside them. Filenames
     in this set get a clickable link in the meta-table; the rest stay as plain
     ``<code>``. None = treat as empty (no links).
+
+    ``story_descriptions`` maps file paths to one-sentence Origin excerpts,
+    shown alongside each file in the meta-table.
     """
     generated = manifest.get("generated_at", "")
     files = manifest.get("files", [])
-    stories = manifest.get("stories", [])
     linked = stories_with_pages or set()
+    descs = story_descriptions or {}
 
     def _file_li(f: str) -> str:
         """A file_path that has a story gets linked to its HTML page."""
         safe = _story_md_to_html_name(f.replace("/", "__") + ".md")
+        desc = descs.get(f, "")
+        desc_span = (
+            f' <span class="file-desc">— {_xml_escape(desc)}</span>' if desc else ""
+        )
         if (f.replace("/", "__") + ".md") in linked:
-            return (
-                f'<li><a href="stories/{safe}"><code>{_xml_escape(f)}</code></a></li>'
-            )
-        return f"<li><code>{_xml_escape(f)}</code></li>"
+            return f'<li><a href="stories/{safe}"><code>{_xml_escape(f)}</code></a>{desc_span}</li>'
+        return f"<li><code>{_xml_escape(f)}</code>{desc_span}</li>"
 
     file_lines = "".join(_file_li(f) for f in files)
-
-    def _story_li(story_md: str) -> str:
-        html_name = _story_md_to_html_name(story_md)
-        if story_md in linked:
-            return (
-                f'<li><a href="stories/{html_name}">'
-                f"<code>{_xml_escape(story_md)}</code></a></li>"
-            )
-        return f"<li><code>{_xml_escape(story_md)}</code></li>"
-
-    stories_lines = "".join(_story_li(s) for s in stories) or "<li><em>none</em></li>"
 
     full_start = full_end = ""
     if timeline.get("full_span"):
@@ -948,6 +943,11 @@ def render_page(
       color: var(--ink);
     }}
     .meta-table ul {{ margin: 0; padding-left: 1rem; }}
+    .meta-table .file-desc {{
+      font-style: italic;
+      font-size: 0.78rem;
+      color: var(--ink-dim);
+    }}
     .meta-table code {{
       font-family: ui-monospace, "SF Mono", Monaco, monospace;
       font-size: 0.8rem;
@@ -981,7 +981,6 @@ def render_page(
 
     <div class="meta-table">
       <span class="k">files surveyed</span><div><ul>{file_lines}</ul></div>
-      <span class="k">stories on file</span><div><ul>{stories_lines}</ul></div>
       <span class="k">generated</span><code>{_xml_escape(generated)}</code>
     </div>
 
@@ -1036,12 +1035,8 @@ def render_broadsheet(data: dict, *, stories_with_pages: set[str] | None = None)
     raw_excerpt = data.get("survey_excerpt")
     survey_excerpt = _xml_escape(raw_excerpt) if raw_excerpt else None
 
-    # Stub manifest dict for render_page — kept for compatibility with the
-    # pre-promotion call shape, since render_page still reads files/stories/
-    # generated_at off the dict.
     manifest = {
         "files": data.get("files", []),
-        "stories": data.get("stories", []),
         "generated_at": data.get("generated_at", ""),
     }
     return render_page(
@@ -1052,6 +1047,7 @@ def render_broadsheet(data: dict, *, stories_with_pages: set[str] | None = None)
         masthead_svg,
         survey_excerpt,
         stories_with_pages=stories_with_pages,
+        story_descriptions=data.get("story_descriptions"),
     )
 
 
