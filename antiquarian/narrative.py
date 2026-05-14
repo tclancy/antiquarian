@@ -278,7 +278,7 @@ Produce a markdown document with exactly these top-level sections, in this order
 ## TODO/FIXME aging
 - For each annotation currently in the file: the text, line number, age, who introduced it, the surrounding commit context
 - Frame these as admissions from past-self — "messages from a better version of themselves" that may or may not have been kept
-- If there are no annotations, say: "The file currently carries no TODO/FIXME admissions. That itself is a signal of the maintainers' standards."
+- If there are no annotations, OMIT this entire section. Do not produce a `## TODO/FIXME aging` heading or any prose under it. Absence of admissions is fine to leave silent — the reader can see the section is missing.
 
 ## People & ownership
 - Who has worked on this file, when, how much

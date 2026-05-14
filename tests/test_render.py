@@ -22,9 +22,11 @@ from typer.testing import CliRunner
 
 from antiquarian.cli import app
 from antiquarian.render import (
+    _strip_empty_todo_section,
     _story_md_to_html_name,
     render_broadsheet,
     render_story_page,
+    render_todo_strip,
 )
 from antiquarian.render_data import extract_render_data
 
@@ -327,3 +329,119 @@ class TestStoryPageRendering:
         assert "stories/src__a.py.html" in index.read_text()
         # Story page renders the markdown body
         assert "<h2>Origin</h2>" in story_page.read_text()
+
+
+class TestEmptyTodoSections:
+    """No-TODO surfaces should be quiet, not loudly empty."""
+
+    def test_render_todo_strip_empty_returns_empty_string(self):
+        """No TODOs → no atom output. The broadsheet layout drops the slot."""
+        timeline = {"full_span": None, "active_windows": [], "gaps": []}
+        assert render_todo_strip([], timeline) == ""
+
+    def test_render_todo_strip_with_todos_returns_svg(self):
+        """Sanity check that real data still produces output."""
+        timeline = {
+            "full_span": {
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-06-01T00:00:00+00:00",
+                "days": 152,
+            },
+            "active_windows": [
+                {
+                    "start": "2026-01-01T00:00:00+00:00",
+                    "end": "2026-06-01T00:00:00+00:00",
+                    "commit_count": 5,
+                }
+            ],
+            "gaps": [],
+            "active_total_days": 152,
+            "compression_ratio": 1.0,
+        }
+        todos = [
+            {
+                "file_path": "src/a.py",
+                "kind": "TODO",
+                "line_number": 10,
+                "text": "fix this",
+                "introduced_sha": "abc11111",
+                "introduced_short": "abc11111",
+                "introduced_at": "2026-01-15T10:30:00+00:00",
+                "introduced_by": "Alice",
+                "age_days": 100,
+            }
+        ]
+        out = render_todo_strip(todos, timeline)
+        assert out.startswith("<svg")
+        assert "TODO" in out or "admission" in out.lower()
+
+    def test_broadsheet_skips_empty_todo_chapter_mark(self, seeded_repo: Path):
+        """No TODOs in the codebase → no 'i' chapter mark for the empty atom.
+
+        The remaining atoms renumber: swimlane becomes 'i', arc_band 'ii'.
+        """
+        data = extract_render_data(seeded_repo)
+        # Seeded repo has no TODOs (no live HEAD files with TODO comments)
+        assert data["todos"] == []
+        html = render_broadsheet(data)
+        # The HTML still has chapter marks for the present atoms
+        assert 'class="chapter-mark">i</div>' in html
+        # But only as many as there are non-empty atoms
+        chapter_count = html.count('class="chapter-mark"')
+        assert chapter_count == 2  # swimlane + arc_band, not 3
+
+    def test_strip_empty_todo_section_removes_canonical_placeholder(self):
+        md = (
+            "## Origin\nThe file appeared.\n\n"
+            "## Major arcs\n**Arc 1 — Setup.** The setup happened.\n\n"
+            "## TODO/FIXME aging\n"
+            "The file currently carries no TODO/FIXME admissions. "
+            "That itself is a signal of the maintainers' standards.\n\n"
+            "## People & ownership\nAlice owns this.\n"
+        )
+        out = _strip_empty_todo_section(md)
+        assert "TODO/FIXME aging" not in out
+        assert "currently carries no" not in out
+        # Surrounding sections survive intact
+        assert "## Origin" in out
+        assert "## Major arcs" in out
+        assert "## People & ownership" in out
+
+    def test_strip_keeps_real_todo_content(self):
+        """Real annotations should NOT be stripped."""
+        md = (
+            "## TODO/FIXME aging\n"
+            "- **TODO** at line 42 (730d old) — introduced by Bob in commit "
+            "abc11111: refactor this hack\n"
+        )
+        out = _strip_empty_todo_section(md)
+        assert "TODO/FIXME aging" in out
+        assert "refactor this hack" in out
+
+    def test_strip_keeps_skip_and_stub_unrecoverable(self):
+        """The #34 skip-and-stub uses 'Unrecoverable in this session.' which
+        is also a valid no-data state. Don't strip it."""
+        md = (
+            "## TODO/FIXME aging\n"
+            "Unrecoverable in this session.\n\n"
+            "## People & ownership\n"
+            "Unrecoverable in this session.\n"
+        )
+        out = _strip_empty_todo_section(md)
+        assert "TODO/FIXME aging" in out
+        assert "Unrecoverable" in out
+
+    def test_render_story_page_strips_empty_todo_from_cached_story(self):
+        md = (
+            "## Origin\nThe file appeared.\n\n"
+            "## TODO/FIXME aging\n"
+            "The file currently carries no TODO/FIXME admissions. "
+            "That itself is a signal of the maintainers' standards.\n\n"
+            "## People & ownership\nAlice owns it.\n"
+        )
+        html = render_story_page("f.py", md, "proj")
+        assert "TODO/FIXME aging" not in html
+        assert "currently carries no" not in html
+        # Surrounding sections still rendered
+        assert "<h2>Origin</h2>" in html
+        assert "<h2>People &amp; ownership</h2>" in html
