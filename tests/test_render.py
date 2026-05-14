@@ -29,7 +29,7 @@ from antiquarian.render import (
     render_survey_page,
     render_todo_strip,
 )
-from antiquarian.render_data import extract_render_data
+from antiquarian.render_data import _extract_story_descriptions, extract_render_data
 
 runner = CliRunner()
 
@@ -144,6 +144,7 @@ class TestExtractRenderData:
             "timeline",
             "file_lifespans",
             "survey_excerpt",
+            "story_descriptions",
         ):
             assert key in data, f"missing key: {key}"
 
@@ -330,6 +331,79 @@ class TestStoryPageRendering:
         assert "stories/src__a.py.html" in index.read_text()
         # Story page renders the markdown body
         assert "<h2>Origin</h2>" in story_page.read_text()
+
+
+class TestStoryDescriptions:
+    """Story descriptions extracted from Origin sections appear in meta-table."""
+
+    def test_extract_story_descriptions_basic(self, tmp_path: Path):
+        stories_dir = tmp_path / "stories"
+        stories_dir.mkdir()
+        (stories_dir / "src__a.py.md").write_text(
+            "## Origin\nThe module handles authentication. More details.\n"
+        )
+        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
+        assert descs == {"src/a.py": "The module handles authentication."}
+
+    def test_extract_story_descriptions_strips_backtick_code(self, tmp_path: Path):
+        stories_dir = tmp_path / "stories"
+        stories_dir.mkdir()
+        (stories_dir / "src__a.py.md").write_text(
+            "## Origin\nIntroduced in `aaa11111` as a helper. More.\n"
+        )
+        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
+        assert "`" not in descs["src/a.py"]
+        assert "Introduced in" in descs["src/a.py"]
+
+    def test_extract_story_descriptions_truncates_long(self, tmp_path: Path):
+        stories_dir = tmp_path / "stories"
+        stories_dir.mkdir()
+        long_sentence = "A" * 200 + "."
+        (stories_dir / "src__a.py.md").write_text(f"## Origin\n{long_sentence} More.\n")
+        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
+        assert len(descs["src/a.py"]) <= 120
+        assert descs["src/a.py"].endswith("…")
+
+    def test_extract_story_descriptions_no_origin_section(self, tmp_path: Path):
+        stories_dir = tmp_path / "stories"
+        stories_dir.mkdir()
+        (stories_dir / "src__a.py.md").write_text("## Major arcs\nSome arcs.\n")
+        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
+        assert descs == {}
+
+    def test_broadsheet_no_stories_on_file_row(self, seeded_repo: Path):
+        """The 'stories on file' row is gone from the meta-table."""
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert "stories on file" not in html
+        assert "files surveyed" in html
+
+    def test_broadsheet_shows_description(self, seeded_repo: Path):
+        stories_dir = seeded_repo / ".antiquarian" / "stories"
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / "src__a.py.md").write_text(
+            "## Origin\nThe auth module handles login. More detail.\n"
+        )
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data, stories_with_pages={"src__a.py.md"})
+        assert "file-desc" in html
+        assert "The auth module handles login." in html
+
+    def test_broadsheet_no_description_no_span(self, seeded_repo: Path):
+        """Files without stories don't get a description span in the body."""
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert '<span class="file-desc">' not in html
+
+    def test_story_descriptions_in_extract_render_data(self, seeded_repo: Path):
+        stories_dir = seeded_repo / ".antiquarian" / "stories"
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / "src__a.py.md").write_text(
+            "## Origin\nA utility module. More.\n"
+        )
+        data = extract_render_data(seeded_repo)
+        assert "story_descriptions" in data
+        assert data["story_descriptions"]["src/a.py"] == "A utility module."
 
 
 class TestEmptyTodoSections:
