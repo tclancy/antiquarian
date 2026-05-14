@@ -14,6 +14,7 @@ from antiquarian.render import (
     _story_md_to_html_name,
     render_broadsheet,
     render_story_page,
+    render_survey_page,
 )
 from antiquarian.render_data import extract_render_data
 from antiquarian.selection import select_files
@@ -275,7 +276,24 @@ def render(
             rendered_stories.add(story_md_name)
         _stderr(f"[render] {len(rendered_stories)} story page(s) → {pages_dir}")
 
-    html = render_broadsheet(data, stories_with_pages=rendered_stories)
+    survey_rendered = False
+    surveys_dir = repo_path / ".antiquarian" / "surveys"
+    if surveys_dir.exists():
+        survey_files = sorted(surveys_dir.glob("*.md"))
+        if survey_files:
+            latest_survey = survey_files[-1]
+            survey_md = latest_survey.read_text(encoding="utf-8")
+            survey_html = render_survey_page(
+                survey_md, data["project"], len(data["files"])
+            )
+            survey_out = output_path.parent / "survey.html"
+            survey_out.write_text(survey_html, encoding="utf-8")
+            survey_rendered = True
+            _stderr(f"[render] survey page → {survey_out}")
+
+    html = render_broadsheet(
+        data, stories_with_pages=rendered_stories, has_survey=survey_rendered
+    )
     output_path.write_text(html, encoding="utf-8")
     _stderr(f"[render] wrote {output_path}")
     typer.echo(str(output_path))

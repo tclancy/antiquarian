@@ -26,6 +26,7 @@ from antiquarian.render import (
     _story_md_to_html_name,
     render_broadsheet,
     render_story_page,
+    render_survey_page,
     render_todo_strip,
 )
 from antiquarian.render_data import extract_render_data
@@ -445,3 +446,102 @@ class TestEmptyTodoSections:
         # Surrounding sections still rendered
         assert "<h2>Origin</h2>" in html
         assert "<h2>People &amp; ownership</h2>" in html
+
+
+class TestSurveyPageRendering:
+    """Issue #81 — survey content rendered as HTML in published docs."""
+
+    def test_render_survey_page_produces_html(self):
+        md = (
+            "## Files surveyed\nTwo files were analyzed.\n\n"
+            "## Cross-file arcs\n"
+            "**Arc 1 — Shared foundation.** Both files share a common origin.\n"
+        )
+        html = render_survey_page(md, "myproject", 2)
+        assert html.startswith("<!doctype html>")
+        assert "myproject" in html
+        assert "Codebase Survey" in html
+        assert "<h2>Files surveyed</h2>" in html
+        assert "<strong>Arc 1" in html
+        assert 'href="index.html"' in html
+        assert "2 per-file stories" in html
+
+    def test_render_survey_page_escapes_project_name(self):
+        html = render_survey_page("## Intro\nHello.\n", "A <B> & C", 1)
+        assert "A &lt;B&gt; &amp; C" in html
+
+    def test_broadsheet_meta_table_links_survey_when_present(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data, has_survey=True)
+        assert 'href="survey.html"' in html
+        assert "full narrative synthesis" in html
+
+    def test_broadsheet_meta_table_no_survey_link_by_default(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert "survey.html" not in html
+
+    def test_broadsheet_survey_excerpt_links_to_survey(self, seeded_repo: Path):
+        surveys_dir = seeded_repo / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True, exist_ok=True)
+        (surveys_dir / "survey-test.md").write_text(
+            "## Files surveyed\nintro.\n\n"
+            "## Cross-file arcs\n"
+            "**Arc 1 — Testing.** Shared patterns.\n"
+        )
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data, has_survey=True)
+        assert "read the full survey" in html
+        assert 'href="survey.html"' in html
+
+    def test_broadsheet_survey_link_without_excerpt(self):
+        data = {
+            "project": "p",
+            "repo_path": "/tmp/p",
+            "generated_at": "2026-05-14T00:00:00+00:00",
+            "files": [],
+            "stories": [],
+            "commits": [],
+            "todos": [],
+            "arcs": [],
+            "swimlane": {
+                "lane_count": 0,
+                "lanes": [],
+                "time_min": None,
+                "time_max": None,
+            },
+            "arc_band": {"arc_count": 0, "arcs": []},
+            "timeline": {
+                "full_span": None,
+                "active_windows": [],
+                "gaps": [],
+                "active_total_days": 0,
+                "compression_ratio": 1.0,
+            },
+            "file_lifespans": [],
+            "survey_excerpt": None,
+        }
+        html = render_broadsheet(data, has_survey=True)
+        assert "read the full codebase survey" in html
+        assert 'href="survey.html"' in html
+
+    def test_render_cli_writes_survey_page(self, seeded_repo: Path):
+        surveys_dir = seeded_repo / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True, exist_ok=True)
+        (surveys_dir / "survey-abc123.md").write_text(
+            "## Files surveyed\nTwo files.\n\n"
+            "## Cross-file arcs\n"
+            "**Arc 1 — Shared.** Common origin.\n"
+        )
+        result = runner.invoke(app, ["render", "--repo", str(seeded_repo)])
+        assert result.exit_code == 0, result.output + result.stderr
+
+        render_dir = seeded_repo / ".antiquarian" / "render"
+        survey_page = render_dir / "survey.html"
+        assert survey_page.exists()
+        content = survey_page.read_text()
+        assert "Codebase Survey" in content
+        assert "<h2>Files surveyed</h2>" in content
+
+        index = render_dir / "index.html"
+        assert 'href="survey.html"' in index.read_text()

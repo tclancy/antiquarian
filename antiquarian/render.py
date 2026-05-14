@@ -762,6 +762,7 @@ def render_page(
     masthead: str,
     survey_excerpt: str | None,
     stories_with_pages: set[str] | None = None,
+    has_survey: bool = False,
 ) -> str:
     """Render the main broadsheet HTML.
 
@@ -804,10 +805,21 @@ def render_page(
 
     survey_html = ""
     if survey_excerpt:
+        survey_link = (
+            '\n    <div class="aside-link"><a href="survey.html">read the full survey &rarr;</a></div>'
+            if has_survey
+            else ""
+        )
         survey_html = f"""
   <aside class="survey-excerpt">
     <div class="aside-label">from the surveyor's field notes</div>
-    <div class="aside-body">{survey_excerpt}</div>
+    <div class="aside-body">{survey_excerpt}</div>{survey_link}
+  </aside>"""
+    elif has_survey:
+        survey_html = """
+  <aside class="survey-excerpt">
+    <div class="aside-label">codebase survey</div>
+    <div class="aside-link"><a href="survey.html">read the full codebase survey &rarr;</a></div>
   </aside>"""
 
     return f"""<!doctype html>
@@ -916,6 +928,18 @@ def render_page(
       line-height: 1.55;
       color: var(--ink);
     }}
+    aside.survey-excerpt .aside-link {{
+      margin-top: 0.6rem;
+      font-size: 0.85rem;
+    }}
+    aside.survey-excerpt .aside-link a {{
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px dotted var(--accent);
+    }}
+    aside.survey-excerpt .aside-link a:hover {{
+      border-bottom-style: solid;
+    }}
     .chapter-mark {{
       font-family: var(--serif);
       font-size: 0.95rem;
@@ -982,6 +1006,7 @@ def render_page(
     <div class="meta-table">
       <span class="k">files surveyed</span><div><ul>{file_lines}</ul></div>
       <span class="k">stories on file</span><div><ul>{stories_lines}</ul></div>
+      <span class="k">codebase survey</span><div>{'<a href="survey.html">full narrative synthesis</a>' if has_survey else "<em>none — run <code>antiquarian survey</code> then <code>render</code></em>"}</div>
       <span class="k">generated</span><code>{_xml_escape(generated)}</code>
     </div>
 
@@ -1010,7 +1035,9 @@ def render_page(
 """
 
 
-def render_broadsheet(data: dict, *, stories_with_pages: set[str] | None = None) -> str:
+def render_broadsheet(
+    data: dict, *, stories_with_pages: set[str] | None = None, has_survey: bool = False
+) -> str:
     """Render the broadsheet HTML page from extracted render data.
 
     ``data`` is the dict returned by
@@ -1052,6 +1079,7 @@ def render_broadsheet(data: dict, *, stories_with_pages: set[str] | None = None)
         masthead_svg,
         survey_excerpt,
         stories_with_pages=stories_with_pages,
+        has_survey=has_survey,
     )
 
 
@@ -1080,6 +1108,10 @@ _STORY_PAGE_CSS = Template(
 
 _STORY_PAGE_HTML = Template(
     (_TEMPLATES_DIR / "story_page.html").read_text(encoding="utf-8")
+)
+
+_SURVEY_PAGE_HTML = Template(
+    (_TEMPLATES_DIR / "survey_page.html").read_text(encoding="utf-8")
 )
 
 
@@ -1153,5 +1185,32 @@ def render_story_page(
         css=_STORY_PAGE_CSS,
         project=project_escaped,
         file_path=file_path_escaped,
+        body_html=body_html,
+    )
+
+
+def render_survey_page(
+    survey_md: str,
+    project: str,
+    file_count: int,
+) -> str:
+    """Render the codebase survey as a styled HTML page (#81).
+
+    Uses the same palette and typography as story pages so the broadsheet,
+    stories, and survey feel like one publication.
+    """
+    import markdown as _markdown
+
+    body_html = _markdown.markdown(
+        survey_md.strip(),
+        extensions=["fenced_code", "tables"],
+        output_format="html",
+    )
+    project_escaped = _xml_escape(project)
+    return _SURVEY_PAGE_HTML.substitute(
+        title=f"{project_escaped} — Codebase Survey",
+        css=_STORY_PAGE_CSS,
+        project=project_escaped,
+        file_count=str(file_count),
         body_html=body_html,
     )
