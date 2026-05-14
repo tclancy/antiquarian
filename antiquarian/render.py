@@ -1,16 +1,18 @@
 """Antiquarian broadsheet — hand-rolled SVG renderer (the canonical visual output).
 
 Promoted from ``viz-playground/hand-svg/build.py`` per issue #40 after the
-playground feel-test made it clear this stack owned the project's visual
-vocabulary end-to-end. The other two stacks (Observable, Vega-Lite) have
-been deleted; this is what ``antiquarian render`` produces.
+playground feel-test settled the visual-stack question. This is what
+``antiquarian render`` produces.
 
 Visual identity: **antiquarian broadsheet** — large serif masthead,
 small-caps dateline, drop caps, double-rule borders, woodblock-style
 hatched textures for lossy regions, italic side-note glyphs in the margins.
-Project-controlled visual vocabulary: no library defaults, no CDN fonts
-(EB Garamond is preferred, but the page degrades gracefully without it),
-no chart-grammar opinions.
+EB Garamond is the preferred face; the page degrades gracefully through
+Iowan Old Style → Palatino → Georgia when it can't load.
+
+The full design commitments (Tufte's data-ink discipline, Dürer's
+mark-making language for the hatch, 19th-century broadsheet page idiom)
+live in ``docs/visual-vocabulary.md``; this file is the implementation.
 
 The committed visual atoms (see ``docs/visual-vocabulary.md``):
   * The lossy region is first-class — gaps are filled with the diagonal
@@ -39,11 +41,11 @@ from string import Template
 # stacks because this one is the "masthead" page.
 # ----------------------------------------------------------------------------
 PALETTE = {
-    "ink": "#1f1a14",  # warmer ink than the other stacks — print-press dark
+    "ink": "#1f1a14",  # print-press dark; warmer than pure black
     "ink_dim": "#5a4e3a",
     "rule": "#a89b80",
     "rule_dim": "#d4c8b0",
-    "paper": "#f4ead4",  # parchment yellow, NOT the other stacks' near-white
+    "paper": "#f4ead4",  # parchment yellow
     "paper_alt": "#ede1c4",
     "accent": "#8a3a1f",  # oxide red, like a printer's stamp
     "accent_dim": "#c97a4a",
@@ -52,7 +54,7 @@ PALETTE = {
 }
 
 # Eight-arc palette — color-as-pigment, like a 19th-century chromolithograph.
-# Less candy than chart-library defaults; closer to a printer's chase.
+# Pigments from a printer's chase rather than RGB primaries.
 ARC_COLORS = [
     "#8a3a1f",  # oxide red
     "#3a4e6a",  # ink blue
@@ -73,8 +75,14 @@ def _iso_to_dt(iso: str) -> datetime:
 
 
 def build_active_scale(timeline: dict, pixel_width: int):
-    """Same piecewise pixel scale as the other stacks. Pure Python so the
-    hand-rolled SVG can call it without a JS round-trip.
+    """Piecewise pixel scale for the dual-axis active-windows timeline.
+
+    Maps a datetime onto the rendered x-coordinate. Each active window
+    gets a pixel allocation proportional to its duration (with a
+    minimum floor so brief windows stay visible), and gap segments
+    between windows get a fixed pixel width regardless of how many
+    years the gap actually spanned. The returned ``scale`` callable
+    is what the atom renderers use to position commit marks.
     """
     if not timeline or not timeline.get("full_span"):
 
@@ -978,25 +986,23 @@ def render_page(
     </div>
 
     <p class="lede">
-      The following pages are a hand-set printing of what survived. Each atom
-      below is rendered in pure SVG with the project's own visual vocabulary:
-      no chart-library defaults, no CDN scripts. Dormancies in the record
-      appear as hatched intervals; commits the historian named appear larger
-      and outlined; arcs are bracketed bands with their own pigments. This
-      is the stack where the canonical "antiquarian story" presentation
-      should live — the one whose visual language we wholly own.
+      The following pages are a hand-set printing of what survived. Dormancies
+      in the record appear as hatched intervals; commits the historian named
+      appear larger and outlined; arcs are bracketed bands, each set in its
+      own pigment from the printer's chase. Where the channel went dark, the
+      page says so in marks rather than blank space — the absence is set as
+      carefully as the presence.
     </p>{survey_html}
 
     {_render_atom_sequence(atoms)}
 
     <div class="colophon">
-      Hand-rolled SVG variant. Zero JavaScript, zero charting library. Every
-      mark — the hatching, the bracketed window frames, the bracketed arc
-      bands, the legend dots, the small-caps chapter marks — is project-controlled
-      visual vocabulary. The diagonal hatching for "lossy regions" is the
-      canonical version of the atom Tom called out in issue #4: the channel
-      went dark here, and the project's own typography says so plainly rather
-      than hiding the absence inside blank space.
+      Set in the antiquarian broadsheet idiom — data-ink discipline laid out
+      in 19th-century print furniture, with woodblock-style hatching for the
+      moments when the record went dark. The bracketed window frames, the
+      arc bands in their own pigments, the small-caps chapter marks, the
+      diagonal hatch of an absent year — every mark accounts for either
+      what survived or what didn't.
     </div>
   </div>
 </body>
