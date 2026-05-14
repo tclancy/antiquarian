@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
 
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
+from antiquarian.prs import detect_github_repo
 from antiquarian.render import (
     _story_md_to_html_name,
     render_broadsheet,
@@ -277,6 +279,129 @@ def render(
     output_path.write_text(html, encoding="utf-8")
     _stderr(f"[render] wrote {output_path}")
     typer.echo(str(output_path))
+
+
+def _run_git(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Thin wrapper for `git` subprocess calls used by `ghpublish`."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+@app.command()
+def ghpublish(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    remote: str = typer.Option(
+        "origin", help="Git remote to push the gh-pages branch to."
+    ),
+) -> None:
+    """Publish the latest broadsheet render to the `gh-pages` branch (#73).
+
+    Prototype scope: takes whatever's already in ``.antiquarian/render/``,
+    constructs a fresh single-commit branch in a tempdir, and force-pushes
+    it to ``<remote>:gh-pages``. Does not touch your working tree, does
+    not preserve previous gh-pages history, does not check for an existing
+    gh-pages set up by another tool — explicitly punted per #73.
+
+    Run ``antiquarian render`` first (this command does not synthesize).
+
+    After the first publish, GitHub Pages still needs to be enabled in the
+    repo's Settings → Pages, with the source set to the ``gh-pages``
+    branch. The command prints the exact URL to visit afterward.
+    """
+    import shutil
+    import tempfile
+
+    repo_path = Path(repo).resolve()
+    render_dir = repo_path / ".antiquarian" / "render"
+    index_html = render_dir / "index.html"
+    if not index_html.exists():
+        typer.echo(
+            f"Error: no rendered broadsheet at {index_html}. "
+            "Run `antiquarian render` first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # Read the remote URL from the user's repo
+    try:
+        remote_url = _run_git(
+            ["remote", "get-url", remote], cwd=repo_path
+        ).stdout.strip()
+    except subprocess.CalledProcessError as e:
+        typer.echo(
+            f"Error: couldn't read remote `{remote}` URL from {repo_path}: "
+            f"{e.stderr.strip()}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    gh = detect_github_repo(repo_path)
+    if not gh:
+        typer.echo(
+            "Warning: couldn't detect GitHub owner/repo — Pages URL hint "
+            "below may be wrong.",
+            err=True,
+        )
+        owner, repo_name = "<owner>", "<repo>"
+    else:
+        owner, repo_name = gh
+
+    # Build the publish payload in a tempdir so we never touch the user's
+    # working tree. Force-push a fresh single-commit branch — gh-pages
+    # history isn't load-bearing for a "wow-factor" surface.
+    with tempfile.TemporaryDirectory(prefix="antiquarian-ghpublish-") as tmp:
+        tmp_path = Path(tmp)
+        _stderr(f"[ghpublish] staging in {tmp_path}")
+
+        # Copy the rendered output. `dirs_exist_ok` so we land directly in tmp.
+        shutil.copytree(render_dir, tmp_path, dirs_exist_ok=True)
+        # `.nojekyll` so GitHub Pages serves dotfiles + skips Jekyll
+        # processing entirely. Cheap insurance, recommended by GitHub.
+        (tmp_path / ".nojekyll").touch()
+
+        _run_git(["init", "-b", "gh-pages"], cwd=tmp_path)
+        _run_git(["add", "."], cwd=tmp_path)
+        commit_msg = (
+            f"antiquarian broadsheet @ "
+            f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}"
+        )
+        _run_git(["commit", "-m", commit_msg], cwd=tmp_path)
+        _stderr(f"[ghpublish] pushing to {remote_url} (branch: gh-pages)")
+        try:
+            _run_git(
+                ["push", "--force", remote_url, "HEAD:gh-pages"],
+                cwd=tmp_path,
+            )
+        except subprocess.CalledProcessError as e:
+            typer.echo(
+                f"Error: push failed.\n{e.stderr.strip()}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+    pages_url = f"https://{owner}.github.io/{repo_name}/"
+    settings_url = f"https://github.com/{owner}/{repo_name}/settings/pages"
+    typer.echo("")
+    typer.echo("✓ Pushed broadsheet to the `gh-pages` branch.")
+    typer.echo("")
+    typer.echo("First-time setup (skip if already done):")
+    typer.echo(f"  1. Visit:  {settings_url}")
+    typer.echo("  2. Source: 'Deploy from a branch'")
+    typer.echo("  3. Branch: gh-pages  /  Folder: / (root)")
+    typer.echo("  4. Click 'Save'")
+    typer.echo("")
+    typer.echo(f"Your broadsheet will be live at:  {pages_url}")
+    typer.echo("(GitHub Pages may take a minute or two to deploy after Save.)")
 
 
 if __name__ == "__main__":

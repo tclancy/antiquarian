@@ -6,7 +6,9 @@ this file owns the parts that only exist in the CLI layer.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -81,3 +83,106 @@ class TestHelpTextDistinguishesFilters:
         out = result.stdout
         assert "ADD" in out
         assert "REPLACE" in out
+
+
+class TestGhpublish:
+    """Issue #73 — `antiquarian ghpublish` builds + force-pushes gh-pages."""
+
+    def test_errors_when_no_render_output(self, tmp_path: Path):
+        """No `.antiquarian/render/index.html` → exit 1 with helpful message."""
+        result = runner.invoke(app, ["ghpublish", "--repo", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "render" in result.stderr.lower()
+
+    def _seed_render(self, tmp_path: Path) -> None:
+        render_dir = tmp_path / ".antiquarian" / "render"
+        render_dir.mkdir(parents=True, exist_ok=True)
+        (render_dir / "index.html").write_text(
+            "<!doctype html><title>broadsheet</title>"
+        )
+        stories_dir = render_dir / "stories"
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / "src__a.py.html").write_text(
+            "<!doctype html><title>story</title>"
+        )
+
+    def _fake_git_runner(self, remote_url: str = "git@github.com:owner/repo.git"):
+        """Return a callable that mocks `_run_git` for the ghpublish path.
+
+        - `git remote get-url <name>` returns the stub remote URL.
+        - everything else returns a no-op success.
+        """
+
+        def side_effect(args: list[str], **kwargs):
+            if args[:3] == ["remote", "get-url", "origin"]:
+                return subprocess.CompletedProcess(
+                    args=["git", *args],
+                    returncode=0,
+                    stdout=remote_url + "\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=0, stdout="", stderr=""
+            )
+
+        return side_effect
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli._run_git")
+    def test_happy_path_pushes_to_gh_pages(
+        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+    ):
+        self._seed_render(tmp_path)
+        mock_git.side_effect = self._fake_git_runner()
+
+        result = runner.invoke(app, ["ghpublish", "--repo", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output + result.stderr
+        # init + add + commit + push were all invoked
+        git_calls = [c.args[0] for c in mock_git.call_args_list]
+        assert any(args[0] == "init" for args in git_calls)
+        assert any(args[0] == "add" for args in git_calls)
+        assert any(args[0] == "commit" for args in git_calls)
+        # The push call uses --force and targets HEAD:gh-pages
+        push_calls = [args for args in git_calls if args[0] == "push"]
+        assert push_calls
+        push = push_calls[0]
+        assert "--force" in push
+        assert "HEAD:gh-pages" in push
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli._run_git")
+    def test_prints_settings_url_and_pages_url(
+        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+    ):
+        """Tom's ask: 'just provide the info every time with the command.'"""
+        self._seed_render(tmp_path)
+        mock_git.side_effect = self._fake_git_runner()
+
+        result = runner.invoke(app, ["ghpublish", "--repo", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "https://github.com/owner/repo/settings/pages" in result.output
+        assert "https://owner.github.io/repo/" in result.output
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli._run_git")
+    def test_remote_flag_overrides_origin(
+        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+    ):
+        self._seed_render(tmp_path)
+        mock_git.side_effect = self._fake_git_runner()
+
+        result = runner.invoke(
+            app, ["ghpublish", "--repo", str(tmp_path), "--remote", "upstream"]
+        )
+        assert result.exit_code == 0
+        # The first `git remote get-url` call uses the user's --remote
+        first_remote_call = next(
+            (
+                c.args[0]
+                for c in mock_git.call_args_list
+                if c.args[0][:2] == ["remote", "get-url"]
+            ),
+            None,
+        )
+        assert first_remote_call == ["remote", "get-url", "upstream"]
