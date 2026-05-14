@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -203,12 +205,58 @@ def _stub_narrative_for_skipped(file_path: str, reason: str) -> str:
     )
 
 
+def _threadsafe_log(
+    lock: threading.Lock, log: Callable[[str], None]
+) -> Callable[[str], None]:
+    """Wrap a log callback so concurrent threads don't interleave lines."""
+
+    def _locked(msg: str) -> None:
+        with lock:
+            log(msg)
+
+    return _locked
+
+
+def _generate_story_for_survey(
+    repo_path: Path,
+    fp: str,
+    *,
+    use_cache: bool,
+    fetch_prs: bool,
+    log: Callable[[str], None],
+    backend: NarrativeBackend | None,
+) -> tuple[str, str | None, str | None]:
+    """Run ``generate_file_story`` with survey-level error handling.
+
+    Returns ``(file_path, narrative_or_stub, skip_reason_or_none)``.
+    """
+    try:
+        narrative, _ = generate_file_story(
+            repo_path,
+            fp,
+            use_cache=use_cache,
+            fetch_prs=fetch_prs,
+            log=lambda m: log(f"  {m}"),
+            backend=backend,
+        )
+        return fp, narrative, None
+    except subprocess.TimeoutExpired:
+        reason = "claude -p timed out after all retry attempts"
+        log(f"[survey] {fp} — {reason}; stubbing and continuing (#34)")
+        return fp, _stub_narrative_for_skipped(fp, reason), "timeout"
+    except subprocess.CalledProcessError as e:
+        reason = f"claude -p exited {e.returncode} after all retry attempts"
+        log(f"[survey] {fp} — {reason}; stubbing and continuing (#34)")
+        return fp, _stub_narrative_for_skipped(fp, reason), f"exit-{e.returncode}"
+
+
 def generate_codebase_survey(
     repo_path: Path,
     file_paths: Sequence[str],
     *,
     use_cache: bool = True,
     fetch_prs: bool = True,
+    max_workers: int = 1,
     log: Callable[[str], None] = _noop,
     backend: NarrativeBackend | None = None,
 ) -> tuple[str, Path]:
@@ -217,6 +265,11 @@ def generate_codebase_survey(
     Returns ``(survey_markdown, path_to_persisted_survey)``. The synthesis input
     is the per-file markdown stories — prose-intermediate composition per the
     issue #7 design.
+
+    When *max_workers* > 1, per-file story generation runs in parallel using a
+    thread pool. Each thread opens its own SQLite connection (WAL mode handles
+    concurrent access). File ordering in the synthesis input is preserved
+    regardless of completion order.
 
     Per #34, if a single file's narrative synthesis hangs or errors past the
     retry budget, the survey does NOT tank — it substitutes a "channel went
@@ -234,32 +287,66 @@ def generate_codebase_survey(
     gh = detect_github_repo(repo_path) if fetch_prs else None
     repo_name = f"{gh[0]}/{gh[1]}" if gh else repo_path.name
 
-    log(f"[survey] {repo_name}: {len(file_paths)} file(s)")
+    effective_workers = min(max_workers, len(file_paths))
+    if effective_workers > 1:
+        log(
+            f"[survey] {repo_name}: {len(file_paths)} file(s), {effective_workers} workers"
+        )
+    else:
+        log(f"[survey] {repo_name}: {len(file_paths)} file(s)")
+
+    log_lock = threading.Lock()
+    safe_log = _threadsafe_log(log_lock, log) if effective_workers > 1 else log
 
     file_stories: list[tuple[str, str]] = []
     skipped: list[tuple[str, str]] = []
-    for i, fp in enumerate(file_paths, start=1):
-        log(f"[survey] ({i}/{len(file_paths)}) {fp}")
-        try:
-            narrative, _ = generate_file_story(
+
+    if effective_workers <= 1:
+        for i, fp in enumerate(file_paths, start=1):
+            safe_log(f"[survey] ({i}/{len(file_paths)}) {fp}")
+            fp, narrative, skip_reason = _generate_story_for_survey(
                 repo_path,
                 fp,
                 use_cache=use_cache,
                 fetch_prs=fetch_prs,
-                log=lambda m: log(f"  {m}"),
+                log=safe_log,
                 backend=backend,
             )
-        except subprocess.TimeoutExpired:
-            reason = "claude -p timed out after all retry attempts"
-            log(f"[survey] {fp} — {reason}; stubbing and continuing (#34)")
-            narrative = _stub_narrative_for_skipped(fp, reason)
-            skipped.append((fp, "timeout"))
-        except subprocess.CalledProcessError as e:
-            reason = f"claude -p exited {e.returncode} after all retry attempts"
-            log(f"[survey] {fp} — {reason}; stubbing and continuing (#34)")
-            narrative = _stub_narrative_for_skipped(fp, reason)
-            skipped.append((fp, f"exit-{e.returncode}"))
-        file_stories.append((fp, narrative))
+            if skip_reason:
+                skipped.append((fp, skip_reason))
+            file_stories.append((fp, narrative))
+    else:
+        results: dict[str, tuple[str, str | None]] = {}
+        completed = 0
+        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+            futures = {
+                pool.submit(
+                    _generate_story_for_survey,
+                    repo_path,
+                    fp,
+                    use_cache=use_cache,
+                    fetch_prs=fetch_prs,
+                    log=safe_log,
+                    backend=backend,
+                ): fp
+                for fp in file_paths
+            }
+            for future in as_completed(futures):
+                fp, narrative, skip_reason = future.result()
+                results[fp] = (narrative, skip_reason)
+                completed += 1
+                if skip_reason:
+                    safe_log(
+                        f"[survey] ({completed}/{len(file_paths)}) {fp} — stubbed ({skip_reason})"
+                    )
+                else:
+                    safe_log(f"[survey] ({completed}/{len(file_paths)}) {fp} — done")
+
+        for fp in file_paths:
+            narrative, skip_reason = results[fp]
+            if skip_reason:
+                skipped.append((fp, skip_reason))
+            file_stories.append((fp, narrative))
 
     if skipped:
         log(
