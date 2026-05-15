@@ -514,6 +514,46 @@ def _pull_survey_excerpt(repo_path: Path) -> str | None:
     return body
 
 
+def _pull_dramatis_personae(repo_path: Path) -> list[dict[str, str]]:
+    """Extract Dramatis Personae entries from the most recent survey.
+
+    Returns a list of dicts with ``name`` and ``description`` keys, one per
+    contributor. Returns an empty list when the survey has no Dramatis Personae
+    section or no survey exists.
+
+    Format expected in the survey markdown::
+
+        ## Dramatis Personae
+
+        **`Author Name`** — Description sentence(s).
+    """
+    surveys_dir = repo_path / ".antiquarian" / "surveys"
+    if not surveys_dir.exists():
+        return []
+    survey_files = sorted(surveys_dir.glob("*.md"))
+    if not survey_files:
+        return []
+    text = survey_files[-1].read_text(encoding="utf-8", errors="replace")
+    m = re.search(
+        r"##\s+Dramatis Personae\s*\n+([\s\S]+?)(?=\n##\s|\Z)",
+        text,
+    )
+    if not m:
+        return []
+    entries: list[dict[str, str]] = []
+    for entry_m in re.finditer(
+        r"\*\*`?([^`*]+?)`?\*\*\s*[—–-]\s*(.+?)(?=\n\n\*\*|\n\n##|\Z)",
+        m.group(1),
+        re.DOTALL,
+    ):
+        name = entry_m.group(1).strip()
+        desc = entry_m.group(2).strip()
+        if len(desc) > 300:
+            desc = desc[:295].rsplit(" ", 1)[0] + "…"
+        entries.append({"name": name, "description": desc})
+    return entries
+
+
 def extract_render_data(repo_path: Path) -> dict:
     """Pull the cache.db + stories into a single dict ready for rendering.
 
@@ -531,6 +571,7 @@ def extract_render_data(repo_path: Path) -> dict:
     - ``timeline``: dual-axis (full_span + active_windows + gaps)
     - ``file_lifespans``: per-file first/last/count + rename-truncation flag
     - ``survey_excerpt``: pull-quote from the most recent survey, if any
+    - ``dramatis_personae``: contributor entries from the survey, if any
     - ``story_descriptions``: one-sentence Origin excerpts keyed by file path
 
     All fields are JSON-serializable; the dict can be persisted as JSON for
@@ -563,5 +604,6 @@ def extract_render_data(repo_path: Path) -> dict:
         "timeline": _build_timeline(commits),
         "file_lifespans": _build_per_file_lifespans(cache_db, files, commits),
         "survey_excerpt": _pull_survey_excerpt(repo_path),
+        "dramatis_personae": _pull_dramatis_personae(repo_path),
         "story_descriptions": _extract_story_descriptions(stories),
     }

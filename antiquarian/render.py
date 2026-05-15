@@ -220,6 +220,64 @@ def _xml_escape(s: str) -> str:
     )
 
 
+def _knotwork_ribbon_svg(width: int = 480) -> str:
+    """A Celtic interlace ribbon rendered as inline SVG.
+
+    Two strands weave over/under each other in a repeating pattern inspired by
+    the Book of Kells border illuminations. Uses the broadsheet accent (oxide
+    red) and ink palette.
+    """
+    accent = PALETTE["accent"]
+    ink_dim = PALETTE["ink_dim"]
+    h = 18
+    cell = 24
+    r = 5
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="{h}" viewBox="0 0 {width} {h}" preserveAspectRatio="none">'
+    ]
+    mid = h // 2
+    top = 3
+    bot = h - 3
+    for x in range(0, width, cell):
+        cx = x + cell // 2
+        parts.append(
+            f'<path d="M{x},{mid} Q{cx},{top} {x + cell},{mid}" '
+            f'fill="none" stroke="{accent}" stroke-width="2.5" opacity="0.8"/>'
+        )
+        parts.append(
+            f'<path d="M{x},{mid} Q{cx},{bot} {x + cell},{mid}" '
+            f'fill="none" stroke="{ink_dim}" stroke-width="2" opacity="0.5"/>'
+        )
+        parts.append(
+            f'<circle cx="{cx}" cy="{mid}" r="{r}" fill="none" stroke="{accent}" stroke-width="1" opacity="0.4"/>'
+        )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _render_dramatis_personae(entries: list[dict[str, str]]) -> str:
+    """Build the Dramatis Personae HTML section for the broadsheet."""
+    if not entries:
+        return ""
+    ribbon = _knotwork_ribbon_svg()
+    items = []
+    for e in entries:
+        name = _xml_escape(e["name"])
+        desc = _xml_escape(e["description"])
+        items.append(
+            f'    <div class="dramatis-entry">'
+            f'<span class="dramatis-name">{name}</span> — '
+            f'<span class="dramatis-desc">{desc}</span></div>'
+        )
+    entries_html = "\n".join(items)
+    return f"""
+  <section class="dramatis">
+    <div class="dramatis-heading">Dramatis Personæ</div>
+    <div class="dramatis-ribbon">{ribbon}</div>
+{entries_html}
+  </section>"""
+
+
 # ----------------------------------------------------------------------------
 # Atoms
 # ----------------------------------------------------------------------------
@@ -764,6 +822,7 @@ def render_page(
     stories_with_pages: set[str] | None = None,
     has_survey: bool = False,
     story_descriptions: dict[str, str] | None = None,
+    dramatis_personae: list[dict[str, str]] | None = None,
 ) -> str:
     """Render the main broadsheet HTML.
 
@@ -774,6 +833,9 @@ def render_page(
 
     ``story_descriptions`` maps file paths to one-sentence Origin excerpts,
     shown alongside each file in the meta-table.
+
+    ``dramatis_personae`` is a list of contributor entries extracted from the
+    survey, each with ``name`` and ``description`` keys.
     """
     generated = manifest.get("generated_at", "")
     files = manifest.get("files", [])
@@ -816,6 +878,8 @@ def render_page(
     <div class="aside-label">codebase survey</div>
     <div class="aside-link"><a href="survey.html">read the full codebase survey &rarr;</a></div>
   </aside>"""
+
+    dramatis_html = _render_dramatis_personae(dramatis_personae or [])
 
     return f"""<!doctype html>
 <html lang="en">
@@ -935,6 +999,79 @@ def render_page(
     aside.survey-excerpt .aside-link a:hover {{
       border-bottom-style: solid;
     }}
+    .dramatis {{
+      margin: 1.5rem 0 2rem;
+      padding: 1.25rem 1.5rem 1rem;
+      background: var(--paper-alt);
+      border: 1px solid var(--rule);
+      position: relative;
+    }}
+    .dramatis::before, .dramatis::after {{
+      content: "";
+      display: block;
+      height: 3px;
+      background: repeating-linear-gradient(
+        90deg,
+        var(--accent) 0px, var(--accent) 6px,
+        transparent 6px, transparent 10px,
+        var(--ink-dim) 10px, var(--ink-dim) 14px,
+        transparent 14px, transparent 18px
+      );
+    }}
+    .dramatis::before {{ margin-bottom: 1rem; }}
+    .dramatis::after {{ margin-top: 1rem; }}
+    .dramatis-heading {{
+      font-family: var(--serif);
+      font-size: 1.35rem;
+      font-variant: small-caps;
+      letter-spacing: 0.15em;
+      font-weight: 700;
+      color: var(--accent);
+      text-align: center;
+      margin: 0 0 0.75rem;
+      position: relative;
+    }}
+    .dramatis-heading::before {{
+      content: "✦";
+      margin-right: 0.6em;
+      font-size: 0.7em;
+      vertical-align: 0.15em;
+    }}
+    .dramatis-heading::after {{
+      content: "✦";
+      margin-left: 0.6em;
+      font-size: 0.7em;
+      vertical-align: 0.15em;
+    }}
+    .dramatis-ribbon {{
+      display: block;
+      width: 100%;
+      height: 18px;
+      margin: 0 0 0.75rem;
+      overflow: hidden;
+    }}
+    .dramatis-entry {{
+      margin: 0 0 0.6rem;
+      font-size: 0.95rem;
+      line-height: 1.55;
+      max-width: 60ch;
+    }}
+    .dramatis-entry:last-child {{ margin-bottom: 0; }}
+    .dramatis-name {{
+      display: inline-block;
+      font-family: var(--serif);
+      font-weight: 700;
+      color: var(--ink);
+    }}
+    .dramatis-name::first-letter {{
+      font-size: 1.25em;
+      color: var(--accent);
+    }}
+    .dramatis-desc {{
+      font-family: var(--serif);
+      font-style: italic;
+      color: var(--ink);
+    }}
     .chapter-mark {{
       font-family: var(--serif);
       font-size: 0.95rem;
@@ -1007,7 +1144,7 @@ def render_page(
       <span class="k">files surveyed</span><div><ul>{file_lines}</ul></div>
       <span class="k">codebase survey</span><div>{'<a href="survey.html">full narrative synthesis</a>' if has_survey else "<em>none — run <code>antiquarian survey</code> then <code>render</code></em>"}</div>
       <span class="k">generated</span><code>{_xml_escape(generated)}</code>
-    </div>
+    </div>{dramatis_html}
 
     <p class="lede">
       The following pages are a hand-set printing of what survived. Dormancies
@@ -1076,6 +1213,7 @@ def render_broadsheet(
         stories_with_pages=stories_with_pages,
         has_survey=has_survey,
         story_descriptions=data.get("story_descriptions"),
+        dramatis_personae=data.get("dramatis_personae"),
     )
 
 
