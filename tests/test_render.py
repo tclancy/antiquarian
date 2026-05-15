@@ -22,6 +22,8 @@ from typer.testing import CliRunner
 
 from antiquarian.cli import app
 from antiquarian.render import (
+    _knotwork_ribbon_svg,
+    _render_dramatis_personae,
     _strip_empty_todo_section,
     _story_md_to_html_name,
     render_broadsheet,
@@ -29,7 +31,11 @@ from antiquarian.render import (
     render_survey_page,
     render_todo_strip,
 )
-from antiquarian.render_data import _extract_story_descriptions, extract_render_data
+from antiquarian.render_data import (
+    _extract_story_descriptions,
+    _pull_dramatis_personae,
+    extract_render_data,
+)
 
 runner = CliRunner()
 
@@ -144,6 +150,7 @@ class TestExtractRenderData:
             "timeline",
             "file_lifespans",
             "survey_excerpt",
+            "dramatis_personae",
             "story_descriptions",
         ):
             assert key in data, f"missing key: {key}"
@@ -619,3 +626,126 @@ class TestSurveyPageRendering:
 
         index = render_dir / "index.html"
         assert 'href="survey.html"' in index.read_text()
+
+
+class TestDramatisPersonae:
+    """Tests for Dramatis Personae extraction and rendering."""
+
+    SURVEY_WITH_DP = (
+        "## Files surveyed\nTwo files.\n\n"
+        "## Cross-file arcs\n"
+        "**Arc 1 — Shared.** Common origin.\n\n"
+        "## Dramatis Personae\n\n"
+        "**`Tom Clancy`** — The lone maintainer who carried the project through.\n\n"
+        "**`dispatch-bot[bot]`** — The scaffolder who laid down the pipeline.\n"
+    )
+
+    def test_pull_extracts_entries(self, tmp_path: Path):
+        surveys_dir = tmp_path / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True)
+        (surveys_dir / "survey-test.md").write_text(self.SURVEY_WITH_DP)
+        entries = _pull_dramatis_personae(tmp_path)
+        assert len(entries) == 2
+        assert entries[0]["name"] == "Tom Clancy"
+        assert "lone maintainer" in entries[0]["description"]
+        assert entries[1]["name"] == "dispatch-bot[bot]"
+
+    def test_pull_returns_empty_when_no_section(self, tmp_path: Path):
+        surveys_dir = tmp_path / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True)
+        (surveys_dir / "survey-test.md").write_text(
+            "## Files surveyed\nOne.\n\n## Cross-file arcs\nNone.\n"
+        )
+        assert _pull_dramatis_personae(tmp_path) == []
+
+    def test_pull_returns_empty_when_no_surveys_dir(self, tmp_path: Path):
+        assert _pull_dramatis_personae(tmp_path) == []
+
+    def test_pull_returns_empty_when_no_survey_files(self, tmp_path: Path):
+        (tmp_path / ".antiquarian" / "surveys").mkdir(parents=True)
+        assert _pull_dramatis_personae(tmp_path) == []
+
+    def test_pull_truncates_long_descriptions(self, tmp_path: Path):
+        surveys_dir = tmp_path / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True)
+        long_desc = "A " * 200
+        (surveys_dir / "survey-test.md").write_text(
+            f"## Dramatis Personae\n\n**`Alice`** — {long_desc}\n"
+        )
+        entries = _pull_dramatis_personae(tmp_path)
+        assert len(entries) == 1
+        assert len(entries[0]["description"]) <= 300
+
+    def test_pull_handles_names_without_backticks(self, tmp_path: Path):
+        surveys_dir = tmp_path / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True)
+        (surveys_dir / "survey-test.md").write_text(
+            "## Dramatis Personae\n\n**Alice Smith** — Built the core module.\n"
+        )
+        entries = _pull_dramatis_personae(tmp_path)
+        assert len(entries) == 1
+        assert entries[0]["name"] == "Alice Smith"
+
+    def test_render_produces_section_html(self):
+        entries = [
+            {"name": "Tom", "description": "The maintainer."},
+            {"name": "Bot", "description": "The scaffolder."},
+        ]
+        html = _render_dramatis_personae(entries)
+        assert 'class="dramatis"' in html
+        assert "Dramatis Person" in html
+        assert 'class="dramatis-name"' in html
+        assert "Tom" in html
+        assert "Bot" in html
+
+    def test_render_returns_empty_for_no_entries(self):
+        assert _render_dramatis_personae([]) == ""
+
+    def test_render_escapes_html_in_names(self):
+        entries = [{"name": "A <B> & C", "description": "Test."}]
+        html = _render_dramatis_personae(entries)
+        assert "&lt;B&gt;" in html
+        assert "&amp;" in html
+
+    def test_knotwork_ribbon_produces_svg(self):
+        svg = _knotwork_ribbon_svg()
+        assert "<svg" in svg
+        assert "</svg>" in svg
+        assert "path" in svg
+
+    def test_knotwork_ribbon_custom_width(self):
+        svg = _knotwork_ribbon_svg(width=240)
+        assert 'width="240"' in svg
+
+    def test_broadsheet_includes_dramatis_when_present(self, seeded_repo: Path):
+        surveys_dir = seeded_repo / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True, exist_ok=True)
+        (surveys_dir / "survey-test.md").write_text(self.SURVEY_WITH_DP)
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert 'class="dramatis"' in html
+        assert "Tom Clancy" in html
+        assert "dispatch-bot" in html
+
+    def test_broadsheet_omits_dramatis_when_absent(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert 'class="dramatis"' not in html
+
+    def test_dramatis_appears_before_lede(self, seeded_repo: Path):
+        surveys_dir = seeded_repo / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True, exist_ok=True)
+        (surveys_dir / "survey-test.md").write_text(self.SURVEY_WITH_DP)
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        dramatis_pos = html.index('class="dramatis"')
+        lede_pos = html.index('class="lede"')
+        assert dramatis_pos < lede_pos
+
+    def test_extract_render_data_includes_dramatis(self, seeded_repo: Path):
+        surveys_dir = seeded_repo / ".antiquarian" / "surveys"
+        surveys_dir.mkdir(parents=True, exist_ok=True)
+        (surveys_dir / "survey-test.md").write_text(self.SURVEY_WITH_DP)
+        data = extract_render_data(seeded_repo)
+        assert "dramatis_personae" in data
+        assert len(data["dramatis_personae"]) == 2
