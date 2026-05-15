@@ -233,7 +233,7 @@ def _knotwork_ribbon_svg(width: int = 480) -> str:
     cell = 24
     r = 5
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{h}" viewBox="0 0 {width} {h}">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="{h}" viewBox="0 0 {width} {h}" preserveAspectRatio="none">'
     ]
     mid = h // 2
     top = 3
@@ -1046,8 +1046,9 @@ def render_page(
     .dramatis-ribbon {{
       display: block;
       width: 100%;
-      height: 8px;
+      height: 18px;
       margin: 0 0 0.75rem;
+      overflow: hidden;
     }}
     .dramatis-entry {{
       margin: 0 0 0.6rem;
@@ -1057,6 +1058,7 @@ def render_page(
     }}
     .dramatis-entry:last-child {{ margin-bottom: 0; }}
     .dramatis-name {{
+      display: inline-block;
       font-family: var(--serif);
       font-weight: 700;
       color: var(--ink);

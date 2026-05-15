@@ -712,10 +712,11 @@ class TestDramatisPersonae:
         assert "<svg" in svg
         assert "</svg>" in svg
         assert "path" in svg
+        assert 'width="100%"' in svg
 
     def test_knotwork_ribbon_custom_width(self):
         svg = _knotwork_ribbon_svg(width=240)
-        assert 'width="240"' in svg
+        assert "0 0 240 18" in svg
 
     def test_broadsheet_includes_dramatis_when_present(self, seeded_repo: Path):
         surveys_dir = seeded_repo / ".antiquarian" / "surveys"
