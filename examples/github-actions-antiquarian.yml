@@ -1,91 +1,128 @@
-# Antiquarian GitHub Actions workflow — example for issue #75.
+# Antiquarian GitHub Actions workflow — copy to your repo.
 #
 # Copy this to `.github/workflows/antiquarian.yml` in your own repo.
-# It runs on every push to main, re-renders the broadsheet from
-# whatever .antiquarian/ cache and stories you've already committed,
-# and publishes to the gh-pages branch.
 #
-# DOES NOT regenerate stories. Story synthesis still goes through
-# `claude -p`, which uses interactive session login — there's no way
-# to run that in CI today. Once a pluggable API-key-based backend
-# lands in `antiquarian/backends.py` (see issue #75 thread), the
-# commented-out step at the bottom of this file becomes uncommentable.
+# On push to main: renders the broadsheet from .antiquarian/ data and
+# publishes to GitHub Pages via `antiquarian ghpublish`.
+#
+# On PR: renders and uploads the broadsheet as an artifact, then posts
+# a comment with a link to download/preview it.
+#
+# DOES NOT regenerate stories or run survey. Story synthesis goes
+# through `claude -p`, which needs an interactive session. Run
+# `antiquarian survey` locally, commit .antiquarian/, and this action
+# renders from that data.
 #
 # Setup:
-#   1. Commit your `.antiquarian/cache.db` and `.antiquarian/stories/`
-#      from a local `antiquarian survey` run.
-#   2. Drop this file at `.github/workflows/antiquarian.yml`.
-#   3. After the first successful run, visit Settings → Pages and
-#      configure the source as "Deploy from a branch" → gh-pages →
-#      root. (The `antiquarian ghpublish` step prints the URL.)
+#   1. Run `antiquarian survey` locally in your repo.
+#   2. Commit .antiquarian/ (cache.db, stories/, surveys/).
+#   3. Drop this file at .github/workflows/antiquarian.yml.
+#   4. After the first push to main, visit Settings → Pages and
+#      configure: "Deploy from a branch" → gh-pages → root.
 #
-# What the user is opting into:
-#   - The rendered broadsheet (incl. per-file story HTML) goes to
-#     the open internet via GitHub Pages on every push to main.
+# What you're opting into:
+#   - The rendered broadsheet (incl. per-file story HTML) goes to the
+#     open internet via GitHub Pages on every push to main.
 #   - Commit messages, author emails, PR bodies that the stories
-#     reference are part of that. The current ghpublish command does
-#     not redact anything. If that's not what you want, don't use this.
+#     reference are part of that. No redaction is applied.
 
-name: Antiquarian publish
+name: Antiquarian
 
 on:
   push:
     branches: [main]
+    paths:
+      - '.antiquarian/**'
+  pull_request:
+    paths:
+      - '.antiquarian/**'
   workflow_dispatch: {}
 
-# We push to the gh-pages branch from inside this job.
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  publish:
+  render:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # The renderer reads cache.db + stories/ from .antiquarian/;
-          # full history isn't needed unless you uncomment the story
-          # regen step below. Shallow checkout is fine for render+publish.
           fetch-depth: 1
 
       - uses: astral-sh/setup-uv@v5
 
       - name: Install antiquarian
-        # Pin a release tag in your own copy of this workflow; the
-        # `main` ref here is what a beta tester would use.
+        # Pin a release tag in production; main is for beta testers.
         run: uv tool install git+https://github.com/tclancy/antiquarian@main
 
+      - name: Check for antiquarian data
+        id: check
+        run: |
+          if [ -f .antiquarian/cache.db ]; then
+            echo "has_data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_data=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No .antiquarian/cache.db found. Run 'antiquarian survey' locally and commit the results."
+          fi
+
       - name: Render broadsheet
+        if: steps.check.outputs.has_data == 'true'
         run: antiquarian render
 
-      - name: Configure git credentials for push
-        # ghpublish does `git push <remote-url> HEAD:gh-pages`. The
-        # remote URL it reads from the checkout doesn't carry the
-        # Actions token — rewrite origin so the token is on the URL.
+      - name: Upload render artifact
+        if: steps.check.outputs.has_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: antiquarian-broadsheet
+          path: .antiquarian/render/
+          retention-days: 30
+
+      # On PR: post a comment with artifact link
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.check.outputs.has_data == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run_id = context.runId;
+            const run_url = `https://github.com/${owner}/${repo}/actions/runs/${run_id}`;
+
+            const body = [
+              '### 📜 Antiquarian Broadsheet',
+              '',
+              `The broadsheet has been rendered from the latest \`.antiquarian/\` data.`,
+              '',
+              `**[Download the broadsheet](${run_url}#artifacts)** from the workflow artifacts.`,
+              '',
+              '<sub>Render-only (Phase 1) — stories and surveys are generated locally.</sub>',
+            ].join('\n');
+
+            const comments = await github.rest.issues.listComments({
+              owner, repo, issue_number: context.issue.number,
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Antiquarian Broadsheet')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: context.issue.number, body,
+              });
+            }
+
+      # On push to main: publish to GitHub Pages
+      - name: Configure git for ghpublish
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check.outputs.has_data == 'true'
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
       - name: Publish to gh-pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check.outputs.has_data == 'true'
         run: antiquarian ghpublish
-
-      # --- Future: story regeneration in CI ---------------------------------
-      # Requires the pluggable API-key backend that doesn't exist yet
-      # (#75, point 1). Once it lands, expect something like:
-      #
-      #   - name: Regenerate stories for changed files
-      #     env:
-      #       ANTIQUARIAN_BACKEND: anthropic-sdk
-      #       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      #     run: |
-      #       git fetch origin ${{ github.event.before }} --depth=1
-      #       git diff --name-only ${{ github.event.before }} HEAD | \
-      #         while read f; do
-      #           antiquarian story "$f" || true
-      #         done
-      #       antiquarian render
-      #       antiquarian ghpublish
-      #
-      # Leaving commented and labeled rather than silently absent so
-      # the gap is obvious to anyone copying this workflow.
