@@ -12,6 +12,26 @@ Early. The MVP `antiquarian story <file>`, `antiquarian survey`, and `antiquaria
 
 Local-first by design — narrative synthesis goes through `claude -p` rather than burning API credits while the idea is still proving itself out.
 
+### Choosing an AI backend
+
+Synthesis is pluggable (#91). Pick a backend with `--backend` on `story`/`survey`,
+or set `ANTIQUARIAN_BACKEND`; precedence is `--backend` flag → env var → default.
+
+| Backend | Select with | Needs |
+|---------|-------------|-------|
+| `claude-p` *(default)* | nothing | the `claude` CLI on PATH |
+| `anthropic-sdk` | `--backend anthropic-sdk` | `pip install antiquarian[anthropic]` + `ANTHROPIC_API_KEY` |
+| `ollama` | `--backend ollama` | `pip install antiquarian[ollama]` + a running `ollama serve` |
+
+```bash
+antiquarian story src/main.py --backend anthropic-sdk     # BYO API key
+ANTIQUARIAN_BACKEND=ollama antiquarian survey             # local model
+```
+
+Models are overridable: `ANTIQUARIAN_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
+and `ANTIQUARIAN_OLLAMA_MODEL` (default `llama3.1`). API keys come from the
+environment only — never a flag, never logged.
+
 ## Getting started
 
 ### Use it against your own repos
@@ -64,6 +84,35 @@ uv run antiquarian story path/to/some/file.py    # run against the repo you're i
 ```
 
 `uv run` resolves against the *current directory's* venv — so `uv run antiquarian survey` only works from inside an antiquarian checkout that has the package installed in its venv. Use the `uv tool install` path above for anywhere else.
+
+### Render in CI (GitHub Action)
+
+Antiquarian ships a reusable composite Action ([`action.yml`](action.yml)) so any repo can render and publish its broadsheet without copy-pasting workflow steps:
+
+```yaml
+# .github/workflows/antiquarian.yml
+on:
+  push:
+    branches: [main]
+    paths: ['.antiquarian/**']
+  pull_request:
+    paths: ['.antiquarian/**']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tclancy/antiquarian@v1     # pin a tag in production; @main for beta testers
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+On push to your default branch it renders from committed `.antiquarian/` data and publishes to GitHub Pages; on PRs it uploads the broadsheet as an artifact and comments a download link. It is **render-only** — story/survey generation goes through `claude -p` locally, so run `antiquarian survey` and commit `.antiquarian/` first. Inputs (`render`, `publish`, `comment-on-pr`, `version`, `artifact-retention-days`, …) are documented in `action.yml`. See [`examples/github-actions-antiquarian.yml`](examples/github-actions-antiquarian.yml) for the full annotated copy.
 
 ## Docs
 
