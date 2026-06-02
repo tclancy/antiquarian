@@ -340,6 +340,23 @@ class TestAnthropicSDKBackendSynthesize:
             backend.synthesize("S", "U", sleep=lambda _s: None)
         assert "Anthropic API error" in str(exc.value)
 
+    def test_exhausted_connection_error_becomes_backend_error(self) -> None:
+        """A transient that never recovers must surface cleanly, not as a traceback.
+
+        APIConnectionError does not subclass APIStatusError, so it would escape
+        the wrapper if only APIStatusError were caught.
+        """
+
+        def behavior(_kw):
+            raise _FakeAPIConnectionError("connection reset")
+
+        client = _FakeAnthropicClient(behavior)
+        backend = AnthropicSDKBackend(api_key="sk")
+        backend._import_sdk = lambda: _fake_anthropic_module(client)
+
+        with pytest.raises(BackendError):
+            backend.synthesize("S", "U", sleep=lambda _s: None)
+
     def test_satisfies_protocol(self) -> None:
         assert isinstance(AnthropicSDKBackend(api_key="sk"), NarrativeBackend)
 
@@ -423,6 +440,19 @@ class TestOllamaBackendSynthesize:
         with pytest.raises(BackendError) as exc:
             backend.synthesize("S", "U", sleep=lambda _s: None)
         assert "Ollama error" in str(exc.value)
+
+    def test_exhausted_connection_error_becomes_backend_error(self) -> None:
+        """A never-recovering ConnectionError must surface cleanly, not as a traceback."""
+
+        def chat(_kw):
+            raise ConnectionError("refused")
+
+        client = _FakeOllamaClient(chat_behavior=chat)
+        backend = OllamaBackend()
+        backend._client = lambda: (_fake_ollama_module(), client)
+
+        with pytest.raises(BackendError):
+            backend.synthesize("S", "U", sleep=lambda _s: None)
 
     def test_preflight_unreachable_becomes_backend_error(self) -> None:
         def boom():

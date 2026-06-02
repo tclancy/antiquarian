@@ -237,7 +237,7 @@ class AnthropicSDKBackend:
         except ImportError as e:
             raise BackendError(
                 "The 'anthropic' package is required for the anthropic-sdk "
-                "backend. Install it with: pip install anthropic"
+                "backend. Install it with: pip install 'antiquarian[anthropic]'"
             ) from e
         return anthropic
 
@@ -276,6 +276,9 @@ class AnthropicSDKBackend:
             anthropic.RateLimitError,
             anthropic.InternalServerError,
         )
+        # Catch the same families that are retried so an *exhausted* retry
+        # surfaces as a clean BackendError, not a raw traceback. APIConnectionError
+        # does not subclass APIStatusError, so it must be named explicitly.
         try:
             return _retry_with_backoff(
                 _call,
@@ -284,7 +287,7 @@ class AnthropicSDKBackend:
                 log=log,
                 sleep=sleep,
             ).strip()
-        except anthropic.APIStatusError as e:
+        except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
             raise BackendError(f"Anthropic API error: {e}") from e
 
 
@@ -329,8 +332,9 @@ class OllamaBackend:
             import ollama
         except ImportError as e:
             raise BackendError(
-                "The 'ollama' package is required for the ollama backend. "
-                "Install it with: pip install ollama (and run a local Ollama server)."
+                "The 'ollama' package is required for the ollama backend. Install "
+                "it with: pip install 'antiquarian[ollama]' (and run a local "
+                "Ollama server)."
             ) from e
         return ollama
 
@@ -371,6 +375,8 @@ class OllamaBackend:
             )
             return response["message"]["content"]
 
+        # Catch ConnectionError too (the retried transient) so an exhausted
+        # retry surfaces as a clean BackendError rather than a raw traceback.
         try:
             return _retry_with_backoff(
                 _call,
@@ -379,7 +385,7 @@ class OllamaBackend:
                 log=log,
                 sleep=sleep,
             ).strip()
-        except ollama.ResponseError as e:
+        except (ollama.ResponseError, ConnectionError) as e:
             raise BackendError(f"Ollama error: {e}") from e
 
 
