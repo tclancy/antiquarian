@@ -1,0 +1,186 @@
+# Antiquarian — reusable GitHub Action (GitHub Marketplace packaging, #89)
+#
+# Render-only: composes the broadsheet from committed `.antiquarian/` data,
+# uploads it as an artifact, comments the download link on PRs, and (on push
+# to the default branch) publishes it to GitHub Pages.
+#
+# It does NOT regenerate stories or run `survey` — those go through `claude -p`,
+# which needs an interactive session. Run `antiquarian survey` locally, commit
+# `.antiquarian/`, and this action renders from that data.
+#
+# Usage in a consuming repo (.github/workflows/antiquarian.yml):
+#
+#   - uses: tclancy/antiquarian@v1
+#     with:
+#       github-token: ${{ secrets.GITHUB_TOKEN }}
+#
+# Pin a release tag (`@v1`) in production; `@main` is for beta testers.
+#
+# Requires the consuming workflow to check out the repo first
+# (`uses: actions/checkout@v4`) — this composite action does not check out.
+
+name: Antiquarian Broadsheet
+description: >-
+  Render a codebase's Antiquarian broadsheet from committed .antiquarian/ data,
+  upload it as an artifact, comment on PRs, and publish to GitHub Pages.
+author: tclancy
+
+branding:
+  icon: book-open
+  color: orange
+
+inputs:
+  github-token:
+    description: >-
+      Token used to comment on PRs and push the gh-pages branch.
+      Defaults to the workflow's automatic GITHUB_TOKEN.
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: >-
+      Git ref of tclancy/antiquarian to install (tag, branch, or SHA).
+      Defaults to the ref this action was referenced by (e.g. v1).
+    required: false
+    default: ${{ github.action_ref }}
+  local-install:
+    description: >-
+      Install antiquarian from the checked-out workspace ('.') instead of a
+      remote git ref. Only meaningful inside the antiquarian repo itself, to
+      render with the code under test. Leave 'false' in consuming repos.
+    required: false
+    default: "false"
+  render:
+    description: Render the broadsheet from .antiquarian/ data.
+    required: false
+    default: "true"
+  comment-on-pr:
+    description: Post (or update) a broadsheet download comment on pull requests.
+    required: false
+    default: "true"
+  publish:
+    description: Publish the broadsheet to gh-pages on push to the default branch.
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded broadsheet artifact.
+    required: false
+    default: antiquarian-broadsheet
+  artifact-retention-days:
+    description: Retention period (days) for the uploaded artifact.
+    required: false
+    default: "30"
+
+outputs:
+  rendered:
+    description: "'true' when committed data was found AND the render step ran."
+    value: ${{ steps.check.outputs.has_data == 'true' && inputs.render == 'true' }}
+  render-path:
+    description: Path to the rendered broadsheet directory (empty when not rendered).
+    value: >-
+      ${{ (steps.check.outputs.has_data == 'true' && inputs.render == 'true')
+          && '.antiquarian/render/' || '' }}
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v5
+
+    - name: Install antiquarian
+      shell: bash
+      run: |
+        if [ "${{ inputs.local-install }}" = "true" ]; then
+          # Dogfood path: install the checked-out workspace (antiquarian's own repo).
+          uv tool install --from . .
+        else
+          ref="${{ inputs.version }}"
+          # Fall back to main when the action is run from a context with no
+          # resolvable ref (e.g. a local `uses: ./` checkout during testing).
+          if [ -z "$ref" ]; then ref="main"; fi
+          uv tool install "git+https://github.com/tclancy/antiquarian@${ref}"
+        fi
+
+    - name: Check for antiquarian data
+      id: check
+      shell: bash
+      run: |
+        if [ -f .antiquarian/cache.db ]; then
+          echo "has_data=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_data=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::No .antiquarian/cache.db found. Run 'antiquarian survey' locally and commit the results."
+        fi
+
+    - name: Render broadsheet
+      if: inputs.render == 'true' && steps.check.outputs.has_data == 'true'
+      shell: bash
+      run: antiquarian render
+
+    - name: Upload render artifact
+      if: inputs.render == 'true' && steps.check.outputs.has_data == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .antiquarian/render/
+        retention-days: ${{ inputs.artifact-retention-days }}
+
+    - name: Comment on PR
+      if: >-
+        inputs.comment-on-pr == 'true'
+        && github.event_name == 'pull_request'
+        && steps.check.outputs.has_data == 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { owner, repo } = context.repo;
+          const run_id = context.runId;
+          const run_url = `https://github.com/${owner}/${repo}/actions/runs/${run_id}`;
+
+          const body = [
+            '### 📜 Antiquarian Broadsheet',
+            '',
+            `The broadsheet has been rendered from the latest \`.antiquarian/\` data.`,
+            '',
+            `**[Download the broadsheet](${run_url}#artifacts)** from the workflow artifacts.`,
+            '',
+            '<sub>Render-only — stories and surveys are generated locally.</sub>',
+          ].join('\n');
+
+          // Check for existing comment to avoid duplicates
+          const comments = await github.rest.issues.listComments({
+            owner, repo, issue_number: context.issue.number,
+          });
+          const existing = comments.data.find(c =>
+            c.user.type === 'Bot' && c.body.includes('Antiquarian Broadsheet')
+          );
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner, repo, comment_id: existing.id, body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: context.issue.number, body,
+            });
+          }
+
+    - name: Configure git for ghpublish
+      if: >-
+        inputs.publish == 'true'
+        && github.event_name == 'push'
+        && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        && steps.check.outputs.has_data == 'true'
+      shell: bash
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git remote set-url origin "https://x-access-token:${{ inputs.github-token }}@github.com/${{ github.repository }}.git"
+
+    - name: Publish to gh-pages
+      if: >-
+        inputs.publish == 'true'
+        && github.event_name == 'push'
+        && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        && steps.check.outputs.has_data == 'true'
+      shell: bash
+      run: antiquarian ghpublish
