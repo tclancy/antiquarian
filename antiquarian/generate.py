@@ -74,6 +74,20 @@ class CostEstimate:
     ceiling_usd: float
 
 
+@dataclass(frozen=True)
+class GenerationReport:
+    """Outcome of a generation run: what got built and what failed.
+
+    Generation is resilient per-repo — one repo's survey/render blowing up
+    does not abort the batch (and the tokens already spent on the repos that
+    succeeded are not wasted). The caller inspects ``failed`` to report and
+    set a non-zero exit code.
+    """
+
+    generated: list[RepoPlan]
+    failed: list[tuple[str, str]]  # (slug, error message)
+
+
 # Injected step signatures — defaults wrap real git / pipeline calls.
 CloneFn = Callable[[str, Path], None]
 SurveyFn = Callable[[Path], None]
@@ -135,17 +149,25 @@ def clone_repo(github_url: str, dest: Path) -> None:
         ) from e
 
 
-def survey_repo(repo_path: Path) -> None:
-    """Run the full survey pipeline against an already-cloned repo."""
-    files = select_files(repo_path)
+def survey_repo(repo_path: Path, *, workers: int = 4) -> None:
+    """Run the full survey pipeline against an already-cloned repo.
+
+    Parallelizes per-file story generation by default (matching the
+    interactive ``survey`` command) — gallery targets are large famous repos,
+    so serial ``claude -p`` calls would be needlessly slow.
+    """
+    try:
+        files = select_files(repo_path)
+    except SystemExit as e:  # select_files exits on a non-git dir
+        raise GenerationError(f"{repo_path} is not a git repository") from e
     if not files:
         raise GenerationError(f"no files selected to survey in {repo_path}")
-    generate_codebase_survey(repo_path, files)
+    generate_codebase_survey(repo_path, files, max_workers=workers)
 
 
-def render_repo(repo_path: Path, render_dir: Path) -> None:
+def render_repo(repo_path: Path, render_dir: Path, *, workers: int = 4) -> None:
     """Render the broadsheet tree for a surveyed repo into *render_dir*."""
-    render_broadsheet_site(repo_path, render_dir / "index.html")
+    render_broadsheet_site(repo_path, render_dir / "index.html", workers=workers)
 
 
 # --------------------------------------------------------------------------
@@ -154,10 +176,15 @@ def render_repo(repo_path: Path, render_dir: Path) -> None:
 
 
 def _count_files(repo_path: Path) -> int:
-    """File count used for the cost estimate; 0 if selection fails."""
+    """File count used for the cost estimate; 0 if selection fails.
+
+    ``select_files`` raises ``SystemExit`` for a non-git directory, so that is
+    caught alongside I/O errors — a bad clone should yield a zero estimate, not
+    crash the whole run before the confirm gate.
+    """
     try:
         return len(select_files(repo_path))
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError, SystemExit):
         return 0
 
 
@@ -194,7 +221,7 @@ def run_generation(
     render_fn: RenderFn = render_repo,
     count_fn: Callable[[Path], int] = _count_files,
     log: Callable[[str], None] = _noop,
-) -> list[RepoPlan]:
+) -> GenerationReport:
     """Clone, survey, and render every to-be-generated repo in the manifest.
 
     Order of operations is the cost gate's whole reason for existing:
@@ -203,9 +230,13 @@ def run_generation(
     3. Show a cost ceiling and ask *confirm* — abort if it returns False.
     4. Only then run the token-spending survey + render per repo.
 
-    Returns the list of repos that were generated. ``confirm`` receives the
+    Returns a :class:`GenerationReport`. ``confirm`` receives the
     :class:`CostEstimate` and returns whether to proceed; the CLI wires this
     to ``--yes`` or an interactive prompt.
+
+    The per-repo loop is resilient: a survey/render failure on one repo is
+    recorded in ``report.failed`` and the batch continues, so a single bad
+    repo can't strand the (already paid-for) broadsheets that succeeded.
     """
     to_generate, skipped = plan_repos(manifest, manifest_dir, force=force)
     for plan in skipped:
@@ -213,7 +244,7 @@ def run_generation(
 
     if not to_generate:
         log("[generate] nothing to do — all render dirs already populated")
-        return []
+        return GenerationReport(generated=[], failed=[])
 
     with tempfile.TemporaryDirectory(prefix="antiquarian-gallery-") as tmp:
         workdir = Path(tmp)
@@ -223,9 +254,26 @@ def run_generation(
         estimate = estimate_cost(total_files, len(to_generate))
         if not confirm(estimate):
             log("[generate] aborted before any API calls — nothing generated")
-            return []
+            return GenerationReport(generated=[], failed=[])
 
-        for plan in to_generate:
+        return _generate_all(
+            to_generate, clones, survey_fn=survey_fn, render_fn=render_fn, log=log
+        )
+
+
+def _generate_all(
+    to_generate: list[RepoPlan],
+    clones: dict[str, Path],
+    *,
+    survey_fn: SurveyFn,
+    render_fn: RenderFn,
+    log: Callable[[str], None],
+) -> GenerationReport:
+    """Run survey + render for each planned repo, tolerating per-repo failures."""
+    generated: list[RepoPlan] = []
+    failed: list[tuple[str, str]] = []
+    for plan in to_generate:
+        try:
             _generate_one(
                 plan,
                 clones[plan.repo.slug],
@@ -233,8 +281,15 @@ def run_generation(
                 render_fn=render_fn,
                 log=log,
             )
-
-    return to_generate
+            generated.append(plan)
+        except (
+            GenerationError,
+            OSError,
+            subprocess.SubprocessError,
+        ) as e:
+            log(f"[generate] FAILED {plan.repo.slug}: {e}")
+            failed.append((plan.repo.slug, str(e)))
+    return GenerationReport(generated=generated, failed=failed)
 
 
 def _clone_all(

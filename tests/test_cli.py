@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from antiquarian.cli import app
+from antiquarian.generate import CostEstimate, GenerationError, GenerationReport
 
 runner = CliRunner()
 
@@ -213,12 +214,11 @@ class TestGalleryGenerate:
 
     def test_yes_prints_estimate_and_proceeds_without_prompt(self, tmp_path: Path):
         """--yes shows the cost estimate but does not block on a prompt."""
-        from antiquarian.generate import CostEstimate
 
         def fake_run(manifest, manifest_dir, *, confirm, **kwargs):
             # The CLI's confirm callback should auto-approve under --yes.
             assert confirm(CostEstimate(repo_count=1, total_files=3, ceiling_usd=0.06))
-            return []
+            return GenerationReport(generated=[], failed=[])
 
         with patch("antiquarian.cli.run_generation", side_effect=fake_run):
             result = runner.invoke(
@@ -231,15 +231,13 @@ class TestGalleryGenerate:
 
     def test_interactive_decline_aborts(self, tmp_path: Path):
         """Answering 'no' at the prompt makes the gate return False."""
-        from antiquarian.generate import CostEstimate
-
         decisions: list[bool] = []
 
         def fake_run(manifest, manifest_dir, *, confirm, **kwargs):
             decisions.append(
                 confirm(CostEstimate(repo_count=1, total_files=3, ceiling_usd=0.06))
             )
-            return []
+            return GenerationReport(generated=[], failed=[])
 
         with patch("antiquarian.cli.run_generation", side_effect=fake_run):
             result = runner.invoke(
@@ -255,7 +253,7 @@ class TestGalleryGenerate:
 
         def fake_run(manifest, manifest_dir, *, force, confirm, **kwargs):
             captured["force"] = force
-            return []
+            return GenerationReport(generated=[], failed=[])
 
         with patch("antiquarian.cli.run_generation", side_effect=fake_run):
             result = runner.invoke(
@@ -273,8 +271,6 @@ class TestGalleryGenerate:
         assert captured["force"] is True
 
     def test_generation_error_exits_nonzero(self, tmp_path: Path):
-        from antiquarian.generate import GenerationError
-
         def fake_run(*args, **kwargs):
             raise GenerationError("git clone failed for some-repo")
 
@@ -285,3 +281,17 @@ class TestGalleryGenerate:
             )
         assert result.exit_code == 1
         assert "git clone failed" in result.stderr
+
+    def test_failed_repos_exit_nonzero_but_report_them(self, tmp_path: Path):
+        """A partial failure exits non-zero and names the repo that failed."""
+
+        def fake_run(*args, **kwargs):
+            return GenerationReport(generated=[], failed=[("flask", "boom")])
+
+        with patch("antiquarian.cli.run_generation", side_effect=fake_run):
+            result = runner.invoke(
+                app,
+                ["gallery", "generate", "-m", str(self._manifest(tmp_path)), "--yes"],
+            )
+        assert result.exit_code == 1
+        assert "FAILED flask: boom" in result.stderr

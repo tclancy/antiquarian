@@ -83,7 +83,10 @@ class _FakeSteps:
         return self.files_per_repo
 
 
-def _run(manifest_dir: Path, steps: _FakeSteps, *, force=False, confirm=lambda e: True):
+def _report(
+    manifest_dir: Path, steps: _FakeSteps, *, force=False, confirm=lambda e: True
+):
+    """Run generation, returning the full GenerationReport."""
     manifest = load_manifest(manifest_dir / "gallery.toml")
     return run_generation(
         manifest,
@@ -95,6 +98,11 @@ def _run(manifest_dir: Path, steps: _FakeSteps, *, force=False, confirm=lambda e
         render_fn=steps.render,
         count_fn=steps.count,
     )
+
+
+def _run(manifest_dir: Path, steps: _FakeSteps, *, force=False, confirm=lambda e: True):
+    """Run generation, returning just the list of generated repos."""
+    return _report(manifest_dir, steps, force=force, confirm=confirm).generated
 
 
 # --------------------------------------------------------------------------
@@ -253,6 +261,29 @@ def test_gate_is_asked_before_any_survey(manifest_dir: Path):
 # --------------------------------------------------------------------------
 # Failure propagation
 # --------------------------------------------------------------------------
+
+
+def test_one_repo_failure_does_not_abort_the_batch(manifest_dir: Path):
+    """A survey/render failure on one repo is recorded, not fatal."""
+    steps = _FakeSteps()
+
+    original_survey = steps.survey
+
+    def flaky_survey(repo_path: Path) -> None:
+        if repo_path.name == "requests":
+            raise GenerationError("no files selected to survey")
+        original_survey(repo_path)
+
+    steps.survey = flaky_survey  # type: ignore[method-assign]
+    report = _report(manifest_dir, steps)
+
+    # flask still generated; requests recorded as failed.
+    assert [p.repo.slug for p in report.generated] == ["flask"]
+    assert [slug for slug, _ in report.failed] == ["requests"]
+    assert "no files selected" in report.failed[0][1]
+    # The succeeded repo's broadsheet is on disk; the failed one's is not.
+    assert (manifest_dir / "renders" / "flask" / "index.html").exists()
+    assert not (manifest_dir / "renders" / "requests" / "index.html").exists()
 
 
 def test_clone_uses_full_history_not_shallow(monkeypatch, tmp_path: Path):

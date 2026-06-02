@@ -5,12 +5,19 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import typer
 
 from antiquarian.gallery import GalleryError, build_gallery, load_manifest
-from antiquarian.generate import CostEstimate, GenerationError, run_generation
+from antiquarian.generate import (
+    CostEstimate,
+    GenerationError,
+    render_repo,
+    run_generation,
+    survey_repo,
+)
 from antiquarian.pipeline import (
     generate_codebase_survey,
     generate_file_story,
@@ -473,6 +480,13 @@ def gallery_generate(
         "--force",
         help="Regenerate every repo, even ones whose render_dir is already populated.",
     ),
+    workers: int = typer.Option(
+        4,
+        "--workers",
+        min=1,
+        max=16,
+        help="Parallel workers for per-file story generation within each repo.",
+    ),
 ) -> None:
     """Populate a manifest's render dirs by surveying + rendering each repo (#93).
 
@@ -480,25 +494,33 @@ def gallery_generate(
     history — antiquarian mines it), runs ``survey`` + ``render``, and writes
     the broadsheet into the manifest's ``render_dir``. Prints a cost estimate
     and requires confirmation before spending any tokens; idempotent — skips
-    repos that already have a broadsheet unless ``--force``.
+    repos that already have a broadsheet unless ``--force``. A survey/render
+    failure on one repo is reported but does not abort the rest of the batch.
     """
     manifest_path = Path(manifest).resolve()
     try:
         parsed = load_manifest(manifest_path)
-        generated = run_generation(
+        report = run_generation(
             parsed,
             manifest_path.parent,
             force=force,
             confirm=_make_confirm(assume_yes),
+            survey_fn=partial(survey_repo, workers=workers),
+            render_fn=partial(render_repo, workers=workers),
             log=_stderr,
         )
     except (GalleryError, GenerationError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
 
-    _stderr(f"[gallery] generated {len(generated)} broadsheet(s).")
-    for plan in generated:
+    for plan in report.generated:
         typer.echo(str(plan.render_path))
+    _stderr(f"[gallery] generated {len(report.generated)} broadsheet(s).")
+    if report.failed:
+        for slug, err in report.failed:
+            _stderr(f"[gallery] FAILED {slug}: {err}")
+        _stderr(f"[gallery] {len(report.failed)} repo(s) failed.")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
