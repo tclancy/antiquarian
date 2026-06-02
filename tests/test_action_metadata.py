@@ -79,13 +79,16 @@ def test_every_referenced_input_is_declared():
     )
 
 
-def test_outputs_reference_real_steps():
-    """Outputs wired to steps.<id>.outputs must point at a declared step id."""
+def test_step_output_references_point_at_real_steps():
+    """Every steps.<id>.outputs reference (in outputs, if:, run:, etc.) must
+    point at a declared step id — a typo like steps.chek.outputs silently
+    makes a guard always-false and skips publishing, with no other signal."""
     action = _load_action()
     step_ids = {s.get("id") for s in action["runs"]["steps"] if s.get("id")}
-    output_block = yaml.safe_dump(action.get("outputs", {}))
-    referenced = set(re.findall(r"steps\.([a-zA-Z0-9_-]+)\.outputs", output_block))
+    referenced = set(
+        re.findall(r"steps\.([a-zA-Z0-9_-]+)\.outputs", ACTION_YML.read_text())
+    )
     missing = referenced - step_ids
     assert not missing, (
-        f"outputs reference steps with no matching id: {sorted(missing)}"
+        f"action.yml references steps with no matching id: {sorted(missing)}"
     )

@@ -15,6 +15,9 @@
 #       github-token: ${{ secrets.GITHUB_TOKEN }}
 #
 # Pin a release tag (`@v1`) in production; `@main` is for beta testers.
+#
+# Requires the consuming workflow to check out the repo first
+# (`uses: actions/checkout@v4`) — this composite action does not check out.
 
 name: Antiquarian Broadsheet
 description: >-
@@ -69,11 +72,13 @@ inputs:
 
 outputs:
   rendered:
-    description: "'true' when committed .antiquarian/ data was found and rendered."
-    value: ${{ steps.check.outputs.has_data }}
+    description: "'true' when committed data was found AND the render step ran."
+    value: ${{ steps.check.outputs.has_data == 'true' && inputs.render == 'true' }}
   render-path:
-    description: Path to the rendered broadsheet directory (when rendered).
-    value: ${{ steps.check.outputs.has_data == 'true' && '.antiquarian/render/' || '' }}
+    description: Path to the rendered broadsheet directory (empty when not rendered).
+    value: >-
+      ${{ (steps.check.outputs.has_data == 'true' && inputs.render == 'true')
+          && '.antiquarian/render/' || '' }}
 
 runs:
   using: composite
