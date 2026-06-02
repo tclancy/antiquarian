@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from antiquarian.gallery import GalleryError, build_gallery, load_manifest
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
 from antiquarian.prs import detect_github_repo
 from antiquarian.render import (
@@ -444,6 +445,50 @@ def ghpublish(
     typer.echo("")
     typer.echo(f"Your broadsheet will be live at:  {pages_url}")
     typer.echo("(GitHub Pages may take a minute or two to deploy after Save.)")
+
+
+gallery_app = typer.Typer(
+    name="gallery",
+    help="Assemble and publish a precomputed broadsheet gallery (#86 Option B).",
+    no_args_is_help=True,
+)
+app.add_typer(gallery_app)
+
+
+@gallery_app.command("build")
+def gallery_build(
+    manifest: str = typer.Option(
+        "gallery.toml",
+        "--manifest",
+        "-m",
+        help="Path to the gallery manifest (TOML).",
+    ),
+    output: str = typer.Option(
+        "gallery",
+        "--output",
+        "-o",
+        help="Directory to assemble the gallery site into.",
+    ),
+) -> None:
+    """Assemble a gallery site from already-rendered broadsheets (#92).
+
+    Reads a manifest of repos (each pointing at a ``render_dir`` produced by
+    ``antiquarian render``), copies every broadsheet under ``<output>/<slug>/``,
+    and writes an illuminated landing page linking them — with a "do it on
+    yours" call-to-action. Makes no network or ``claude -p`` calls.
+    """
+    manifest_path = Path(manifest).resolve()
+    try:
+        parsed = load_manifest(manifest_path)
+        index_path = build_gallery(parsed, manifest_path.parent, Path(output).resolve())
+    except GalleryError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    _stderr(
+        f"[gallery] assembled {len(parsed.repos)} broadsheet(s) → {index_path.parent}"
+    )
+    typer.echo(str(index_path))
 
 
 if __name__ == "__main__":
