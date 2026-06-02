@@ -47,6 +47,35 @@ uv run antiquarian story path/to/some/file.py    # run against the repo you're i
 
 `uv run` resolves against the *current directory's* venv — so `uv run antiquarian survey` only works from inside an antiquarian checkout that has the package installed in its venv. Use the `uv tool install` path above for anywhere else.
 
+### Render in CI (GitHub Action)
+
+Antiquarian ships a reusable composite Action ([`action.yml`](action.yml)) so any repo can render and publish its broadsheet without copy-pasting workflow steps:
+
+```yaml
+# .github/workflows/antiquarian.yml
+on:
+  push:
+    branches: [main]
+    paths: ['.antiquarian/**']
+  pull_request:
+    paths: ['.antiquarian/**']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tclancy/antiquarian@v1     # pin a tag in production; @main for beta testers
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+On push to your default branch it renders from committed `.antiquarian/` data and publishes to GitHub Pages; on PRs it uploads the broadsheet as an artifact and comments a download link. It is **render-only** — story/survey generation goes through `claude -p` locally, so run `antiquarian survey` and commit `.antiquarian/` first. Inputs (`render`, `publish`, `comment-on-pr`, `version`, `artifact-retention-days`, …) are documented in `action.yml`. See [`examples/github-actions-antiquarian.yml`](examples/github-actions-antiquarian.yml) for the full annotated copy.
+
 ## Docs
 
 | File | What it covers |
