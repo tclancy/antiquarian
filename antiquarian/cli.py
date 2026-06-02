@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
 
 from antiquarian.gallery import GalleryError, build_gallery, load_manifest
-from antiquarian.pipeline import generate_codebase_survey, generate_file_story
-from antiquarian.prs import detect_github_repo
-from antiquarian.render import (
-    _story_md_to_html_name,
-    render_broadsheet,
-    render_story_page,
-    render_survey_page,
+from antiquarian.generate import CostEstimate, GenerationError, run_generation
+from antiquarian.pipeline import (
+    generate_codebase_survey,
+    generate_file_story,
+    render_broadsheet_site,
 )
-from antiquarian.render_data import extract_render_data
+from antiquarian.prs import detect_github_repo
 from antiquarian.selection import select_files
 
 app = typer.Typer(
@@ -250,78 +248,21 @@ def render(
     ``survey`` runs already produced.
     """
     repo_path = Path(repo).resolve()
-    cache_db = repo_path / ".antiquarian" / "cache.db"
-    if not cache_db.exists():
-        typer.echo(
-            f"Error: no antiquarian cache at {cache_db}. "
-            "Run `antiquarian story` or `antiquarian survey` first.",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-
     output_path = (
         Path(output).resolve()
         if output
         else repo_path / ".antiquarian" / "render" / "index.html"
     )
 
-    _stderr(f"[render] extracting data from {repo_path}")
-    data = extract_render_data(repo_path)
-    _stderr(
-        f"[render] {len(data['files'])} file(s), {len(data['commits'])} commit(s), "
-        f"{len(data['arcs'])} arc(s), {len(data['todos'])} todo(s)"
-    )
+    try:
+        written = render_broadsheet_site(
+            repo_path, output_path, workers=workers, log=_stderr
+        )
+    except FileNotFoundError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
 
-    # Render per-file story pages alongside the index so the broadsheet's
-    # "files surveyed" links resolve (#46). One HTML per story.md in the
-    # cache; index links only the ones that actually got rendered.
-    stories_dir = repo_path / ".antiquarian" / "stories"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pages_dir = output_path.parent / "stories"
-    rendered_stories: set[str] = set()
-    if stories_dir.exists():
-        pages_dir.mkdir(parents=True, exist_ok=True)
-        candidates = [n for n in data.get("stories", []) if (stories_dir / n).exists()]
-
-        def _render_one_story(story_md_name: str) -> str:
-            file_path = story_md_name.replace("__", "/").removesuffix(".md")
-            story_md = (stories_dir / story_md_name).read_text(encoding="utf-8")
-            story_html = render_story_page(file_path, story_md, data["project"])
-            target = pages_dir / _story_md_to_html_name(story_md_name)
-            target.write_text(story_html, encoding="utf-8")
-            return story_md_name
-
-        effective = min(workers, len(candidates)) if candidates else 1
-        if effective > 1:
-            with ThreadPoolExecutor(max_workers=effective) as pool:
-                for name in pool.map(_render_one_story, candidates):
-                    rendered_stories.add(name)
-        else:
-            for name in candidates:
-                rendered_stories.add(_render_one_story(name))
-        _stderr(f"[render] {len(rendered_stories)} story page(s) → {pages_dir}")
-
-    survey_rendered = False
-    surveys_dir = repo_path / ".antiquarian" / "surveys"
-    if surveys_dir.exists():
-        survey_files = sorted(surveys_dir.glob("*.md"))
-        if survey_files:
-            latest_survey = survey_files[-1]
-            survey_md = latest_survey.read_text(encoding="utf-8")
-            survey_html = render_survey_page(
-                survey_md, data["project"], len(data["files"])
-            )
-            survey_out = output_path.parent / "survey.html"
-            survey_out.write_text(survey_html, encoding="utf-8")
-            survey_rendered = True
-            _stderr(f"[render] survey page → {survey_out}")
-
-    html = render_broadsheet(
-        data, stories_with_pages=rendered_stories, has_survey=survey_rendered
-    )
-    output_path.write_text(html, encoding="utf-8")
-    _stderr(f"[render] wrote {output_path}")
-    typer.echo(str(output_path))
+    typer.echo(str(written))
 
 
 def _run_git(
@@ -489,6 +430,75 @@ def gallery_build(
         f"[gallery] assembled {len(parsed.repos)} broadsheet(s) → {index_path.parent}"
     )
     typer.echo(str(index_path))
+
+
+def _make_confirm(assume_yes: bool) -> Callable[[CostEstimate], bool]:
+    """Build the cost-gate callback for ``gallery generate``.
+
+    The estimate is *always* printed (the issue requires it). With ``--yes``
+    we proceed without prompting; otherwise we ask interactively and treat any
+    non-affirmative answer as abort.
+    """
+
+    def _confirm(estimate: CostEstimate) -> bool:
+        _stderr(
+            f"[gallery] {estimate.repo_count} repo(s), {estimate.total_files} file(s) "
+            f"to generate. Estimated cost ceiling: ${estimate.ceiling_usd:.2f} "
+            f"(upper bound; actual is typically lower)."
+        )
+        if assume_yes:
+            _stderr("[gallery] --yes given; proceeding.")
+            return True
+        return typer.confirm("Proceed with generation (this spends API tokens)?")
+
+    return _confirm
+
+
+@gallery_app.command("generate")
+def gallery_generate(
+    manifest: str = typer.Option(
+        "gallery.toml",
+        "--manifest",
+        "-m",
+        help="Path to the gallery manifest (TOML).",
+    ),
+    assume_yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the interactive confirm (the cost estimate is still printed).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Regenerate every repo, even ones whose render_dir is already populated.",
+    ),
+) -> None:
+    """Populate a manifest's render dirs by surveying + rendering each repo (#93).
+
+    The expensive, API-key half of the gallery: clones each repo (full
+    history — antiquarian mines it), runs ``survey`` + ``render``, and writes
+    the broadsheet into the manifest's ``render_dir``. Prints a cost estimate
+    and requires confirmation before spending any tokens; idempotent — skips
+    repos that already have a broadsheet unless ``--force``.
+    """
+    manifest_path = Path(manifest).resolve()
+    try:
+        parsed = load_manifest(manifest_path)
+        generated = run_generation(
+            parsed,
+            manifest_path.parent,
+            force=force,
+            confirm=_make_confirm(assume_yes),
+            log=_stderr,
+        )
+    except (GalleryError, GenerationError) as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    _stderr(f"[gallery] generated {len(generated)} broadsheet(s).")
+    for plan in generated:
+        typer.echo(str(plan.render_path))
 
 
 if __name__ == "__main__":

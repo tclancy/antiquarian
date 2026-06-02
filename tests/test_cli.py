@@ -186,3 +186,102 @@ class TestGhpublish:
             None,
         )
         assert first_remote_call == ["remote", "get-url", "upstream"]
+
+
+_GALLERY_MANIFEST = """\
+[gallery]
+title = "The Antiquarian Gallery"
+subtitle = "Illuminated histories"
+action_url = "https://github.com/tclancy/antiquarian"
+
+[[repos]]
+slug = "requests"
+name = "requests"
+tagline = "HTTP for humans."
+github_url = "https://github.com/psf/requests"
+render_dir = "renders/requests"
+"""
+
+
+class TestGalleryGenerate:
+    """CLI wiring for `gallery generate` — the cost gate and flag plumbing."""
+
+    def _manifest(self, tmp_path: Path) -> Path:
+        path = tmp_path / "gallery.toml"
+        path.write_text(_GALLERY_MANIFEST, encoding="utf-8")
+        return path
+
+    def test_yes_prints_estimate_and_proceeds_without_prompt(self, tmp_path: Path):
+        """--yes shows the cost estimate but does not block on a prompt."""
+        from antiquarian.generate import CostEstimate
+
+        def fake_run(manifest, manifest_dir, *, confirm, **kwargs):
+            # The CLI's confirm callback should auto-approve under --yes.
+            assert confirm(CostEstimate(repo_count=1, total_files=3, ceiling_usd=0.06))
+            return []
+
+        with patch("antiquarian.cli.run_generation", side_effect=fake_run):
+            result = runner.invoke(
+                app,
+                ["gallery", "generate", "-m", str(self._manifest(tmp_path)), "--yes"],
+            )
+        assert result.exit_code == 0
+        assert "$0.06" in result.stderr
+        assert "--yes given" in result.stderr
+
+    def test_interactive_decline_aborts(self, tmp_path: Path):
+        """Answering 'no' at the prompt makes the gate return False."""
+        from antiquarian.generate import CostEstimate
+
+        decisions: list[bool] = []
+
+        def fake_run(manifest, manifest_dir, *, confirm, **kwargs):
+            decisions.append(
+                confirm(CostEstimate(repo_count=1, total_files=3, ceiling_usd=0.06))
+            )
+            return []
+
+        with patch("antiquarian.cli.run_generation", side_effect=fake_run):
+            result = runner.invoke(
+                app,
+                ["gallery", "generate", "-m", str(self._manifest(tmp_path))],
+                input="n\n",
+            )
+        assert result.exit_code == 0
+        assert decisions == [False]
+
+    def test_force_flag_is_passed_through(self, tmp_path: Path):
+        captured: dict = {}
+
+        def fake_run(manifest, manifest_dir, *, force, confirm, **kwargs):
+            captured["force"] = force
+            return []
+
+        with patch("antiquarian.cli.run_generation", side_effect=fake_run):
+            result = runner.invoke(
+                app,
+                [
+                    "gallery",
+                    "generate",
+                    "-m",
+                    str(self._manifest(tmp_path)),
+                    "--yes",
+                    "--force",
+                ],
+            )
+        assert result.exit_code == 0
+        assert captured["force"] is True
+
+    def test_generation_error_exits_nonzero(self, tmp_path: Path):
+        from antiquarian.generate import GenerationError
+
+        def fake_run(*args, **kwargs):
+            raise GenerationError("git clone failed for some-repo")
+
+        with patch("antiquarian.cli.run_generation", side_effect=fake_run):
+            result = runner.invoke(
+                app,
+                ["gallery", "generate", "-m", str(self._manifest(tmp_path)), "--yes"],
+            )
+        assert result.exit_code == 1
+        assert "git clone failed" in result.stderr

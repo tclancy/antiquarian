@@ -25,6 +25,13 @@ from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import synthesize_narrative, synthesize_survey
 from antiquarian.profile import build_author_baselines, build_co_changes, build_regions
 from antiquarian.prs import detect_github_repo, enrich_with_pr
+from antiquarian.render import (
+    _story_md_to_html_name,
+    render_broadsheet,
+    render_story_page,
+    render_survey_page,
+)
+from antiquarian.render_data import extract_render_data
 from antiquarian.todos import extract_todos
 
 if TYPE_CHECKING:
@@ -395,3 +402,119 @@ def generate_codebase_survey(
     log(f"[wrote] {survey_file}")
 
     return survey, survey_file
+
+
+# --------------------------------------------------------------------------
+# Broadsheet rendering (from already-surveyed repo to a self-contained tree)
+# --------------------------------------------------------------------------
+
+
+def _render_story_pages(
+    repo_path: Path,
+    data: dict,
+    pages_dir: Path,
+    *,
+    workers: int,
+    log: Callable[[str], None],
+) -> set[str]:
+    """Render one HTML page per persisted story; return the names rendered.
+
+    The broadsheet index only links stories that actually got a page, so the
+    returned set feeds ``render_broadsheet(stories_with_pages=...)``.
+    """
+    stories_dir = repo_path / ".antiquarian" / "stories"
+    if not stories_dir.exists():
+        return set()
+
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    candidates = [n for n in data.get("stories", []) if (stories_dir / n).exists()]
+
+    def _render_one(story_md_name: str) -> str:
+        file_path = story_md_name.replace("__", "/").removesuffix(".md")
+        story_md = (stories_dir / story_md_name).read_text(encoding="utf-8")
+        story_html = render_story_page(file_path, story_md, data["project"])
+        (pages_dir / _story_md_to_html_name(story_md_name)).write_text(
+            story_html, encoding="utf-8"
+        )
+        return story_md_name
+
+    rendered: set[str] = set()
+    effective = min(workers, len(candidates)) if candidates else 1
+    if effective > 1:
+        with ThreadPoolExecutor(max_workers=effective) as pool:
+            rendered.update(pool.map(_render_one, candidates))
+    else:
+        for name in candidates:
+            rendered.add(_render_one(name))
+    log(f"[render] {len(rendered)} story page(s) → {pages_dir}")
+    return rendered
+
+
+def _render_survey_page(
+    repo_path: Path,
+    data: dict,
+    output_dir: Path,
+    *,
+    log: Callable[[str], None],
+) -> bool:
+    """Render the latest survey alongside the index; return whether one existed."""
+    surveys_dir = repo_path / ".antiquarian" / "surveys"
+    if not surveys_dir.exists():
+        return False
+    survey_files = sorted(surveys_dir.glob("*.md"))
+    if not survey_files:
+        return False
+
+    survey_md = survey_files[-1].read_text(encoding="utf-8")
+    survey_html = render_survey_page(survey_md, data["project"], len(data["files"]))
+    survey_out = output_dir / "survey.html"
+    survey_out.write_text(survey_html, encoding="utf-8")
+    log(f"[render] survey page → {survey_out}")
+    return True
+
+
+def render_broadsheet_site(
+    repo_path: Path,
+    output_path: Path,
+    *,
+    workers: int = 4,
+    log: Callable[[str], None] = _noop,
+) -> Path:
+    """Render a self-contained broadsheet tree for an already-surveyed repo.
+
+    Reads the per-file stories, survey, and cache that ``story``/``survey``
+    runs persisted under ``<repo>/.antiquarian/`` and writes ``index.html``
+    plus a ``stories/`` directory (and an optional ``survey.html``) rooted at
+    *output_path*'s parent. Makes no ``claude -p`` calls — it only composes
+    what earlier passes produced. Returns the written index path.
+
+    Raises :class:`FileNotFoundError` if the repo has no antiquarian cache
+    yet (i.e. ``story``/``survey`` has never run against it).
+    """
+    cache_db = repo_path / ".antiquarian" / "cache.db"
+    if not cache_db.exists():
+        raise FileNotFoundError(
+            f"no antiquarian cache at {cache_db}. "
+            "Run `antiquarian story` or `antiquarian survey` first."
+        )
+
+    log(f"[render] extracting data from {repo_path}")
+    data = extract_render_data(repo_path)
+    log(
+        f"[render] {len(data['files'])} file(s), {len(data['commits'])} commit(s), "
+        f"{len(data['arcs'])} arc(s), {len(data['todos'])} todo(s)"
+    )
+
+    output_dir = output_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rendered_stories = _render_story_pages(
+        repo_path, data, output_dir / "stories", workers=workers, log=log
+    )
+    has_survey = _render_survey_page(repo_path, data, output_dir, log=log)
+
+    html = render_broadsheet(
+        data, stories_with_pages=rendered_stories, has_survey=has_survey
+    )
+    output_path.write_text(html, encoding="utf-8")
+    log(f"[render] wrote {output_path}")
+    return output_path
