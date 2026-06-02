@@ -256,3 +256,42 @@ class TestGhpublish:
             ["ghpublish", "--repo", str(tmp_path), "--source", str(gallery_dir)],
         )
         assert result.exit_code == 0, result.output + result.stderr
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli._run_git")
+    def test_source_payload_contains_multipage_tree(
+        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+    ):
+        """Real copytree: the staged payload has the full subtree + `.nojekyll`.
+
+        This is the deliverable of #94 — a *multi-page* site, not just a
+        landing page. Only `_run_git` is mocked; `shutil.copytree` runs for
+        real, and we snapshot the tempdir at `git add` time to prove the
+        per-repo page survived and `.nojekyll` was added.
+        """
+        gallery_dir = self._seed_gallery(tmp_path)
+        staged: list[str] = []
+
+        def recording_git(args: list[str], **kwargs):
+            if args[:2] == ["add", "."]:
+                staging = Path(kwargs["cwd"])
+                staged.extend(
+                    sorted(
+                        str(p.relative_to(staging))
+                        for p in staging.rglob("*")
+                        if p.is_file()
+                    )
+                )
+            return self._fake_git_runner()(args, **kwargs)
+
+        mock_git.side_effect = recording_git
+
+        result = runner.invoke(
+            app,
+            ["ghpublish", "--repo", str(tmp_path), "--source", str(gallery_dir)],
+        )
+
+        assert result.exit_code == 0, result.output + result.stderr
+        assert "index.html" in staged
+        assert "requests/index.html" in staged  # the multi-page subtree
+        assert ".nojekyll" in staged

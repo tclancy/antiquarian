@@ -351,7 +351,7 @@ def _resolve_publish_source(repo_path: Path, source: str | None) -> Path:
     from #92 (``gallery/``). Exits 1 with a helpful hint if there's no
     ``index.html`` to publish.
     """
-    if source:
+    if source is not None:
         source_dir = Path(source).resolve()
     else:
         source_dir = repo_path / ".antiquarian" / "render"
@@ -493,7 +493,7 @@ def ghpublish(
     """
     repo_path = Path(repo).resolve()
     source_dir = _resolve_publish_source(repo_path, source)
-    noun = "gallery" if source else "broadsheet"
+    noun = "gallery" if source is not None else "broadsheet"
     _publish_dir_to_gh_pages(source_dir, repo_path, remote, noun=noun)
 
 
