@@ -15,6 +15,7 @@ landing page reads as the same publication.
 
 from __future__ import annotations
 
+import re
 import shutil
 import tomllib
 from dataclasses import dataclass
@@ -26,6 +27,10 @@ from antiquarian.render import PALETTE
 
 _FONT_STACK = "EB Garamond, Iowan Old Style, Palatino, Georgia, serif"
 _REQUIRED_REPO_FIELDS = ("slug", "name", "tagline", "github_url", "render_dir")
+# A slug becomes both a filesystem directory under the output dir and an href
+# in the landing page, so it must be a single safe path segment — no slashes,
+# no leading dot (rejects "." / ".."), no traversal.
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 class GalleryError(Exception):
@@ -82,12 +87,24 @@ def load_manifest(path: Path) -> GalleryManifest:
     )
 
 
-def _parse_repo(index: int, entry: dict) -> RepoEntry:
-    """Build a :class:`RepoEntry`, raising on any missing required field."""
+def _parse_repo(index: int, entry: object) -> RepoEntry:
+    """Build a :class:`RepoEntry`, raising on any malformed field."""
+    label = f"repo #{index + 1}"
+    if not isinstance(entry, dict):
+        raise GalleryError(
+            f"{label} must be a [[repos]] table, got {type(entry).__name__}"
+        )
     for field in _REQUIRED_REPO_FIELDS:
-        if not entry.get(field):
-            raise GalleryError(f"repo #{index + 1} is missing required field '{field}'")
-    return RepoEntry(**{f: entry[f] for f in _REQUIRED_REPO_FIELDS})
+        value = entry.get(field)
+        if not value or not isinstance(value, str):
+            raise GalleryError(f"{label} is missing required string field '{field}'")
+    repo = RepoEntry(**{f: entry[f] for f in _REQUIRED_REPO_FIELDS})
+    if not _SLUG_RE.match(repo.slug):
+        raise GalleryError(
+            f"{label} has invalid slug '{repo.slug}' — slugs must match "
+            f"{_SLUG_RE.pattern} (a single safe path segment, no slashes or '..')"
+        )
+    return repo
 
 
 def _reject_duplicate_slugs(repos: list[RepoEntry]) -> None:
@@ -125,8 +142,18 @@ def build_gallery(
 
 
 def _copy_render(repo: RepoEntry, manifest_dir: Path, dest: Path) -> None:
-    """Copy one repo's render dir into *dest*, raising if it's absent."""
+    """Copy one repo's render dir into *dest*, raising if it's absent.
+
+    ``render_dir`` is a manifest string, so it is constrained to live inside
+    the manifest's own directory — a published gallery should never reach out
+    and copy an arbitrary tree from elsewhere on disk.
+    """
     source = (manifest_dir / repo.render_dir).resolve()
+    if not _is_within(source, manifest_dir.resolve()):
+        raise GalleryError(
+            f"render_dir for '{repo.slug}' ({repo.render_dir}) escapes the "
+            "manifest directory — it must point inside it"
+        )
     if not (source / "index.html").exists():
         raise GalleryError(
             f"no rendered broadsheet for '{repo.slug}' at {source} "
@@ -135,6 +162,11 @@ def _copy_render(repo: RepoEntry, manifest_dir: Path, dest: Path) -> None:
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(source, dest)
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """True if *child* is *parent* or a descendant of it (both resolved)."""
+    return child == parent or parent in child.parents
 
 
 # --------------------------------------------------------------------------

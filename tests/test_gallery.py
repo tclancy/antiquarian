@@ -93,6 +93,27 @@ class TestLoadManifest:
         with pytest.raises(GalleryError, match="at least one"):
             load_manifest(tmp_path / "g.toml")
 
+    @pytest.mark.parametrize("bad_slug", ["..", "../evil", "a/b", "/abs", ".hidden"])
+    def test_path_shaped_slug_raises(self, tmp_path: Path, bad_slug: str):
+        body = (
+            f'[gallery]\ntitle = "x"\n'
+            f'\n[[repos]]\nslug = "{bad_slug}"\nname = "A"\ntagline = "t"\n'
+            f'github_url = "u"\nrender_dir = "r"\n'
+        )
+        (tmp_path / "g.toml").write_text(body, encoding="utf-8")
+        with pytest.raises(GalleryError, match="invalid slug"):
+            load_manifest(tmp_path / "g.toml")
+
+    def test_non_string_field_raises(self, tmp_path: Path):
+        body = (
+            '[gallery]\ntitle = "x"\n'
+            '\n[[repos]]\nslug = "a"\nname = 123\ntagline = "t"\n'
+            'github_url = "u"\nrender_dir = "r"\n'
+        )
+        (tmp_path / "g.toml").write_text(body, encoding="utf-8")
+        with pytest.raises(GalleryError, match="name"):
+            load_manifest(tmp_path / "g.toml")
+
     def test_duplicate_slug_raises(self, tmp_path: Path):
         body = (
             '[gallery]\ntitle = "x"\n'
@@ -139,6 +160,23 @@ class TestBuildGallery:
         manifest = load_manifest(tmp_path / "gallery.toml")
         with pytest.raises(GalleryError, match="flask"):
             build_gallery(manifest, tmp_path, tmp_path / "out")
+
+    def test_render_dir_escaping_manifest_raises(self, tmp_path: Path):
+        # render the broadsheet OUTSIDE the manifest dir, then point at it
+        outside = tmp_path / "outside"
+        (outside / "renders" / "x").mkdir(parents=True)
+        (outside / "renders" / "x" / "index.html").write_text("<html>x</html>")
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        body = (
+            '[gallery]\ntitle = "x"\n'
+            '\n[[repos]]\nslug = "x"\nname = "X"\ntagline = "t"\n'
+            'github_url = "u"\nrender_dir = "../outside/renders/x"\n'
+        )
+        (proj / "g.toml").write_text(body, encoding="utf-8")
+        manifest = load_manifest(proj / "g.toml")
+        with pytest.raises(GalleryError, match="escapes"):
+            build_gallery(manifest, proj, proj / "out")
 
     def test_rebuild_is_idempotent(self, manifest_project: Path, tmp_path: Path):
         out = tmp_path / "out"
