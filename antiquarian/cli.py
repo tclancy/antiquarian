@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -340,41 +342,51 @@ def _run_git(
     )
 
 
-@app.command()
-def ghpublish(
-    repo: str = typer.Option(".", help="Path to the git repository."),
-    remote: str = typer.Option(
-        "origin", help="Git remote to push the gh-pages branch to."
-    ),
-) -> None:
-    """Publish the latest broadsheet render to the `gh-pages` branch (#73).
+def _resolve_publish_source(repo_path: Path, source: str | None) -> Path:
+    """Resolve and validate the directory ``ghpublish`` should push.
 
-    Prototype scope: takes whatever's already in ``.antiquarian/render/``,
-    constructs a fresh single-commit branch in a tempdir, and force-pushes
-    it to ``<remote>:gh-pages``. Does not touch your working tree, does
-    not preserve previous gh-pages history, does not check for an existing
-    gh-pages set up by another tool — explicitly punted per #73.
-
-    Run ``antiquarian render`` first (this command does not synthesize).
-
-    After the first publish, GitHub Pages still needs to be enabled in the
-    repo's Settings → Pages, with the source set to the ``gh-pages``
-    branch. The command prints the exact URL to visit afterward.
+    Default is the broadsheet render dir (``.antiquarian/render/``).
+    ``--source`` lets callers publish any assembled site that has an
+    ``index.html`` at its root — notably the multi-page gallery tree
+    from #92 (``gallery/``). Exits 1 with a helpful hint if there's no
+    ``index.html`` to publish.
     """
-    import shutil
-    import tempfile
+    if source:
+        source_dir = Path(source).resolve()
+    else:
+        source_dir = repo_path / ".antiquarian" / "render"
 
-    repo_path = Path(repo).resolve()
-    render_dir = repo_path / ".antiquarian" / "render"
-    index_html = render_dir / "index.html"
+    index_html = source_dir / "index.html"
     if not index_html.exists():
+        hint = (
+            "Run `antiquarian render` first."
+            if source is None
+            else "Build the site first (e.g. `antiquarian gallery build`), "
+            "or check the --source path."
+        )
         typer.echo(
-            f"Error: no rendered broadsheet at {index_html}. "
-            "Run `antiquarian render` first.",
+            f"Error: no index.html at {index_html}. {hint}",
             err=True,
         )
         raise typer.Exit(code=1)
+    return source_dir
 
+
+def _publish_dir_to_gh_pages(
+    source_dir: Path,
+    repo_path: Path,
+    remote: str,
+    *,
+    noun: str = "broadsheet",
+) -> None:
+    """Force-push ``source_dir`` to ``<remote>:gh-pages``.
+
+    Builds the payload in a tempdir so the working tree is never touched,
+    adds ``.nojekyll``, force-pushes a fresh single-commit branch, then
+    prints the Pages URL hint. Shared by the broadsheet and gallery
+    publish paths so the git plumbing lives in exactly one place. ``noun``
+    only flavors the human-facing messaging.
+    """
     # Read the remote URL from the user's repo
     try:
         remote_url = _run_git(
@@ -406,8 +418,8 @@ def ghpublish(
         tmp_path = Path(tmp)
         _stderr(f"[ghpublish] staging in {tmp_path}")
 
-        # Copy the rendered output. `dirs_exist_ok` so we land directly in tmp.
-        shutil.copytree(render_dir, tmp_path, dirs_exist_ok=True)
+        # Copy the assembled output. `dirs_exist_ok` so we land directly in tmp.
+        shutil.copytree(source_dir, tmp_path, dirs_exist_ok=True)
         # `.nojekyll` so GitHub Pages serves dotfiles + skips Jekyll
         # processing entirely. Cheap insurance, recommended by GitHub.
         (tmp_path / ".nojekyll").touch()
@@ -415,7 +427,7 @@ def ghpublish(
         _run_git(["init", "-b", "gh-pages"], cwd=tmp_path)
         _run_git(["add", "."], cwd=tmp_path)
         commit_msg = (
-            f"antiquarian broadsheet @ "
+            f"antiquarian {noun} @ "
             f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}"
         )
         _run_git(["commit", "-m", commit_msg], cwd=tmp_path)
@@ -435,7 +447,7 @@ def ghpublish(
     pages_url = f"https://{owner}.github.io/{repo_name}/"
     settings_url = f"https://github.com/{owner}/{repo_name}/settings/pages"
     typer.echo("")
-    typer.echo("✓ Pushed broadsheet to the `gh-pages` branch.")
+    typer.echo(f"✓ Pushed {noun} to the `gh-pages` branch.")
     typer.echo("")
     typer.echo("First-time setup (skip if already done):")
     typer.echo(f"  1. Visit:  {settings_url}")
@@ -443,8 +455,46 @@ def ghpublish(
     typer.echo("  3. Branch: gh-pages  /  Folder: / (root)")
     typer.echo("  4. Click 'Save'")
     typer.echo("")
-    typer.echo(f"Your broadsheet will be live at:  {pages_url}")
+    typer.echo(f"Your {noun} will be live at:  {pages_url}")
     typer.echo("(GitHub Pages may take a minute or two to deploy after Save.)")
+
+
+@app.command()
+def ghpublish(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    remote: str = typer.Option(
+        "origin", help="Git remote to push the gh-pages branch to."
+    ),
+    source: str | None = typer.Option(
+        None,
+        "--source",
+        help=(
+            "Directory to publish (must contain index.html). Defaults to the "
+            "broadsheet render dir; pass the assembled gallery dir to publish "
+            "the multi-page gallery tree (#94)."
+        ),
+    ),
+) -> None:
+    """Publish a rendered site to the `gh-pages` branch (#73, #94).
+
+    Takes whatever's already in the source dir — the broadsheet render
+    (``.antiquarian/render/``) by default, or any assembled site via
+    ``--source`` (e.g. the multi-page gallery from ``gallery build``) —
+    constructs a fresh single-commit branch in a tempdir, and force-pushes
+    it to ``<remote>:gh-pages``. Does not touch your working tree, does
+    not preserve previous gh-pages history, does not check for an existing
+    gh-pages set up by another tool — explicitly punted per #73.
+
+    Render or assemble first (this command does not synthesize).
+
+    After the first publish, GitHub Pages still needs to be enabled in the
+    repo's Settings → Pages, with the source set to the ``gh-pages``
+    branch. The command prints the exact URL to visit afterward.
+    """
+    repo_path = Path(repo).resolve()
+    source_dir = _resolve_publish_source(repo_path, source)
+    noun = "gallery" if source else "broadsheet"
+    _publish_dir_to_gh_pages(source_dir, repo_path, remote, noun=noun)
 
 
 gallery_app = typer.Typer(
