@@ -12,6 +12,26 @@ Early. The MVP `antiquarian story <file>`, `antiquarian survey`, and `antiquaria
 
 Local-first by design — narrative synthesis goes through `claude -p` rather than burning API credits while the idea is still proving itself out.
 
+### Choosing an AI backend
+
+Synthesis is pluggable (#91). Pick a backend with `--backend` on `story`/`survey`,
+or set `ANTIQUARIAN_BACKEND`; precedence is `--backend` flag → env var → default.
+
+| Backend | Select with | Needs |
+|---------|-------------|-------|
+| `claude-p` *(default)* | nothing | the `claude` CLI on PATH |
+| `anthropic-sdk` | `--backend anthropic-sdk` | `pip install antiquarian[anthropic]` + `ANTHROPIC_API_KEY` |
+| `ollama` | `--backend ollama` | `pip install antiquarian[ollama]` + a running `ollama serve` |
+
+```bash
+antiquarian story src/main.py --backend anthropic-sdk     # BYO API key
+ANTIQUARIAN_BACKEND=ollama antiquarian survey             # local model
+```
+
+Models are overridable: `ANTIQUARIAN_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
+and `ANTIQUARIAN_OLLAMA_MODEL` (default `llama3.1`). API keys come from the
+environment only — never a flag, never logged.
+
 ## Getting started
 
 ### Use it against your own repos

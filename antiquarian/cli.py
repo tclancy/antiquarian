@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from antiquarian.backends import BackendError, NarrativeBackend, get_backend
 from antiquarian.gallery import GalleryError, build_gallery, load_manifest
 from antiquarian.pipeline import generate_codebase_survey, generate_file_story
 from antiquarian.prs import detect_github_repo
@@ -63,6 +64,33 @@ def _handle_claude_error(e: BaseException) -> None:
     raise typer.Exit(code=1)
 
 
+# Help text for the shared --backend option. Kept here so story/survey stay
+# in sync. The precedence (flag → env → default) lives in backends.py.
+_BACKEND_HELP = (
+    "AI backend to synthesize with: claude-p (default), anthropic-sdk "
+    "(needs ANTHROPIC_API_KEY), or ollama (local model). Falls back to the "
+    "ANTIQUARIAN_BACKEND env var, then claude-p."
+)
+
+
+def _resolve_backend(backend: str | None) -> NarrativeBackend:
+    """Resolve and preflight the chosen backend, or exit with a clean error.
+
+    Preflighting here — before any git mining — means a missing API key or an
+    unreachable Ollama server surfaces immediately instead of after minutes of
+    work. ``preflight`` is optional on the Protocol, so guard for it.
+    """
+    try:
+        resolved = get_backend(backend)
+        preflight = getattr(resolved, "preflight", None)
+        if preflight is not None:
+            preflight()
+    except BackendError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    return resolved
+
+
 @app.command()
 def story(
     file: str = typer.Argument(..., help="Path to the file whose story to tell."),
@@ -71,10 +99,12 @@ def story(
     no_prs: bool = typer.Option(
         False, "--no-prs", help="Skip PR description fetching via gh."
     ),
+    backend: str = typer.Option("", "--backend", help=_BACKEND_HELP),
 ) -> None:
     """Tell the story of a file's evolution through git history."""
     repo_path = Path(repo).resolve()
     file_path_rel = _resolve_file_path(file, repo_path)
+    resolved_backend = _resolve_backend(backend or None)
 
     try:
         narrative, _ = generate_file_story(
@@ -83,8 +113,12 @@ def story(
             use_cache=not no_cache,
             fetch_prs=not no_prs,
             log=_stderr,
+            backend=resolved_backend,
         )
     except FileNotFoundError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    except BackendError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -135,9 +169,11 @@ def survey(
         max=16,
         help="Number of parallel workers for per-file story generation.",
     ),
+    backend: str = typer.Option("", "--backend", help=_BACKEND_HELP),
 ) -> None:
     """Synthesize a codebase-level narrative from per-file stories."""
     repo_path = Path(repo).resolve()
+    resolved_backend = _resolve_backend(backend or None)
 
     files = select_files(
         repo_path,
@@ -171,8 +207,12 @@ def survey(
             fetch_prs=not no_prs,
             max_workers=workers,
             log=_stderr,
+            backend=resolved_backend,
         )
     except FileNotFoundError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    except BackendError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
