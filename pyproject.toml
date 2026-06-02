@@ -12,6 +12,13 @@ dependencies = [
     "markdown>=3.10.2",
 ]
 
+[project.optional-dependencies]
+# Optional AI backends (#91). The default claude-p backend needs neither.
+# Install the one you want: `pip install antiquarian[anthropic]` etc.
+anthropic = ["anthropic>=0.40"]
+ollama = ["ollama>=0.4"]
+all = ["anthropic>=0.40", "ollama>=0.4"]
+
 [project.scripts]
 antiquarian = "antiquarian.cli:app"
 
@@ -24,6 +31,7 @@ dev = [
     "hypothesis>=6.152.6",
     "pre-commit>=4.6.0",
     "pytest>=8.0",
+    "pyyaml>=6.0.3",
     "ruff>=0.15.12",
     "z3-solver>=4.13.0",
 ]

@@ -295,3 +295,40 @@ class TestGhpublish:
         assert "index.html" in staged
         assert "requests/index.html" in staged  # the multi-page subtree
         assert ".nojekyll" in staged
+
+class TestBackendSelection:
+    """Issue #91 — --backend flag wiring at the CLI layer."""
+
+    def test_unknown_backend_exits_cleanly(self, tmp_path):
+        result = runner.invoke(
+            app, ["survey", "--repo", str(tmp_path), "--backend", "gpt-9000"]
+        )
+        assert result.exit_code == 1
+        assert "gpt-9000" in result.stderr
+        # Names the available options instead of dumping a traceback.
+        assert "claude-p" in result.stderr
+
+    def test_story_threads_resolved_backend_into_pipeline(self, tmp_path):
+        target = tmp_path / "x.py"
+        target.write_text("print('hi')\n")
+        captured = {}
+
+        def _fake_story(*_args, **kwargs):
+            captured["backend"] = kwargs.get("backend")
+            return ("the story", None)
+
+        # Stub preflight so the test doesn't require a running Ollama server;
+        # we're verifying resolution + threading, not connectivity.
+        with (
+            patch("antiquarian.cli.generate_file_story", side_effect=_fake_story),
+            patch("antiquarian.backends.OllamaBackend.preflight", lambda self: None),
+        ):
+            result = runner.invoke(
+                app,
+                ["story", str(target), "--repo", str(tmp_path), "--backend", "ollama"],
+            )
+        assert result.exit_code == 0
+        # The CLI resolved "ollama" to a concrete backend and passed it down.
+        from antiquarian.backends import OllamaBackend
+
+        assert isinstance(captured["backend"], OllamaBackend)

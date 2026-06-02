@@ -1,13 +1,12 @@
-# Render-only GitHub Action (Phase 1, #88)
+# Antiquarian's own broadsheet workflow — dogfoods the composite action.
 #
-# On push to main: renders the broadsheet from .antiquarian/ data and
-# publishes to GitHub Pages via `antiquarian ghpublish`.
+# The render/comment/publish logic lives in the repo-root action.yml (the
+# Marketplace-packaged Action, #89). This workflow is just the trigger wiring
+# plus `local-install: true` so it renders with the code under test rather than
+# a published release.
 #
-# On PR: renders and uploads the broadsheet as an artifact, then posts
-# a comment with a link to download/preview it.
-#
-# Does NOT regenerate stories or run survey — those need `claude -p`
-# which requires an interactive session. Run locally, commit
+# Does NOT regenerate stories or run survey — those need `claude -p`, which
+# requires an interactive session. Run `antiquarian survey` locally, commit
 # .antiquarian/, and this action renders from that data.
 
 name: Antiquarian
@@ -36,79 +35,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: astral-sh/setup-uv@v5
-
-      - name: Install antiquarian
-        run: uv tool install --from . .
-
-      - name: Check for antiquarian data
-        id: check
-        run: |
-          if [ -f .antiquarian/cache.db ]; then
-            echo "has_data=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_data=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No .antiquarian/cache.db found. Run 'antiquarian survey' locally and commit the results."
-          fi
-
       - name: Render broadsheet
-        if: steps.check.outputs.has_data == 'true'
-        run: antiquarian render
-
-      - name: Upload render artifact
-        if: steps.check.outputs.has_data == 'true'
-        uses: actions/upload-artifact@v4
+        uses: ./
         with:
-          name: antiquarian-broadsheet
-          path: .antiquarian/render/
-          retention-days: 30
-
-      # On PR: post a comment with artifact link
-      - name: Comment on PR
-        if: github.event_name == 'pull_request' && steps.check.outputs.has_data == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const run_id = context.runId;
-            const run_url = `https://github.com/${owner}/${repo}/actions/runs/${run_id}`;
-
-            const body = [
-              '### 📜 Antiquarian Broadsheet',
-              '',
-              `The broadsheet has been rendered from the latest \`.antiquarian/\` data.`,
-              '',
-              `**[Download the broadsheet](${run_url}#artifacts)** from the workflow artifacts.`,
-              '',
-              '<sub>Render-only (Phase 1) — stories and surveys are generated locally.</sub>',
-            ].join('\n');
-
-            // Check for existing comment to avoid duplicates
-            const comments = await github.rest.issues.listComments({
-              owner, repo, issue_number: context.issue.number,
-            });
-            const existing = comments.data.find(c =>
-              c.user.type === 'Bot' && c.body.includes('Antiquarian Broadsheet')
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: existing.id, body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: context.issue.number, body,
-              });
-            }
-
-      # On push to main: publish to GitHub Pages
-      - name: Configure git for ghpublish
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check.outputs.has_data == 'true'
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-
-      - name: Publish to gh-pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.check.outputs.has_data == 'true'
-        run: antiquarian ghpublish
+          local-install: "true"
