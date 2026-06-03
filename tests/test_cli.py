@@ -295,6 +295,8 @@ class TestGalleryGenerate:
             )
         assert result.exit_code == 1
         assert "FAILED flask: boom" in result.stderr
+
+
 class TestBackendSelection:
     """Issue #91 — --backend flag wiring at the CLI layer."""
 
