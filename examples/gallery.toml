@@ -5,10 +5,11 @@
 # site: one card per repo on an illuminated landing page, each linking to
 # that repo's broadsheet, plus a "want one for your repo?" call-to-action.
 #
-# `render_dir` is resolved RELATIVE TO THIS FILE and must already contain a
-# rendered broadsheet (an `index.html` produced by `antiquarian render`).
-# Populating those dirs is the job of `antiquarian gallery generate` (#93);
-# this assembler only composes what already exists.
+# `render_dir` is resolved RELATIVE TO THIS FILE and must contain a rendered
+# broadsheet (an `index.html` produced by `antiquarian render`). Populate the
+# dirs with `antiquarian gallery generate --manifest gallery.toml` (it clones,
+# surveys, and renders each `github_url` below — printing a cost estimate and
+# asking before it spends tokens); `gallery build` then composes what exists.
 
 [gallery]
 title = "The Antiquarian Gallery"
