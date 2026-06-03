@@ -296,6 +296,7 @@ class TestGhpublish:
         assert "requests/index.html" in staged  # the multi-page subtree
         assert ".nojekyll" in staged
 
+
 class TestBackendSelection:
     """Issue #91 — --backend flag wiring at the CLI layer."""
 
