@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
