@@ -188,6 +188,115 @@ class TestGhpublish:
         )
         assert first_remote_call == ["remote", "get-url", "upstream"]
 
+    def _seed_gallery(self, tmp_path: Path) -> Path:
+        """Assemble a minimal multi-page gallery tree; return its root."""
+        gallery_dir = tmp_path / "gallery"
+        (gallery_dir / "requests").mkdir(parents=True, exist_ok=True)
+        (gallery_dir / "index.html").write_text("<!doctype html><title>gallery</title>")
+        (gallery_dir / "requests" / "index.html").write_text(
+            "<!doctype html><title>requests broadsheet</title>"
+        )
+        return gallery_dir
+
+    def test_source_missing_index_errors(self, tmp_path: Path):
+        """`--source` pointing at a dir with no index.html → exit 1."""
+        empty = tmp_path / "nope"
+        empty.mkdir()
+        result = runner.invoke(
+            app, ["ghpublish", "--repo", str(tmp_path), "--source", str(empty)]
+        )
+        assert result.exit_code == 1
+        assert "index.html" in result.stderr
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli.shutil.copytree")
+    @patch("antiquarian.cli._run_git")
+    def test_source_publishes_gallery_tree(
+        self,
+        mock_git: MagicMock,
+        mock_copytree: MagicMock,
+        mock_gh: MagicMock,
+        tmp_path: Path,
+    ):
+        """`--source gallery/` publishes the multi-page tree, not the render dir."""
+        gallery_dir = self._seed_gallery(tmp_path)
+        mock_git.side_effect = self._fake_git_runner()
+
+        result = runner.invoke(
+            app,
+            ["ghpublish", "--repo", str(tmp_path), "--source", str(gallery_dir)],
+        )
+
+        assert result.exit_code == 0, result.output + result.stderr
+        # The gallery tree (not .antiquarian/render) is what gets staged.
+        copied_src = Path(mock_copytree.call_args.args[0])
+        assert copied_src == gallery_dir.resolve()
+        # Still a force-push to gh-pages, and the URL hint is printed.
+        git_calls = [c.args[0] for c in mock_git.call_args_list]
+        push = next(args for args in git_calls if args[0] == "push")
+        assert "--force" in push and "HEAD:gh-pages" in push
+        assert "https://owner.github.io/repo/" in result.output
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli.shutil.copytree")
+    @patch("antiquarian.cli._run_git")
+    def test_source_works_without_render_dir(
+        self,
+        mock_git: MagicMock,
+        mock_copytree: MagicMock,
+        mock_gh: MagicMock,
+        tmp_path: Path,
+    ):
+        """`--source` does not require a `.antiquarian/render/` to exist."""
+        gallery_dir = self._seed_gallery(tmp_path)
+        assert not (tmp_path / ".antiquarian" / "render").exists()
+        mock_git.side_effect = self._fake_git_runner()
+
+        result = runner.invoke(
+            app,
+            ["ghpublish", "--repo", str(tmp_path), "--source", str(gallery_dir)],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+
+    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
+    @patch("antiquarian.cli._run_git")
+    def test_source_payload_contains_multipage_tree(
+        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+    ):
+        """Real copytree: the staged payload has the full subtree + `.nojekyll`.
+
+        This is the deliverable of #94 — a *multi-page* site, not just a
+        landing page. Only `_run_git` is mocked; `shutil.copytree` runs for
+        real, and we snapshot the tempdir at `git add` time to prove the
+        per-repo page survived and `.nojekyll` was added.
+        """
+        gallery_dir = self._seed_gallery(tmp_path)
+        staged: list[str] = []
+
+        def recording_git(args: list[str], **kwargs):
+            if args[:2] == ["add", "."]:
+                staging = Path(kwargs["cwd"])
+                staged.extend(
+                    sorted(
+                        str(p.relative_to(staging))
+                        for p in staging.rglob("*")
+                        if p.is_file()
+                    )
+                )
+            return self._fake_git_runner()(args, **kwargs)
+
+        mock_git.side_effect = recording_git
+
+        result = runner.invoke(
+            app,
+            ["ghpublish", "--repo", str(tmp_path), "--source", str(gallery_dir)],
+        )
+
+        assert result.exit_code == 0, result.output + result.stderr
+        assert "index.html" in staged
+        assert "requests/index.html" in staged  # the multi-page subtree
+        assert ".nojekyll" in staged
+
 
 _GALLERY_MANIFEST = """\
 [gallery]
