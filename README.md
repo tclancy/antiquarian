@@ -54,6 +54,24 @@ antiquarian render                   # broadsheet HTML
 
 Output lands under `<that-repo>/.antiquarian/`. After a `git pull` here, `uv tool upgrade antiquarian` if entry-point shims got stale (rarely needed for editable installs).
 
+### Build a gallery of broadsheets
+
+A *gallery* is a precomputed, self-contained site of broadsheets for several repos — the free, no-auth artifact a curious visitor sees before running anything (the #86 "Option B" adoption surface). It is driven by a `gallery.toml` manifest (see [`examples/gallery.toml`](examples/gallery.toml)):
+
+```bash
+# Survey + render every repo in the manifest into its render_dir.
+# Clones each repo (full history — antiquarian mines it), then prints a cost
+# estimate and asks before spending any tokens. Idempotent: already-rendered
+# repos are skipped unless --force.
+antiquarian gallery generate -m gallery.toml          # interactive confirm
+antiquarian gallery generate -m gallery.toml --yes    # headless (CI)
+
+# Assemble the rendered broadsheets into one illuminated Pages site.
+antiquarian gallery build -m gallery.toml -o gallery/
+```
+
+`generate` is the expensive, API-key half (one `claude -p` call per file per repo); `build` is free and idempotent. Splitting them keeps the cheap assembly testable and the one-time generation cost something you run deliberately, not on every push.
+
 ### Or work on Antiquarian itself
 
 ```bash
