@@ -87,6 +87,27 @@ def _git_tracked_files(repo_path: str | Path) -> list[str]:
     return [line for line in result.stdout.split("\n") if line]
 
 
+def _is_binary_blob(repo_path: str | Path, file_path: str) -> bool:
+    """True if the file's content at HEAD looks binary (contains a NUL byte).
+
+    Mirrors git's own text/binary heuristic: a NUL byte in the first 8000
+    bytes means binary. Narrating a binary blob (e.g. a tracked ``docs/img``
+    image) is meaningless and crashes the text-oriented pipeline, so such
+    files are dropped from selection rather than surveyed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "show", f"HEAD:{file_path}"],
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        # Not readable at HEAD (e.g. staged-but-uncommitted) — let the text
+        # pipeline's own guards handle it rather than dropping it here.
+        return False
+    return b"\x00" in result.stdout[:8000]
+
+
 def _emit_soft_warnings(candidates: list[str]) -> None:
     """Emit one stderr warning per unusual directory found in the candidate set."""
     warned: set[str] = set()
@@ -142,6 +163,7 @@ def select_files(
 
     candidates = _git_tracked_files(repo)
     _emit_soft_warnings(candidates)
+    candidates = [c for c in candidates if not _is_binary_blob(repo, c)]
 
     exclude = exclude or []
     include = include or []

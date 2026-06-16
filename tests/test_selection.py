@@ -171,6 +171,25 @@ class TestSelectFiles:
         with pytest.raises(SystemExit):
             select_files(tmp_path)
 
+    def test_binary_files_excluded(self, tmp_git_repo: Path) -> None:
+        """Tracked binary files (e.g. images) are never selected for survey.
+
+        A real repo like httpx tracks `docs/img/*.png`; narrating a binary
+        blob is meaningless and crashes the text-oriented pipeline (#B).
+        """
+        img = tmp_git_repo / "docs" / "img" / "logo.png"
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01")
+        subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add image"], cwd=tmp_git_repo, check=True
+        )
+
+        selected = select_files(tmp_git_repo)
+        assert "docs/img/logo.png" not in selected
+        # text files are unaffected by the binary filter
+        assert "src/app.py" in selected
+
     def test_tracked_env_file_included(self, tmp_git_repo: Path) -> None:
         """A .env file tracked by git should be included — trust the maintainer."""
         env_file = tmp_git_repo / ".env"

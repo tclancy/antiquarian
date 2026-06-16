@@ -75,7 +75,10 @@ def extract_todos(repo_path: str | Path, file_path: str) -> Iterator[TodoAnnotat
     """Yield a ``TodoAnnotation`` for each TODO/FIXME-style comment in the file at HEAD."""
     try:
         lines = _read_file_at_head(repo_path, file_path)
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, UnicodeDecodeError):
+        # A binary blob (e.g. a tracked image) makes `git show` succeed but
+        # return non-UTF-8 bytes. Treat it as "no readable text" rather than
+        # letting one file abort an entire survey batch.
         return
 
     now = datetime.now(timezone.utc)
