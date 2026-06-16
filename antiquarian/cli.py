@@ -75,8 +75,9 @@ def _handle_claude_error(e: BaseException) -> None:
 # in sync. The precedence (flag → env → default) lives in backends.py.
 _BACKEND_HELP = (
     "AI backend to synthesize with: claude-p (default), anthropic-sdk "
-    "(needs ANTHROPIC_API_KEY), or ollama (local model). Falls back to the "
-    "ANTIQUARIAN_BACKEND env var, then claude-p."
+    "(needs ANTHROPIC_API_KEY), ollama (local model), or exo (local "
+    "OpenAI-compatible cluster). Falls back to the ANTIQUARIAN_BACKEND env "
+    "var, then claude-p."
 )
 
 

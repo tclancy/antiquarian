@@ -13,9 +13,11 @@ from antiquarian.backends import (
     AnthropicSDKBackend,
     BackendError,
     ClaudePBackend,
+    ExoBackend,
     NarrativeBackend,
     OllamaBackend,
     _anthropic_text,
+    _openai_text,
     _retry_with_backoff,
     available_backends,
     get_backend,
@@ -144,6 +146,9 @@ class TestGetBackend:
     def test_returns_ollama(self) -> None:
         assert isinstance(get_backend("ollama"), OllamaBackend)
 
+    def test_returns_exo(self) -> None:
+        assert isinstance(get_backend("exo"), ExoBackend)
+
     def test_unknown_name_raises_backend_error(self) -> None:
         with pytest.raises(BackendError) as exc:
             get_backend("gpt-9000")
@@ -151,8 +156,13 @@ class TestGetBackend:
         # Error names the available options so the user can recover.
         assert "claude-p" in str(exc.value)
 
-    def test_available_backends_lists_all_three(self) -> None:
-        assert available_backends() == ["anthropic-sdk", "claude-p", "ollama"]
+    def test_available_backends_lists_all_four(self) -> None:
+        assert available_backends() == [
+            "anthropic-sdk",
+            "claude-p",
+            "exo",
+            "ollama",
+        ]
 
 
 # --- #91: shared retry helper ----------------------------------------------
@@ -474,3 +484,205 @@ class TestOllamaBackendSynthesize:
 
     def test_satisfies_protocol(self) -> None:
         assert isinstance(OllamaBackend(), NarrativeBackend)
+
+
+# --- #102: Exo backend (OpenAI-compatible local cluster) -------------------
+
+
+class _FakeOpenAIAPIStatusError(Exception):
+    pass
+
+
+class _FakeOpenAIAPIConnectionError(Exception):
+    pass
+
+
+class _FakeOpenAIRateLimitError(_FakeOpenAIAPIStatusError):
+    pass
+
+
+class _FakeOpenAIInternalServerError(_FakeOpenAIAPIStatusError):
+    pass
+
+
+def _chat_completion(text: str):
+    return types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text))]
+    )
+
+
+class _FakeCompletions:
+    def __init__(self, behavior) -> None:
+        self.behavior = behavior
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.behavior(kwargs)
+
+
+class _FakeModels:
+    def __init__(self, list_behavior=None) -> None:
+        self._list = list_behavior
+
+    def list(self):
+        if self._list is not None:
+            return self._list()
+        return types.SimpleNamespace(data=[])
+
+
+class _FakeOpenAIClient:
+    def __init__(self, chat_behavior=None, list_behavior=None) -> None:
+        self.chat = types.SimpleNamespace(completions=_FakeCompletions(chat_behavior))
+        self.models = _FakeModels(list_behavior)
+        self.init_kwargs: dict = {}
+
+
+def _fake_openai_module(client: _FakeOpenAIClient):
+    def _make(**kwargs):
+        client.init_kwargs = kwargs
+        return client
+
+    return types.SimpleNamespace(
+        OpenAI=_make,
+        APIStatusError=_FakeOpenAIAPIStatusError,
+        APIConnectionError=_FakeOpenAIAPIConnectionError,
+        RateLimitError=_FakeOpenAIRateLimitError,
+        InternalServerError=_FakeOpenAIInternalServerError,
+    )
+
+
+class TestExoBackendConfig:
+    def test_model_defaults(self, monkeypatch) -> None:
+        monkeypatch.delenv("ANTIQUARIAN_EXO_MODEL", raising=False)
+        assert ExoBackend().model == "llama-3.2-3b"
+
+    def test_model_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("ANTIQUARIAN_EXO_MODEL", "llama-3.1-70b")
+        assert ExoBackend().model == "llama-3.1-70b"
+
+    def test_base_url_defaults(self, monkeypatch) -> None:
+        monkeypatch.delenv("ANTIQUARIAN_EXO_BASE_URL", raising=False)
+        assert ExoBackend().base_url == "http://localhost:52415/v1"
+
+    def test_base_url_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("ANTIQUARIAN_EXO_BASE_URL", "http://box.local:9000/v1")
+        assert ExoBackend().base_url == "http://box.local:9000/v1"
+
+    def test_api_key_placeholder_when_unset(self, monkeypatch) -> None:
+        """Exo needs no auth, but the openai client requires a non-empty key."""
+        monkeypatch.delenv("ANTIQUARIAN_EXO_API_KEY", raising=False)
+        assert ExoBackend().api_key == "exo"
+
+    def test_api_key_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("ANTIQUARIAN_EXO_API_KEY", "proxy-token")
+        assert ExoBackend().api_key == "proxy-token"
+
+
+class TestExoBackendSynthesize:
+    def test_happy_path_passes_prompts_and_returns_text(self) -> None:
+        client = _FakeOpenAIClient(
+            chat_behavior=lambda _kw: _chat_completion(" cluster out \n")
+        )
+        backend = ExoBackend(model="llama-3.2-3b")
+        backend._import_sdk = lambda: _fake_openai_module(client)
+
+        out = backend.synthesize("SYSTEM", "USER", sleep=lambda _s: None)
+
+        assert out == "cluster out"
+        sent = client.chat.completions.calls[0]
+        assert sent["model"] == "llama-3.2-3b"
+        assert sent["messages"] == [
+            {"role": "system", "content": "SYSTEM"},
+            {"role": "user", "content": "USER"},
+        ]
+
+    def test_client_built_with_base_url_and_key(self) -> None:
+        client = _FakeOpenAIClient(chat_behavior=lambda _kw: _chat_completion("ok"))
+        backend = ExoBackend(base_url="http://h:1/v1", api_key="k")
+        backend._import_sdk = lambda: _fake_openai_module(client)
+
+        backend.synthesize("S", "U", timeout_seconds=42, sleep=lambda _s: None)
+
+        assert client.init_kwargs["base_url"] == "http://h:1/v1"
+        assert client.init_kwargs["api_key"] == "k"
+        assert client.init_kwargs["timeout"] == 42.0
+
+    def test_retries_transient_then_succeeds(self) -> None:
+        state = {"n": 0}
+
+        def behavior(_kw):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise _FakeOpenAIAPIConnectionError("blip")
+            return _chat_completion("recovered")
+
+        client = _FakeOpenAIClient(chat_behavior=behavior)
+        backend = ExoBackend()
+        backend._import_sdk = lambda: _fake_openai_module(client)
+
+        out = backend.synthesize("S", "U", sleep=lambda _s: None)
+        assert out == "recovered"
+        assert state["n"] == 2
+
+    def test_api_status_error_becomes_backend_error(self) -> None:
+        def behavior(_kw):
+            raise _FakeOpenAIAPIStatusError("404 model not loaded")
+
+        client = _FakeOpenAIClient(chat_behavior=behavior)
+        backend = ExoBackend()
+        backend._import_sdk = lambda: _fake_openai_module(client)
+
+        with pytest.raises(BackendError) as exc:
+            backend.synthesize("S", "U", sleep=lambda _s: None)
+        assert "Exo API error" in str(exc.value)
+
+    def test_exhausted_connection_error_becomes_backend_error(self) -> None:
+        """APIConnectionError does not subclass APIStatusError, so it must be
+        caught explicitly or it escapes the wrapper as a raw traceback."""
+
+        def behavior(_kw):
+            raise _FakeOpenAIAPIConnectionError("connection refused")
+
+        client = _FakeOpenAIClient(chat_behavior=behavior)
+        backend = ExoBackend()
+        backend._import_sdk = lambda: _fake_openai_module(client)
+
+        with pytest.raises(BackendError):
+            backend.synthesize("S", "U", sleep=lambda _s: None)
+
+    def test_preflight_unreachable_becomes_backend_error(self) -> None:
+        def boom():
+            raise _FakeOpenAIAPIConnectionError("refused")
+
+        client = _FakeOpenAIClient(list_behavior=boom)
+        backend = ExoBackend()
+        backend._import_sdk = lambda: _fake_openai_module(client)
+
+        with pytest.raises(BackendError) as exc:
+            backend.preflight()
+        assert "Exo" in str(exc.value)
+
+    def test_preflight_reachable_passes(self) -> None:
+        client = _FakeOpenAIClient(list_behavior=lambda: types.SimpleNamespace(data=[]))
+        backend = ExoBackend()
+        backend._import_sdk = lambda: _fake_openai_module(client)
+        backend.preflight()  # should not raise
+
+    def test_satisfies_protocol(self) -> None:
+        assert isinstance(ExoBackend(), NarrativeBackend)
+
+
+class TestOpenAIText:
+    def test_extracts_first_choice_content(self) -> None:
+        assert _openai_text(_chat_completion("hello world")) == "hello world"
+
+    def test_empty_choices_returns_empty_string(self) -> None:
+        msg = types.SimpleNamespace(choices=[])
+        assert _openai_text(msg) == ""
+
+    def test_none_content_returns_empty_string(self) -> None:
+        msg = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=None))]
+        )
+        assert _openai_text(msg) == ""

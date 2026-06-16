@@ -22,15 +22,19 @@ or set `ANTIQUARIAN_BACKEND`; precedence is `--backend` flag → env var → def
 | `claude-p` *(default)* | nothing | the `claude` CLI on PATH |
 | `anthropic-sdk` | `--backend anthropic-sdk` | `pip install antiquarian[anthropic]` + `ANTHROPIC_API_KEY` |
 | `ollama` | `--backend ollama` | `pip install antiquarian[ollama]` + a running `ollama serve` |
+| `exo` | `--backend exo` | `pip install antiquarian[exo]` + a running [Exo](https://github.com/exo-explore/exo) cluster |
 
 ```bash
 antiquarian story src/main.py --backend anthropic-sdk     # BYO API key
 ANTIQUARIAN_BACKEND=ollama antiquarian survey             # local model
+antiquarian story src/main.py --backend exo               # your own device cluster
 ```
 
-Models are overridable: `ANTIQUARIAN_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
-and `ANTIQUARIAN_OLLAMA_MODEL` (default `llama3.1`). API keys come from the
-environment only — never a flag, never logged.
+Models are overridable: `ANTIQUARIAN_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`),
+`ANTIQUARIAN_OLLAMA_MODEL` (default `llama3.1`), and `ANTIQUARIAN_EXO_MODEL`
+(default `llama-3.2-3b`). Exo talks OpenAI-over-HTTP; point it at another node
+with `ANTIQUARIAN_EXO_BASE_URL` (default `http://localhost:52415/v1`). API keys
+come from the environment only — never a flag, never logged.
 
 ## Getting started
 
