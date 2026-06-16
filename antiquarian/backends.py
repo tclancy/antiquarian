@@ -8,9 +8,11 @@ concrete backends ship today (#91):
   ``ANTHROPIC_API_KEY``. The "bring your own API key" path.
 - ``OllamaBackend`` — a local model served by Ollama. The "no API key, runs
   on your machine" path.
+- ``ExoBackend`` — a model served by an Exo cluster via its OpenAI-compatible
+  API (#102). The "run it across your own devices" path.
 
-Selection is by short name (``claude-p``, ``anthropic-sdk``, ``ollama``)
-through ``get_backend``, which honors the precedence
+Selection is by short name (``claude-p``, ``anthropic-sdk``, ``ollama``,
+``exo``) through ``get_backend``, which honors the precedence
 ``explicit arg → ANTIQUARIAN_BACKEND env → default (claude-p)``.
 
 Why a Protocol rather than a base class: duck-typed extension fits the
@@ -389,12 +391,158 @@ class OllamaBackend:
             raise BackendError(f"Ollama error: {e}") from e
 
 
+#: Default Exo model. ``llama-3.2-3b`` is small enough to run on a single
+#: everyday device yet gives noticeably better narrative than the 1B variant;
+#: override with ``ANTIQUARIAN_EXO_MODEL``. Model ids follow Exo's own naming
+#: (e.g. ``llama-3.2-1b``, ``llama-3.1-70b``).
+_DEFAULT_EXO_MODEL = "llama-3.2-3b"
+
+#: Default Exo endpoint. Exo serves an OpenAI-compatible API at
+#: ``http://localhost:52415/v1`` by default; override with
+#: ``ANTIQUARIAN_EXO_BASE_URL`` to point at another node in the cluster.
+_DEFAULT_EXO_BASE_URL = "http://localhost:52415/v1"
+
+#: Exo needs no auth, but the ``openai`` client refuses an empty key. This
+#: placeholder is sent and ignored by Exo; override with
+#: ``ANTIQUARIAN_EXO_API_KEY`` for setups that front Exo with an authed proxy.
+_DEFAULT_EXO_API_KEY = "exo"
+
+#: Upper bound on synthesized tokens. Mirrors the Anthropic backend — a survey
+#: runs ~2000 words; 8192 leaves headroom without inviting runaway output.
+_EXO_MAX_TOKENS = 8192
+
+
+class ExoBackend:
+    """OpenAI-compatible backend for an Exo cluster — the run-it-across-your-own-devices path (#102).
+
+    Exo (https://github.com/exo-explore/exo) exposes an OpenAI-compatible API
+    (default ``http://localhost:52415/v1``), so this backend talks to it
+    through the official ``openai`` SDK pointed at that base URL. Exo requires
+    no auth; a placeholder key is sent because the SDK refuses an empty one.
+
+    Everything is overridable: ``ANTIQUARIAN_EXO_MODEL`` (default
+    ``llama-3.2-3b``), ``ANTIQUARIAN_EXO_BASE_URL``, and ``ANTIQUARIAN_EXO_API_KEY``
+    (for a fronting proxy), or their constructor args.
+
+    Construction is side-effect-free; the package import and a connectivity
+    check happen in :meth:`preflight` / :meth:`synthesize`.
+    """
+
+    name = "exo"
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self.model = model or os.environ.get(
+            "ANTIQUARIAN_EXO_MODEL", _DEFAULT_EXO_MODEL
+        )
+        self.base_url = base_url or os.environ.get(
+            "ANTIQUARIAN_EXO_BASE_URL", _DEFAULT_EXO_BASE_URL
+        )
+        self.api_key = api_key or os.environ.get(
+            "ANTIQUARIAN_EXO_API_KEY", _DEFAULT_EXO_API_KEY
+        )
+
+    def _import_sdk(self):  # type: ignore[no-untyped-def]
+        try:
+            import openai
+        except ImportError as e:
+            raise BackendError(
+                "The 'openai' package is required for the exo backend. Install "
+                "it with: pip install 'antiquarian[exo]' (and run a local Exo "
+                "cluster)."
+            ) from e
+        return openai
+
+    def _client(self, *, timeout_seconds: int = 300):  # type: ignore[no-untyped-def]
+        openai = self._import_sdk()
+        client = openai.OpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=float(timeout_seconds),
+        )
+        return openai, client
+
+    def preflight(self) -> None:
+        """Fail fast if the package is missing or the cluster is unreachable."""
+        openai, client = self._client()
+        try:
+            client.models.list()
+        except Exception as e:  # openai raises APIConnectionError / APIStatusError
+            raise BackendError(
+                f"Could not reach the Exo cluster at {self.base_url} "
+                f"({type(e).__name__}: {e}). Is it running? Start it with: exo"
+            ) from e
+
+    def synthesize(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        timeout_seconds: int = 300,
+        log: Callable[[str], None] = _noop,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> str:
+        openai, client = self._client(timeout_seconds=timeout_seconds)
+
+        def _call() -> str:
+            completion = client.chat.completions.create(
+                model=self.model,
+                max_tokens=_EXO_MAX_TOKENS,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                stream=False,
+            )
+            return _openai_text(completion)
+
+        # APIConnectionError covers transport blips; RateLimitError /
+        # InternalServerError cover 429/500/503. All worth a retry; everything
+        # else (bad request, model not loaded) is permanent.
+        transient = (
+            openai.APIConnectionError,
+            openai.RateLimitError,
+            openai.InternalServerError,
+        )
+        # Catch the retried families so an *exhausted* retry surfaces as a clean
+        # BackendError, not a raw traceback. APIConnectionError does not subclass
+        # APIStatusError, so it must be named explicitly.
+        try:
+            return _retry_with_backoff(
+                _call,
+                transient=transient,
+                label="exo",
+                log=log,
+                sleep=sleep,
+            ).strip()
+        except (openai.APIStatusError, openai.APIConnectionError) as e:
+            raise BackendError(f"Exo API error: {e}") from e
+
+
+def _openai_text(completion) -> str:  # type: ignore[no-untyped-def]
+    """Extract the assistant message text from an OpenAI ``ChatCompletion``.
+
+    Null-safe: an empty ``choices`` list or a ``None`` content (which the API
+    can return alongside a refusal or tool call) yields an empty string rather
+    than raising.
+    """
+    if not completion.choices:
+        return ""
+    return completion.choices[0].message.content or ""
+
+
 # Name → factory. Factories construct fresh, side-effect-free instances; the
 # CLI calls ``preflight`` on the chosen one before doing any work.
 _BACKENDS: dict[str, Callable[[], NarrativeBackend]] = {
     "claude-p": ClaudePBackend,
     "anthropic-sdk": AnthropicSDKBackend,
     "ollama": OllamaBackend,
+    "exo": ExoBackend,
 }
 
 
