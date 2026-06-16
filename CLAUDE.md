@@ -63,10 +63,6 @@ uv run pre-commit run --all-files         # ruff + standard hooks
 - **Cache is keyed by `(commit_sha, file_path)`.** Schema changes need migrations — see PR #57 for the pattern.
 - **Project-native UIDs alongside backend identifiers** (git SHA, jj change-id) — added day-one, painful to retrofit.
 
-## Dispatch bot status
-
-**On hold for unsupervised PR opening (2026-05-13).** Exception: clean up the two open bot PRs (**#56** Dramatis Personae, **#58** Statistical SC detector). Subagents dispatched inside interactive sessions are still fair game. The project doc's frontmatter (`The Antiquarian or Archivist.md` in Obsidian) is the source of truth on this status.
-
 ## Known load-bearing facts
 
 1. **`claude -p` has unknown hang triggers.** PR #17's sanitizer covers known patterns; the real mechanism is **byte-count** (see #36 — supersedes #16). HTTPLog.swift has a separate small-prompt structural trigger (#34) that is not byte-size related.
