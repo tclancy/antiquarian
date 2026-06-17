@@ -1058,3 +1058,66 @@ class TestSwimlaneRanking:
         ]
         lanes = _build_swimlane(commits)["lanes"]
         assert [lane["email"] for lane in lanes] == ["high@x", "low@x"]
+
+
+class TestSwimlaneLongTailCollapse:
+    """Beyond a budget, lanes fold into a searchable HTML tail (#118).
+
+    The top contributors render as SVG lanes; the rest go into a
+    ``<details>`` list (name + count) that stays in the DOM — Ctrl-F-able and
+    print-expanded — so no name is ever silently dropped.
+    """
+
+    def _timeline(self) -> dict:
+        return {
+            "full_span": {
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-06-01T00:00:00+00:00",
+                "days": 151,
+            },
+            "active_windows": [],
+            "gaps": [],
+        }
+
+    def _lanes(self, n: int) -> dict:
+        lanes = []
+        for i in range(n):
+            lanes.append(
+                {
+                    "author": f"Person {i}",
+                    "email": f"p{i}@x",
+                    "commit_count": n - i,
+                    "total_loc": (n - i) * 10,
+                    "first_commit": "2026-02-01T00:00:00+00:00",
+                    "last_commit": "2026-05-01T00:00:00+00:00",
+                    "commits": [
+                        {
+                            "timestamp": "2026-03-01T00:00:00+00:00",
+                            "additions": 5,
+                            "deletions": 1,
+                            "arcs": [],
+                            "short_sha": "abc1234",
+                            "subject": "s",
+                        }
+                    ],
+                }
+            )
+        return {"lanes": lanes}
+
+    def test_tail_folds_below_budget_but_keeps_names(self):
+        out = render_swimlane(self._lanes(5), self._timeline(), [], lane_budget=3)
+        # Top 3 render as SVG lanes; the other 2 live in a details tail.
+        assert "<details" in out
+        assert "Person 3" in out  # a tail name is still present (searchable)
+        assert "Person 4" in out
+        # Every contributor name appears somewhere in the output.
+        for i in range(5):
+            assert f"Person {i}" in out
+
+    def test_tail_summary_counts_the_hidden_hands(self):
+        out = render_swimlane(self._lanes(5), self._timeline(), [], lane_budget=3)
+        assert "2 more" in out  # +2 hands folded
+
+    def test_no_tail_when_within_budget(self):
+        out = render_swimlane(self._lanes(3), self._timeline(), [], lane_budget=3)
+        assert "<details" not in out

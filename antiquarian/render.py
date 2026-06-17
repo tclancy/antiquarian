@@ -70,6 +70,12 @@ ARC_COLORS = [
 ]
 
 
+# Above this many contributor lanes, the swimlane folds the ranked tail into a
+# searchable HTML list instead of an ever-taller SVG (#118; the "information
+# budget" of visualizing-at-scale.md).
+SWIMLANE_LANE_BUDGET = 30
+
+
 def _iso_to_dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
 
@@ -505,11 +511,24 @@ def render_todo_strip(todos: list[dict], timeline: dict) -> str:
     return "\n".join(parts)
 
 
-def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) -> str:
-    """Author swimlane — dual-axis x, lossy hatching across gaps, Diff size (LoC) legend."""
+def render_swimlane(
+    swimlane: dict,
+    timeline: dict,
+    file_lifespans: list[dict],
+    lane_budget: int = SWIMLANE_LANE_BUDGET,
+) -> str:
+    """Author swimlane — absolute spine, lossy hatching, Diff size (LoC) legend.
+
+    Lanes arrive ranked by contribution (#118). The top ``lane_budget`` render
+    as SVG; the rest fold into a searchable HTML tail below the chart, so the
+    SVG stays bounded while every name remains in the DOM.
+    """
     lanes = swimlane["lanes"]
     if not lanes:
         return _empty_atom("Author swimlane", "No commits in cache.")
+
+    visible_lanes = lanes[:lane_budget]
+    tail_lanes = lanes[lane_budget:]
 
     row_h = 60
     margin_top = 130
@@ -518,12 +537,14 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
     margin_right = 60
     width = margin_left + chart_w + margin_right
     bottom_pad = 80
-    height = margin_top + row_h * len(lanes) + bottom_pad
+    height = margin_top + row_h * len(visible_lanes) + bottom_pad
 
     axis = build_absolute_scale(timeline, chart_w)
     max_diff = (
         max(
-            (c["additions"] + c["deletions"]) for lane in lanes for c in lane["commits"]
+            (c["additions"] + c["deletions"])
+            for lane in visible_lanes
+            for c in lane["commits"]
         )
         or 1
     )
@@ -569,7 +590,7 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
             f'font-style="italic" font-size="9" fill="{PALETTE["ink_dim"]}">lost the chain.</text>'
         )
 
-    for i, lane in enumerate(lanes):
+    for i, lane in enumerate(visible_lanes):
         y = margin_top + i * row_h + row_h / 2
         parts.append(
             f'<text x="{margin_left - 16}" y="{y - 2}" text-anchor="end" '
@@ -626,7 +647,32 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
     )
 
     parts.append("</svg>")
+
+    if tail_lanes:
+        parts.append(_render_swimlane_tail(tail_lanes))
+
     return "\n".join(parts)
+
+
+def _render_swimlane_tail(tail_lanes: list[dict]) -> str:
+    """The folded long tail of contributors as a searchable HTML disclosure (#118).
+
+    Stays in the DOM (Ctrl-F-able) and is forced open for print via the
+    stylesheet, so no hand is silently dropped — only visually deferred.
+    """
+    hidden_commits = sum(lane["commit_count"] for lane in tail_lanes)
+    items = "\n".join(
+        f'<li><span class="name">{_xml_escape(lane["author"])}</span>'
+        f'<span class="count">{lane["commit_count"]}</span></li>'
+        for lane in tail_lanes
+    )
+    return (
+        '<details class="swimlane-tail">'
+        f"<summary>and {len(tail_lanes)} more hands "
+        f"({hidden_commits} commits) — fewer than the most active</summary>"
+        f"<ul>{items}</ul>"
+        "</details>"
+    )
 
 
 def render_arc_band(arc_band: dict, timeline: dict) -> str:
@@ -1094,6 +1140,39 @@ def render_page(
       font-size: 0.85rem;
       color: var(--ink-dim);
       max-width: 56ch;
+    }}
+    /* Folded long tail of contributors (#118) — searchable, print-expanded. */
+    .swimlane-tail {{
+      font-family: var(--serif);
+      font-size: 0.8rem;
+      color: var(--ink-dim);
+      margin: 0.25rem 0 0.5rem;
+    }}
+    .swimlane-tail > summary {{
+      cursor: pointer;
+      font-style: italic;
+      color: var(--accent);
+    }}
+    .swimlane-tail ul {{
+      columns: 3;
+      list-style: none;
+      padding: 0;
+      margin: 0.6rem 0 0;
+    }}
+    .swimlane-tail li {{
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      break-inside: avoid;
+    }}
+    .swimlane-tail .count {{
+      color: var(--rule);
+      font-variant-numeric: tabular-nums;
+    }}
+    @media print {{
+      /* Force every folded hand visible on paper; drop the toggle affordance. */
+      .swimlane-tail > *:not(summary) {{ display: block !important; }}
+      .swimlane-tail > summary {{ list-style: none; color: var(--ink-dim); }}
     }}
   </style>
 </head>
