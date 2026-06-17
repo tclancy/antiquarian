@@ -90,7 +90,7 @@ runs:
       run: |
         if [ "${{ inputs.local-install }}" = "true" ]; then
           # Dogfood path: install the checked-out workspace (antiquarian's own repo).
-          uv tool install --from . .
+          uv tool install .
         else
           ref="${{ inputs.version }}"
           # Fall back to main when the action is run from a context with no
