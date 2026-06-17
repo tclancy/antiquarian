@@ -781,7 +781,7 @@ def render_arc_band(arc_band: dict, timeline: dict) -> str:
             arc = placed.arc
             color = ARC_COLORS[arc["arc_number"] % len(ARC_COLORS)]
             x = margin_left + placed.x_start
-            w = max(placed.x_end - placed.x_start, 3)
+            w = placed.x_end - placed.x_start
             n_commits = len(arc["commits"])
             title = f"Arc {arc['arc_number']}: {arc['name']} — {n_commits} commit(s)"
             parts.append(

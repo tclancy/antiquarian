@@ -107,3 +107,4 @@ def test_arc_list_prints_expanded():
     html = render_broadsheet(data)
     assert "@media print" in html
     assert ".arc-list" in html
+    assert ".arc-list > *:not(summary)" in html
