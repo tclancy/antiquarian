@@ -182,6 +182,35 @@ def build_active_scale(timeline: dict, pixel_width: int):
     }
 
 
+def build_absolute_scale(timeline: dict, pixel_width: int):
+    """Linear pixel scale across the full project lifespan — the shared spine (#117).
+
+    Maps a datetime onto an x-coordinate by its true position between
+    ``full_span.start`` and ``full_span.end``, so the same date lands at the
+    same x in every atom that registers to it. Unlike ``build_active_scale``,
+    dormant stretches are *not* collapsed — they occupy their true width, to
+    be drawn as lossy regions. Dates outside the span clamp to the bounds.
+    """
+    span = timeline.get("full_span") if timeline else None
+    if not span:
+
+        def empty_scale(_):
+            return 0
+
+        return {"scale": empty_scale, "total_pixels": pixel_width}
+
+    start = _iso_to_dt(span["start"])
+    end = _iso_to_dt(span["end"])
+    total = max(1.0, (end - start).total_seconds())
+
+    def scale(dt: datetime) -> float:
+        frac = (dt - start).total_seconds() / total
+        frac = max(0.0, min(1.0, frac))
+        return frac * pixel_width
+
+    return {"scale": scale, "total_pixels": pixel_width}
+
+
 def _format_window(w: dict) -> str:
     s = w["start"]
     e = w["end"]

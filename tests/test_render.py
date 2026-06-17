@@ -26,6 +26,7 @@ from antiquarian.render import (
     _render_dramatis_personae,
     _strip_empty_todo_section,
     _story_md_to_html_name,
+    build_absolute_scale,
     render_broadsheet,
     render_story_page,
     render_survey_page,
@@ -750,3 +751,53 @@ class TestDramatisPersonae:
         data = extract_render_data(seeded_repo)
         assert "dramatis_personae" in data
         assert len(data["dramatis_personae"]) == 2
+
+
+class TestBuildAbsoluteScale:
+    """The shared absolute time spine (#117).
+
+    Unlike ``build_active_scale`` (which collapses dormant gaps to fixed
+    pixel widths), the absolute scale maps datetimes linearly across the
+    full project lifespan, so x-position means the same date in every
+    atom that registers to it. Dormancy is shown at its true width.
+    """
+
+    def _span(self, start: str, end: str) -> dict:
+        from datetime import datetime
+
+        days = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days + 1
+        return {
+            "full_span": {"start": start, "end": end, "days": days},
+            "active_windows": [],
+            "gaps": [],
+        }
+
+    def test_maps_full_span_endpoints_to_pixel_bounds(self):
+        from datetime import datetime
+
+        timeline = self._span("2019-01-01T00:00:00", "2019-01-11T00:00:00")
+        axis = build_absolute_scale(timeline, 100)
+        assert axis["scale"](datetime.fromisoformat("2019-01-01T00:00:00")) == 0
+        assert axis["scale"](datetime.fromisoformat("2019-01-11T00:00:00")) == 100
+
+    def test_maps_midpoint_linearly(self):
+        from datetime import datetime
+
+        timeline = self._span("2019-01-01T00:00:00", "2019-01-11T00:00:00")
+        axis = build_absolute_scale(timeline, 100)
+        # Six days into a ten-day span is 0.6 of the way across.
+        assert axis["scale"](datetime.fromisoformat("2019-01-07T00:00:00")) == 60
+
+    def test_clamps_dates_outside_the_span(self):
+        from datetime import datetime
+
+        timeline = self._span("2019-01-01T00:00:00", "2019-01-11T00:00:00")
+        axis = build_absolute_scale(timeline, 100)
+        assert axis["scale"](datetime.fromisoformat("2018-01-01T00:00:00")) == 0
+        assert axis["scale"](datetime.fromisoformat("2020-01-01T00:00:00")) == 100
+
+    def test_empty_timeline_scale_returns_zero(self):
+        from datetime import datetime
+
+        axis = build_absolute_scale({"full_span": None}, 100)
+        assert axis["scale"](datetime.fromisoformat("2019-01-01T00:00:00")) == 0
