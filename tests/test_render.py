@@ -224,6 +224,27 @@ class TestRenderBroadsheet:
         # interpolation, so the page is still well-formed
         assert "&amp;" in html or "&lt;tags&gt;" in html
 
+    def test_masthead_subtitle_drops_implementation_vocabulary(self, seeded_repo: Path):
+        """The masthead stays in the historian's voice — no renderer internals (#110).
+
+        "Three atoms, hand-set in pure SVG" leaked the internal component name
+        and the rendering tech into reader-facing copy.
+        """
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        sub = html.split('class="masthead-sub">', 1)[1].split("</p>", 1)[0]
+        assert "atom" not in sub.lower()
+        assert "svg" not in sub.lower()
+        # but the true-to-thesis framing stays
+        assert "lossy regions" in sub
+        assert "marginalia" in sub
+
+    def test_base_font_scaled_up(self, seeded_repo: Path):
+        """A single :root type-scale knob bumps all rem-based text 120% (#111)."""
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert "font-size: 120%" in html
+
 
 class TestRenderCli:
     def test_render_command_writes_file(self, seeded_repo: Path):
