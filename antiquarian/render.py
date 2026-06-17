@@ -18,8 +18,11 @@ The committed visual atoms (see ``docs/visual-vocabulary.md``):
   * The lossy region is first-class — gaps are filled with the diagonal
     hatched pattern and labeled with their duration ("Xy gap").
   * Diff size (LoC) is in the swimlane legend.
-  * Dual-axis timeline strip (full project lifespan + active windows only)
-    sits in the masthead AND atop each atom.
+  * One absolute time spine: chart marks register to their true position
+    across the full lifespan (``build_absolute_scale``); dormancy keeps its
+    true width as a lossy region. The dual-axis reference strip (full span +
+    active-window markers) stays in the masthead AND atop each atom as the
+    orientation map.
   * Multi-file label prefix and rename-truncated indicator on swimlane bars.
 
 Library entry point: ``render_broadsheet(data: dict) -> str`` returns a
@@ -66,120 +69,9 @@ ARC_COLORS = [
     "#5e6a3a",  # olive
 ]
 
-GAP_PX = 80
-MIN_WIN_PX = 50
-
 
 def _iso_to_dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
-
-
-def build_active_scale(timeline: dict, pixel_width: int):
-    """Piecewise pixel scale for the dual-axis active-windows timeline.
-
-    Maps a datetime onto the rendered x-coordinate. Each active window
-    gets a pixel allocation proportional to its duration (with a
-    minimum floor so brief windows stay visible), and gap segments
-    between windows get a fixed pixel width regardless of how many
-    years the gap actually spanned. The returned ``scale`` callable
-    is what the atom renderers use to position commit marks.
-    """
-    if not timeline or not timeline.get("full_span"):
-
-        def empty_scale(_):
-            return 0
-
-        return {
-            "scale": empty_scale,
-            "gap_blocks": [],
-            "windows": [],
-            "window_pixels": [],
-            "window_starts": [],
-            "total_pixels": pixel_width,
-        }
-
-    windows = []
-    for w in timeline["active_windows"]:
-        windows.append(
-            {
-                "start": _iso_to_dt(w["start"]),
-                "end": _iso_to_dt(w["end"]),
-                "commit_count": w["commit_count"],
-            }
-        )
-    gaps = []
-    for g in timeline.get("gaps", []):
-        gaps.append(
-            {
-                "start": _iso_to_dt(g["start"]),
-                "end": _iso_to_dt(g["end"]),
-                "days": g["days"],
-            }
-        )
-    win_dur = [max(1.0, (w["end"] - w["start"]).total_seconds()) for w in windows]
-    total_dur = sum(win_dur) or 1
-    total_gap_px = len(gaps) * GAP_PX
-    remaining_px = max(120, pixel_width - total_gap_px)
-    allocations = [d / total_dur * remaining_px for d in win_dur]
-    undershoot = 0
-    for i, a in enumerate(allocations):
-        if a < MIN_WIN_PX:
-            undershoot += MIN_WIN_PX - a
-            allocations[i] = MIN_WIN_PX
-    if undershoot > 0:
-        max_idx = allocations.index(max(allocations))
-        allocations[max_idx] = max(MIN_WIN_PX, allocations[max_idx] - undershoot)
-
-    window_starts = []
-    cursor = 0.0
-    for i, a in enumerate(allocations):
-        window_starts.append(cursor)
-        cursor += a
-        if i < len(gaps):
-            cursor += GAP_PX
-    total_pixels = cursor
-
-    def scale(dt: datetime) -> float:
-        for i, w in enumerate(windows):
-            px0 = window_starts[i]
-            pxw = allocations[i]
-            if w["start"] <= dt <= w["end"]:
-                dur = max(1.0, (w["end"] - w["start"]).total_seconds())
-                return px0 + (dt - w["start"]).total_seconds() / dur * pxw
-            if dt < w["start"]:
-                if i == 0:
-                    return px0
-                prev_end = window_starts[i - 1] + allocations[i - 1]
-                return prev_end + GAP_PX / 2
-        last = len(windows) - 1
-        return window_starts[last] + allocations[last]
-
-    gap_blocks = []
-    for i, g in enumerate(gaps):
-        x0 = window_starts[i] + allocations[i]
-        gap_blocks.append(
-            {
-                "x_start": x0,
-                "x_end": x0 + GAP_PX,
-                "days": g["days"],
-                "label": (
-                    f"{g['days'] / 365:.1f}y" if g["days"] >= 365 else f"{g['days']}d"
-                ),
-                "long_label": (
-                    f"the silence — {g['days']} days"
-                    if g["days"] >= 365
-                    else f"{g['days']}d gap"
-                ),
-            }
-        )
-    return {
-        "scale": scale,
-        "gap_blocks": gap_blocks,
-        "windows": windows,
-        "window_pixels": allocations,
-        "window_starts": window_starts,
-        "total_pixels": total_pixels,
-    }
 
 
 def build_absolute_scale(timeline: dict, pixel_width: int):
@@ -187,9 +79,9 @@ def build_absolute_scale(timeline: dict, pixel_width: int):
 
     Maps a datetime onto an x-coordinate by its true position between
     ``full_span.start`` and ``full_span.end``, so the same date lands at the
-    same x in every atom that registers to it. Unlike ``build_active_scale``,
-    dormant stretches are *not* collapsed — they occupy their true width, to
-    be drawn as lossy regions. Dates outside the span clamp to the bounds.
+    same x in every atom that registers to it. Dormant stretches are *not*
+    collapsed — they occupy their true width, drawn as lossy regions. Dates
+    outside the span clamp to the bounds.
     """
     span = timeline.get("full_span") if timeline else None
     if not span:
@@ -211,14 +103,94 @@ def build_absolute_scale(timeline: dict, pixel_width: int):
     return {"scale": scale, "total_pixels": pixel_width}
 
 
-def _format_window(w: dict) -> str:
-    s = w["start"]
-    e = w["end"]
-    if s.year == e.year and s.strftime("%b") == e.strftime("%b"):
-        return f"{s.strftime('%b %Y')}"
-    if s.year == e.year:
-        return f"{s.strftime('%b')}–{e.strftime('%b %Y')}"
-    return f"{s.strftime('%b %Y')} – {e.strftime('%b %Y')}"
+def _axis_year_ticks(full_start: datetime, full_end: datetime) -> list[datetime]:
+    """Jan-1 datetimes to label on the absolute axis (#117).
+
+    Only years whose Jan 1 falls within ``[full_start, full_end]``; thinned to
+    every other year once the span exceeds eight, so labels don't crowd.
+    """
+    span_yrs = full_end.year - full_start.year + 1
+    step = 2 if span_yrs > 8 else 1
+    ticks = []
+    for y in range(full_start.year, full_end.year + 1, step):
+        d = datetime(y, 1, 1, tzinfo=full_start.tzinfo)
+        if full_start <= d <= full_end:
+            ticks.append(d)
+    return ticks
+
+
+def _render_dormancy_hatch(
+    timeline: dict,
+    scale,
+    margin_left: float,
+    chart_top: float,
+    chart_bottom: float,
+    *,
+    labels: bool = False,
+) -> list[str]:
+    """Lossy-hatch the dormant stretches at their *true* width on the absolute spine.
+
+    Each timeline gap (≥1y by construction) is drawn from its real start to its
+    real end under the absolute scale, honouring the lossy-region commitment —
+    absence occupies the space it actually spanned, rather than collapsing to a
+    fixed-width block.
+    """
+    parts: list[str] = []
+    for g in timeline.get("gaps", []):
+        x0 = margin_left + scale(_iso_to_dt(g["start"]))
+        x1 = margin_left + scale(_iso_to_dt(g["end"]))
+        parts.append(
+            f'<rect x="{x0}" y="{chart_top}" width="{max(x1 - x0, 0)}" '
+            f'height="{chart_bottom - chart_top}" fill="url(#lossy-hatch)"/>'
+        )
+        if labels:
+            cy = (chart_top + chart_bottom) / 2
+            parts.append(
+                f'<text x="{(x0 + x1) / 2}" y="{cy}" text-anchor="middle" '
+                f'font-family="EB Garamond, serif" font-style="italic" font-size="13" '
+                f'fill="{PALETTE["lossy"]}">the silence — {g["days"]} days</text>'
+            )
+    return parts
+
+
+def _render_absolute_axis(
+    timeline: dict, margin_left: float, chart_w: float, axis_y: float
+) -> str:
+    """Year-tick axis on the shared absolute spine (#117)."""
+    if not timeline or not timeline.get("full_span"):
+        return ""
+    scale = build_absolute_scale(timeline, chart_w)["scale"]
+    full_start = _iso_to_dt(timeline["full_span"]["start"])
+    full_end = _iso_to_dt(timeline["full_span"]["end"])
+    label_font = "EB Garamond, Iowan Old Style, Palatino, Georgia, serif"
+    parts = [
+        f'<line x1="{margin_left}" y1="{axis_y}" x2="{margin_left + chart_w}" y2="{axis_y}" '
+        f'stroke="{PALETTE["rule"]}" stroke-width="0.6"/>'
+    ]
+    # The span endpoints are always labelled, so the axis is never blank even
+    # when the project lives inside a single calendar year (no year tick lands).
+    edge = 0.06 * chart_w
+    parts.append(
+        f'<text x="{margin_left}" y="{axis_y + 16}" text-anchor="start" font-size="10" '
+        f'font-family="{label_font}" fill="{PALETTE["ink_dim"]}">{full_start.strftime("%b %Y")}</text>'
+    )
+    parts.append(
+        f'<text x="{margin_left + chart_w}" y="{axis_y + 16}" text-anchor="end" font-size="10" '
+        f'font-family="{label_font}" fill="{PALETTE["ink_dim"]}">{full_end.strftime("%b %Y")}</text>'
+    )
+    for d in _axis_year_ticks(full_start, full_end):
+        x = margin_left + scale(d)
+        # Skip ticks that would collide with an endpoint label.
+        if x - margin_left < edge or (margin_left + chart_w) - x < edge:
+            continue
+        parts.append(
+            f'<line x1="{x}" y1="{axis_y}" x2="{x}" y2="{axis_y + 4}" stroke="{PALETTE["rule"]}"/>'
+        )
+        parts.append(
+            f'<text x="{x}" y="{axis_y + 16}" text-anchor="middle" font-size="10" '
+            f'font-family="{label_font}" fill="{PALETTE["ink_dim"]}">{d.year}</text>'
+        )
+    return "\n".join(parts)
 
 
 def _defs() -> str:
@@ -371,21 +343,14 @@ def render_timeline_masthead(timeline: dict) -> str:
             f"</rect>"
         )
 
-    start_year = full_start.year
-    end_year = full_end.year
-    span_yrs = end_year - start_year + 1
-    step = 2 if span_yrs > 8 else 1
-    for y in range(start_year, end_year + 1, step):
-        d = datetime(y, 1, 1, tzinfo=full_start.tzinfo)
-        if d < full_start or d > full_end:
-            continue
+    for d in _axis_year_ticks(full_start, full_end):
         x = sx(d)
         parts.append(
             f'<line x1="{x}" y1="{bar_y + bar_h}" x2="{x}" y2="{bar_y + bar_h + 4}" stroke="{PALETTE["rule"]}"/>'
         )
         parts.append(
             f'<text x="{x}" y="{bar_y + bar_h + 16}" text-anchor="middle" font-size="10" '
-            f'font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" fill="{PALETTE["ink_dim"]}">{y}</text>'
+            f'font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" fill="{PALETTE["ink_dim"]}">{d.year}</text>'
         )
 
     parts.append(
@@ -433,31 +398,6 @@ def _atom_timeline_strip(
         wpx = max(2, x2 - x1)
         parts.append(
             f'<rect x="{x1}" y="8" width="{wpx}" height="{h - 16}" fill="{PALETTE["accent"]}" opacity="0.9"/>'
-        )
-    return "\n".join(parts)
-
-
-def _window_axis_labels(axis: dict, margin_left: int, axis_y: float) -> str:
-    """Piecewise-pixel-space axis labels — per-window date label + italic gap labels."""
-    parts = []
-    for i, w in enumerate(axis["windows"]):
-        x0 = margin_left + axis["window_starts"][i]
-        wpx = axis["window_pixels"][i]
-        parts.append(
-            f'<line x1="{x0}" y1="{axis_y}" x2="{x0 + wpx}" y2="{axis_y}" '
-            f'stroke="{PALETTE["ink"]}" stroke-width="0.8"/>'
-        )
-        parts.append(
-            f'<text x="{x0 + wpx / 2}" y="{axis_y + 14}" text-anchor="middle" '
-            f'font-size="11" font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" '
-            f'fill="{PALETTE["ink"]}">{_format_window(w)}</text>'
-        )
-    for g in axis["gap_blocks"]:
-        cx = margin_left + g["x_start"] + (g["x_end"] - g["x_start"]) / 2
-        parts.append(
-            f'<text x="{cx}" y="{axis_y + 14}" text-anchor="middle" '
-            f'font-size="10" font-family="EB Garamond, serif" font-style="italic" '
-            f'fill="{PALETTE["lossy"]}">{g["label"]} gap</text>'
         )
     return "\n".join(parts)
 
@@ -564,7 +504,7 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
     bottom_pad = 80
     height = margin_top + row_h * len(lanes) + bottom_pad
 
-    axis = build_active_scale(timeline, chart_w)
+    axis = build_absolute_scale(timeline, chart_w)
     max_diff = (
         max(
             (c["additions"] + c["deletions"]) for lane in lanes for c in lane["commits"]
@@ -590,26 +530,11 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
 
     chart_top = margin_top
     chart_bottom = margin_top + row_h * len(lanes)
-    for g in axis["gap_blocks"]:
-        x0 = margin_left + g["x_start"]
-        parts.append(
-            f'<rect x="{x0}" y="{chart_top}" width="{g["x_end"] - g["x_start"]}" '
-            f'height="{chart_bottom - chart_top}" fill="url(#lossy-hatch)" />'
+    parts.extend(
+        _render_dormancy_hatch(
+            timeline, axis["scale"], margin_left, chart_top, chart_bottom, labels=True
         )
-        cy = (chart_top + chart_bottom) / 2
-        parts.append(
-            f'<text x="{x0 + (g["x_end"] - g["x_start"]) / 2}" y="{cy}" '
-            f'text-anchor="middle" font-family="EB Garamond, serif" font-style="italic" '
-            f'font-size="13" fill="{PALETTE["lossy"]}">{_xml_escape(g["long_label"])}</text>'
-        )
-
-    for i, w in enumerate(axis["windows"]):
-        x0 = margin_left + axis["window_starts"][i]
-        wpx = axis["window_pixels"][i]
-        parts.append(
-            f'<rect x="{x0}" y="{chart_top - 4}" width="{wpx}" height="{chart_bottom - chart_top + 8}" '
-            f'fill="none" stroke="{PALETTE["rule"]}" stroke-width="0.6"/>'
-        )
+    )
 
     truncated = [f for f in file_lifespans if f["likely_rename_truncated"]]
     if truncated:
@@ -659,7 +584,7 @@ def render_swimlane(swimlane: dict, timeline: dict, file_lifespans: list[dict]) 
             )
 
     axis_y = chart_bottom + 10
-    parts.append(_window_axis_labels(axis, margin_left, axis_y))
+    parts.append(_render_absolute_axis(timeline, margin_left, chart_w, axis_y))
 
     leg_y = height - 32
     parts.append(
@@ -703,7 +628,7 @@ def render_arc_band(arc_band: dict, timeline: dict) -> str:
     bottom_pad = 60
     height = margin_top + row_h * len(arcs) + bottom_pad
 
-    axis = build_active_scale(timeline, chart_w)
+    axis = build_absolute_scale(timeline, chart_w)
     file_paths = {arc["file_path"] for arc in arcs}
     multi_file = len(file_paths) > 1
 
@@ -724,19 +649,11 @@ def render_arc_band(arc_band: dict, timeline: dict) -> str:
 
     chart_top = margin_top - 6
     chart_bottom = margin_top + row_h * len(arcs)
-    for g in axis["gap_blocks"]:
-        x0 = margin_left + g["x_start"]
-        parts.append(
-            f'<rect x="{x0}" y="{chart_top}" width="{g["x_end"] - g["x_start"]}" '
-            f'height="{chart_bottom - chart_top}" fill="url(#lossy-hatch)"/>'
+    parts.extend(
+        _render_dormancy_hatch(
+            timeline, axis["scale"], margin_left, chart_top, chart_bottom
         )
-    for i, w in enumerate(axis["windows"]):
-        x0 = margin_left + axis["window_starts"][i]
-        wpx = axis["window_pixels"][i]
-        parts.append(
-            f'<rect x="{x0}" y="{chart_top}" width="{wpx}" height="{chart_bottom - chart_top}" '
-            f'fill="none" stroke="{PALETTE["rule"]}" stroke-width="0.4"/>'
-        )
+    )
 
     for i, arc in enumerate(arcs):
         color = ARC_COLORS[i % len(ARC_COLORS)]
@@ -782,7 +699,7 @@ def render_arc_band(arc_band: dict, timeline: dict) -> str:
                 )
 
     axis_y = chart_bottom + 8
-    parts.append(_window_axis_labels(axis, margin_left, axis_y))
+    parts.append(_render_absolute_axis(timeline, margin_left, chart_w, axis_y))
 
     parts.append("</svg>")
     return "\n".join(parts)
