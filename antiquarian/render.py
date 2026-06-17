@@ -44,6 +44,7 @@ from antiquarian.file_tree import (
     build_file_tree,
     choose_open_depth,
 )
+from antiquarian.arc_layout import pack_arcs
 
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
@@ -721,95 +722,97 @@ def _render_swimlane_tail(tail_lanes: list[dict]) -> str:
 
 
 def render_arc_band(arc_band: dict, timeline: dict) -> str:
-    """Per-arc SC ranking band — broadsheet style."""
+    """Packed density timeline of named arcs — broadsheet style (#112).
+
+    All datable arcs are lane-packed onto the shared absolute spine (so they
+    register x-for-x with the swimlane), collapsing ~one-row-per-arc into a
+    handful of rows. Identity is progressive disclosure: hover a lozenge for
+    its name, or open the folded full-arc list beneath (which lists every arc,
+    including any with no datable commits, so nothing leaves the DOM).
+    """
     arcs = arc_band["arcs"]
     if not arcs:
-        return _empty_atom("Per-arc SC ranking band", "No arcs found.")
+        return _empty_atom("The named arcs of the work", "No arcs found.")
 
-    row_h = 38
+    # Share the swimlane's geometry so the two atoms align (PR2 floats them).
     margin_top = 130
-    margin_left = 320
-    chart_w = 720
+    margin_left = 220
+    chart_w = 760
     margin_right = 60
-    width = margin_left + chart_w + margin_right
+    width = margin_left + chart_w + margin_right  # 1040
+    lozenge_h = 12
+    row_pitch = 18
     bottom_pad = 60
-    height = margin_top + row_h * len(arcs) + bottom_pad
 
     axis = build_absolute_scale(timeline, chart_w)
+    rows = pack_arcs(arcs, axis["scale"])
     file_paths = {arc["file_path"] for arc in arcs}
-    multi_file = len(file_paths) > 1
+
+    height = margin_top + row_pitch * max(len(rows), 1) + bottom_pad
 
     parts = [
-        f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" width="100%" style="display:block; max-width: 100%; background: {PALETTE["paper"]};">',
+        f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" '
+        f'width="100%" style="display:block; max-width: 100%; background: {PALETTE["paper"]};">',
         _defs(),
         _atom_timeline_strip(timeline, width, 30, width - 60),
         f'<text x="30" y="64" font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" '
         f'font-size="22" font-weight="600" fill="{PALETTE["ink"]}">The named arcs of the work</text>',
         f'<text x="30" y="86" font-family="EB Garamond, Iowan Old Style, serif" font-style="italic" '
         f'font-size="12" fill="{PALETTE["ink_dim"]}">'
-        f"{len(arcs)} arc(s) across {len(file_paths)} file(s), as the historian recorded them. "
-        "Bands span first to last decisive commit; the inset ticks are the commits the story explicitly named."
+        f"{len(arcs)} arc(s) across {len(file_paths)} file(s), packed onto the shared time spine. "
+        "Each lozenge spans an arc's first to last decisive commit; hover for its name, "
+        "or open the full list below."
         "</text>",
         f'<line x1="30" y1="90" x2="{width - 30}" y2="90" stroke="{PALETTE["ink"]}" stroke-width="0.6"/>',
         f'<line x1="30" y1="93" x2="{width - 30}" y2="93" stroke="{PALETTE["ink"]}" stroke-width="0.3"/>',
     ]
 
     chart_top = margin_top - 6
-    chart_bottom = margin_top + row_h * len(arcs)
+    chart_bottom = margin_top + row_pitch * max(len(rows), 1)
     parts.extend(
         _render_dormancy_hatch(
             timeline, axis["scale"], margin_left, chart_top, chart_bottom
         )
     )
 
-    for i, arc in enumerate(arcs):
-        color = ARC_COLORS[i % len(ARC_COLORS)]
-        y = margin_top + i * row_h
-        basename = arc["file_path"].rsplit("/", 1)[-1]
-        if multi_file:
+    for r, row in enumerate(rows):
+        y = margin_top + r * row_pitch
+        for placed in row:
+            arc = placed.arc
+            color = ARC_COLORS[arc["arc_number"] % len(ARC_COLORS)]
+            x = margin_left + placed.x_start
+            w = max(placed.x_end - placed.x_start, 3)
+            n_commits = len(arc["commits"])
+            title = f"Arc {arc['arc_number']}: {arc['name']} — {n_commits} commit(s)"
             parts.append(
-                f'<text x="{margin_left - 14}" y="{y + 12}" text-anchor="end" '
-                f'font-family="ui-monospace, SF Mono, Monaco, monospace" font-size="9" '
-                f'fill="{PALETTE["accent"]}">{_xml_escape(basename)}</text>'
+                f'<rect class="arc-lozenge" data-arc="{arc["arc_number"]}" '
+                f'x="{x}" y="{y}" width="{w}" height="{lozenge_h}" '
+                f'fill="{color}" opacity="0.4" stroke="{color}" stroke-width="0.6" rx="1.5">'
+                f"<title>{_xml_escape(title)}</title></rect>"
             )
-        name = arc["name"]
-        if len(name) > 38:
-            name = name[:36] + "…"
-        parts.append(
-            f'<text x="{margin_left - 14}" y="{y + 26}" text-anchor="end" '
-            f'font-family="EB Garamond, Iowan Old Style, Palatino, serif" font-size="11.5" font-weight="600" '
-            f'fill="{PALETTE["ink"]}">Arc {arc["arc_number"]}: {_xml_escape(name)}</text>'
-        )
-
-        datable = [c for c in arc["commits"] if c["timestamp"]]
-        if datable:
-            t0 = _iso_to_dt(datable[0]["timestamp"])
-            t1 = _iso_to_dt(datable[-1]["timestamp"])
-            band_x1 = margin_left + axis["scale"](t0)
-            band_x2 = margin_left + axis["scale"](t1)
-            band_y = y + 14
-            band_h = 12
-            parts.append(
-                f'<rect x="{band_x1}" y="{band_y}" width="{max(band_x2 - band_x1, 3)}" '
-                f'height="{band_h}" fill="{color}" opacity="0.28" '
-                f'stroke="{color}" stroke-width="0.6"/>'
-            )
-            for c in arc["commits"]:
-                if not c["timestamp"]:
-                    continue
-                cx = margin_left + axis["scale"](_iso_to_dt(c["timestamp"]))
-                parts.append(
-                    f'<line x1="{cx}" y1="{band_y - 2}" x2="{cx}" y2="{band_y + band_h + 2}" '
-                    f'stroke="{color}" stroke-width="2.5">'
-                    f"<title>{_xml_escape(c['short_sha'] + ' — ' + c['subject'])}</title>"
-                    "</line>"
-                )
 
     axis_y = chart_bottom + 8
     parts.append(_render_absolute_axis(timeline, margin_left, chart_w, axis_y))
-
     parts.append("</svg>")
-    return "\n".join(parts)
+
+    return "\n".join(parts) + _render_arc_list(arcs)
+
+
+def _render_arc_list(arcs: list[dict]) -> str:
+    """Folded, print-expanded list of every arc — keeps all arcs in the DOM."""
+    items = []
+    for arc in arcs:
+        datable = sum(1 for c in arc["commits"] if c["timestamp"])
+        items.append(
+            f'<li><span class="arc-num">Arc {arc["arc_number"]}</span> '
+            f"{_xml_escape(arc['name'])} "
+            f'<span class="arc-file">{_xml_escape(arc["file_path"])}</span> '
+            f'<span class="count">{datable} dated commit(s)</span></li>'
+        )
+    return (
+        '<details class="arc-list"><summary>all '
+        f"{len(arcs)} arcs in full</summary><ul>" + "".join(items) + "</ul></details>"
+    )
 
 
 def _empty_atom(title: str, message: str) -> str:
@@ -1273,6 +1276,31 @@ def render_page(
       font-style: normal;
       font-size: 0.82em;
     }}
+    /* Folded full-arc list beneath the density timeline (#112). */
+    .arc-list {{
+      font-family: var(--serif);
+      font-size: 0.8rem;
+      color: var(--ink-dim);
+      margin: 0.25rem 0 0.5rem;
+    }}
+    .arc-list > summary {{
+      cursor: pointer;
+      font-style: italic;
+      color: var(--accent);
+    }}
+    .arc-list ul {{
+      columns: 2;
+      list-style: none;
+      padding: 0;
+      margin: 0.6rem 0 0;
+    }}
+    .arc-list li {{ break-inside: avoid; margin-bottom: 0.2rem; }}
+    .arc-list .arc-num {{ color: var(--accent); font-variant-numeric: tabular-nums; }}
+    .arc-list .arc-file {{
+      font-family: ui-monospace, "SF Mono", Monaco, monospace;
+      font-size: 0.82em;
+    }}
+    .arc-list .count {{ color: var(--rule); font-variant-numeric: tabular-nums; }}
     /* Folded long tail of contributors (#118) — searchable, print-expanded. */
     .swimlane-tail {{
       font-family: var(--serif);
@@ -1335,6 +1363,9 @@ def render_page(
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
       .swimlane-tail > summary {{ list-style: none; color: var(--ink-dim); }}
+      /* The full arc list prints expanded beneath the timeline (#112). */
+      .arc-list > *:not(summary) {{ display: block !important; }}
+      .arc-list > summary {{ list-style: none; color: var(--ink-dim); }}
       /* The file tree prints fully expanded; the live-search box is dropped. */
       .file-tree details > *:not(summary) {{ display: block !important; }}
       .file-tree details > summary {{ list-style: none; color: var(--ink-dim); }}
