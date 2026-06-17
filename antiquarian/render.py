@@ -75,6 +75,10 @@ ARC_COLORS = [
 # budget" of visualizing-at-scale.md).
 SWIMLANE_LANE_BUDGET = 30
 
+# Below this many TODO/FIXME notes, the marginalia atom degrades to a single
+# sentence rather than a bar chart — the frame shouldn't dwarf the data (#122).
+TODO_DENSITY_FLOOR = 3
+
 
 def _iso_to_dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
@@ -424,17 +428,51 @@ def _atom_timeline_strip(
     return "\n".join(parts)
 
 
-def render_todo_strip(todos: list[dict], timeline: dict) -> str:
-    """TODO-age strip — bars sized by age, sorted oldest at top.
+def _render_marginalia_note(todos: list[dict]) -> str:
+    """Below the density floor: a single in-voice line, not a whole chart (#122).
 
-    Returns an empty string when the codebase has zero TODOs; the broadsheet
-    layout then skips the chapter mark + atom block entirely rather than
-    surfacing an empty placeholder. Absence of TODOs is information, but the
-    page doesn't need a whole atom to say so — the existence of the file map
-    and swimlane already implies "here is what we have."
+    A codebase with one or two marginal notes doesn't warrant chart furniture —
+    that made the frame dwarf the data. Render them as a sentence instead.
+    """
+    fragments = []
+    for t in sorted(todos, key=lambda t: t["age_days"], reverse=True):
+        basename = t["file_path"].rsplit("/", 1)[-1]
+        fragments.append(
+            f"<code>{_xml_escape(basename)}:{t['line_number']}</code> — "
+            f'"{_xml_escape(t["text"])}", standing {t["age_days"]} days'
+        )
+    lead = (
+        "One note still stands in the margins"
+        if len(todos) == 1
+        else f"{len(todos)} notes still stand in the margins"
+    )
+    return (
+        '<p class="marginalia-note">'
+        '<span class="marginalia-label">Notes left in the margins</span> '
+        f"{lead}: {'; '.join(fragments)}."
+        "</p>"
+    )
+
+
+def render_todo_strip(todos: list[dict], timeline: dict) -> str:
+    """Marginalia — TODO/FIXME notes the authors left, bars sized by age (#122).
+
+    Three regimes by density:
+
+    - **zero** → empty string; the layout skips the atom entirely. Absence is
+      information, but it doesn't need a whole section to say so.
+    - **below the floor** (1–2) → a single sentence (``_render_marginalia_note``)
+      rather than chart furniture that would dwarf the data.
+    - **at/above the floor** → the age-ranked bar chart.
+
+    Presented as points of interest, not a ledger of admissions — these marks
+    are honest notes-to-self, per the ethos (assume good intentions).
     """
     if not todos:
         return ""
+
+    if len(todos) < TODO_DENSITY_FLOOR:
+        return _render_marginalia_note(todos)
 
     max_age = max(t["age_days"] for t in todos)
     bar_max = 720
@@ -452,14 +490,14 @@ def render_todo_strip(todos: list[dict], timeline: dict) -> str:
         _defs(),
         _atom_timeline_strip(timeline, width, 20, width - 40),
         f'<text x="20" y="56" font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" font-size="22" font-weight="600" fill="{PALETTE["ink"]}">'
-        "On the matter of admissions"
+        "Notes left in the margins"
         "</text>",
         f'<text x="20" y="76" font-family="EB Garamond, Iowan Old Style, serif" font-size="12" font-style="italic" fill="{PALETTE["ink_dim"]}">'
-        f"{len(todos)} TODO and FIXME annotations currently survive in the surveyed files; the bar measures days each has lived in the tree."
+        f"{len(todos)} notes the authors left in the code — TODO and FIXME marks still standing in the surveyed files; the bar measures how long each has stood."
         "</text>",
         f'<line x1="20" y1="80" x2="{width - 20}" y2="80" stroke="{PALETTE["ink"]}" stroke-width="0.6"/>',
         f'<text x="{margin_left + bar_max / 2}" y="{margin_top - 10}" text-anchor="middle" font-size="10" '
-        f'font-family="EB Garamond, serif" font-style="italic" fill="{PALETTE["ink_dim"]}">days survived</text>',
+        f'font-family="EB Garamond, serif" font-style="italic" fill="{PALETTE["ink_dim"]}">days standing</text>',
     ]
 
     for i, t in enumerate(todos):
@@ -799,7 +837,9 @@ _ROMAN_NUMERALS = ("i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x")
 # page. Empty atoms (e.g. todo_strip when the codebase has zero TODOs) are
 # dropped from the layout and the chapter-mark numbering shifts down so
 # there are no "i" / [missing] / "iii" gaps.
-_ATOM_ORDER = ("todo_strip", "swimlane", "arc_band")
+# The marginalia (TODO/FIXME) atom is demoted to the end — a small section of
+# notes-of-interest, not a leading ledger of "admissions" (#122).
+_ATOM_ORDER = ("swimlane", "arc_band", "todo_strip")
 
 
 def _render_atom_sequence(atoms: dict[str, str]) -> str:
@@ -1140,6 +1180,29 @@ def render_page(
       font-size: 0.85rem;
       color: var(--ink-dim);
       max-width: 56ch;
+    }}
+    /* Marginalia note — the density-floor form of the TODO atom (#122). */
+    .marginalia-note {{
+      font-family: var(--serif);
+      font-size: 0.95rem;
+      font-style: italic;
+      color: var(--ink-dim);
+      max-width: 60ch;
+      margin: 0.5rem 0 1rem;
+    }}
+    .marginalia-note .marginalia-label {{
+      font-style: normal;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-size: 0.62rem;
+      color: var(--accent);
+      font-weight: 600;
+      margin-right: 0.5rem;
+    }}
+    .marginalia-note code {{
+      font-family: ui-monospace, "SF Mono", Monaco, monospace;
+      font-style: normal;
+      font-size: 0.82em;
     }}
     /* Folded long tail of contributors (#118) — searchable, print-expanded. */
     .swimlane-tail {{
