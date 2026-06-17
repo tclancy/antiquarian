@@ -890,6 +890,10 @@ def render_page(
   <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
   <style>
     :root {{
+      /* Global type scale (#111). All reader-facing text is rem-based, so this
+         single knob bumps every element proportionally; layout reflows because
+         it's HTML, not the coordinate-positioned SVG. */
+      font-size: 120%;
       --ink: {PALETTE["ink"]};
       --ink-dim: {PALETTE["ink_dim"]};
       --rule: {PALETTE["rule"]};
@@ -1135,7 +1139,7 @@ def render_page(
   <div class="broadsheet">
     <div class="dateline">Antiquarian · field notes · vol. i</div>
     <h1 class="masthead-title">{_xml_escape(project)}</h1>
-    <p class="masthead-sub">A reconstruction of the project's surviving record, from {full_start} to {full_end}. Three atoms, hand-set in pure SVG, with the historian's lossy regions and named arcs preserved as marginalia.</p>
+    <p class="masthead-sub">A reconstruction of the project's surviving record, from {full_start} to {full_end}, with the historian's lossy regions and named arcs preserved as marginalia.</p>
     <div class="double-rule"></div>
 
     <div class="atom">{masthead}</div>
