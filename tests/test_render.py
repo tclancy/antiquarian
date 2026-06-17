@@ -1121,3 +1121,22 @@ class TestSwimlaneLongTailCollapse:
     def test_no_tail_when_within_budget(self):
         out = render_swimlane(self._lanes(3), self._timeline(), [], lane_budget=3)
         assert "<details" not in out
+
+
+class TestMailmapCoalescing:
+    """A repo .mailmap collapses an author's multiple emails into one lane (#118)."""
+
+    def test_mailmap_coalesces_swimlane_lanes(self, seeded_repo: Path):
+        # Declare Bob's address an alias of Alice's.
+        (seeded_repo / ".mailmap").write_text(
+            "Alice <alice@example.com> <bob@example.com>\n"
+        )
+        data = extract_render_data(seeded_repo)
+        lanes = data["swimlane"]["lanes"]
+        assert len(lanes) == 1
+        assert lanes[0]["email"] == "alice@example.com"
+        assert lanes[0]["commit_count"] == 2
+
+    def test_no_mailmap_leaves_lanes_separate(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        assert len(data["swimlane"]["lanes"]) == 2
