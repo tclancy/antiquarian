@@ -248,12 +248,19 @@ def _build_swimlane(commits: list[_Commit]) -> dict:
                 "author": bucket["author"],
                 "email": bucket["email"],
                 "commit_count": len(bucket["commits"]),
+                "total_loc": sum(
+                    c["additions"] + c["deletions"] for c in bucket["commits"]
+                ),
                 "first_commit": min(c["timestamp"] for c in bucket["commits"]),
                 "last_commit": max(c["timestamp"] for c in bucket["commits"]),
                 "commits": bucket["commits"],
             }
         )
-    lanes.sort(key=lambda lane: lane["first_commit"])
+    # Rank by contribution so the eye can compare: most commits first, total LoC
+    # as the tiebreak, email last for a stable order (#118).
+    lanes.sort(
+        key=lambda lane: (-lane["commit_count"], -lane["total_loc"], lane["email"])
+    )
     return {
         "lane_count": len(lanes),
         "lanes": lanes,
