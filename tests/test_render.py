@@ -24,7 +24,7 @@ from antiquarian.cli import app
 from antiquarian.render import (
     _knotwork_ribbon_svg,
     _render_dramatis_personae,
-    _axis_year_ticks,
+    _axis_ticks,
     _render_absolute_axis,
     _strip_empty_todo_section,
     _story_md_to_html_name,
@@ -806,39 +806,73 @@ class TestBuildAbsoluteScale:
         assert axis["scale"](datetime.fromisoformat("2019-01-01T00:00:00")) == 0
 
 
-class TestAxisYearTicks:
-    """Year ticks for the absolute spine (#117).
+class TestAxisTicks:
+    """Axis ticks adapt their granularity to the span (#117).
 
-    Returns the Jan-1 datetimes to label on an absolute axis: only years
-    whose start falls within the span, thinned to every other year once the
-    span exceeds eight years so labels don't crowd.
+    A multi-year project gets year ticks (thinned past eight years); a project
+    under ~2 years gets month ticks, because year boundaries are too coarse for
+    a young repo (a sub-year one would get none). Returns ``(datetime, label)``
+    pairs, the label already formatted for the chosen granularity.
     """
 
-    def test_labels_each_in_range_year_for_short_span(self):
+    def test_year_ticks_for_multiyear_span(self):
         from datetime import datetime, timezone
 
         start = datetime(2019, 4, 15, tzinfo=timezone.utc)
         end = datetime(2026, 2, 10, tzinfo=timezone.utc)
-        years = [d.year for d in _axis_year_ticks(start, end)]
+        ticks = _axis_ticks(start, end)
         # Jan-1-2019 precedes the April start, so it's excluded.
-        assert years == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+        assert [d.year for d, _ in ticks] == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+        assert [label for _, label in ticks] == [
+            "2020",
+            "2021",
+            "2022",
+            "2023",
+            "2024",
+            "2025",
+            "2026",
+        ]
 
     def test_thins_to_every_other_year_for_long_span(self):
         from datetime import datetime, timezone
 
         start = datetime(2010, 1, 1, tzinfo=timezone.utc)
         end = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        years = [d.year for d in _axis_year_ticks(start, end)]
+        years = [d.year for d, _ in _axis_ticks(start, end)]
         assert years == [2010, 2012, 2014, 2016, 2018, 2020, 2022, 2024, 2026]
 
-    def test_returns_tz_aware_jan_first_dates(self):
+    def test_month_ticks_for_subyear_span(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2025, 1, 15, tzinfo=timezone.utc)
+        end = datetime(2025, 8, 20, tzinfo=timezone.utc)
+        ticks = _axis_ticks(start, end)
+        # Single-year sub-2-year span → bare month abbreviations, on the 1st.
+        assert [label for _, label in ticks] == [
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+        ]
+        assert all(d.day == 1 for d, _ in ticks)
+
+    def test_month_ticks_cross_year_carry_year_suffix(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2024, 11, 5, tzinfo=timezone.utc)
+        end = datetime(2025, 3, 10, tzinfo=timezone.utc)
+        labels = [label for _, label in _axis_ticks(start, end)]
+        assert labels == ["Dec '24", "Jan '25", "Feb '25", "Mar '25"]
+
+    def test_returns_tz_aware_dates(self):
         from datetime import datetime, timezone
 
         start = datetime(2021, 6, 1, tzinfo=timezone.utc)
         end = datetime(2023, 6, 1, tzinfo=timezone.utc)
-        ticks = _axis_year_ticks(start, end)
-        assert all(d.month == 1 and d.day == 1 for d in ticks)
-        assert all(d.tzinfo is not None for d in ticks)
+        assert all(d.tzinfo is not None for d, _ in _axis_ticks(start, end))
 
 
 class TestSwimlaneRegistersToAbsoluteSpine:

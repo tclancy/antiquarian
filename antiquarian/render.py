@@ -103,19 +103,35 @@ def build_absolute_scale(timeline: dict, pixel_width: int):
     return {"scale": scale, "total_pixels": pixel_width}
 
 
-def _axis_year_ticks(full_start: datetime, full_end: datetime) -> list[datetime]:
-    """Jan-1 datetimes to label on the absolute axis (#117).
+def _axis_ticks(full_start: datetime, full_end: datetime) -> list[tuple[datetime, str]]:
+    """``(datetime, label)`` ticks for the absolute axis, granularity by span (#117).
 
-    Only years whose Jan 1 falls within ``[full_start, full_end]``; thinned to
-    every other year once the span exceeds eight, so labels don't crowd.
+    A project spanning ≥ ~2 years gets **year** ticks (Jan 1 of each in-range
+    year, thinned to every other year past eight so labels don't crowd). A
+    younger project gets **month** ticks — year boundaries are too coarse for
+    it, and a sub-year repo would get none — stepped to keep the count readable
+    and suffixed with the year only when the span crosses a year boundary.
     """
-    span_yrs = full_end.year - full_start.year + 1
-    step = 2 if span_yrs > 8 else 1
+    if (full_end - full_start).days >= 730:
+        span_yrs = full_end.year - full_start.year + 1
+        step = 2 if span_yrs > 8 else 1
+        ticks: list[tuple[datetime, str]] = []
+        for y in range(full_start.year, full_end.year + 1, step):
+            d = datetime(y, 1, 1, tzinfo=full_start.tzinfo)
+            if full_start <= d <= full_end:
+                ticks.append((d, str(y)))
+        return ticks
+
+    months = max(1, (full_end - full_start).days) / 30.4
+    step = 1 if months <= 12 else 2
+    fmt = "%b" if full_start.year == full_end.year else "%b '%y"
     ticks = []
-    for y in range(full_start.year, full_end.year + 1, step):
-        d = datetime(y, 1, 1, tzinfo=full_start.tzinfo)
-        if full_start <= d <= full_end:
-            ticks.append(d)
+    cur = full_start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    while cur <= full_end:
+        if cur >= full_start:
+            ticks.append((cur, cur.strftime(fmt)))
+        m = cur.month - 1 + step
+        cur = cur.replace(year=cur.year + m // 12, month=m % 12 + 1)
     return ticks
 
 
@@ -178,7 +194,7 @@ def _render_absolute_axis(
         f'<text x="{margin_left + chart_w}" y="{axis_y + 16}" text-anchor="end" font-size="10" '
         f'font-family="{label_font}" fill="{PALETTE["ink_dim"]}">{full_end.strftime("%b %Y")}</text>'
     )
-    for d in _axis_year_ticks(full_start, full_end):
+    for d, label in _axis_ticks(full_start, full_end):
         x = margin_left + scale(d)
         # Skip ticks that would collide with an endpoint label.
         if x - margin_left < edge or (margin_left + chart_w) - x < edge:
@@ -188,7 +204,7 @@ def _render_absolute_axis(
         )
         parts.append(
             f'<text x="{x}" y="{axis_y + 16}" text-anchor="middle" font-size="10" '
-            f'font-family="{label_font}" fill="{PALETTE["ink_dim"]}">{d.year}</text>'
+            f'font-family="{label_font}" fill="{PALETTE["ink_dim"]}">{label}</text>'
         )
     return "\n".join(parts)
 
@@ -343,14 +359,14 @@ def render_timeline_masthead(timeline: dict) -> str:
             f"</rect>"
         )
 
-    for d in _axis_year_ticks(full_start, full_end):
+    for d, label in _axis_ticks(full_start, full_end):
         x = sx(d)
         parts.append(
             f'<line x1="{x}" y1="{bar_y + bar_h}" x2="{x}" y2="{bar_y + bar_h + 4}" stroke="{PALETTE["rule"]}"/>'
         )
         parts.append(
             f'<text x="{x}" y="{bar_y + bar_h + 16}" text-anchor="middle" font-size="10" '
-            f'font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" fill="{PALETTE["ink_dim"]}">{d.year}</text>'
+            f'font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" fill="{PALETTE["ink_dim"]}">{label}</text>'
         )
 
     parts.append(
