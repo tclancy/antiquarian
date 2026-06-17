@@ -4,6 +4,8 @@ The commitments baked into the broadsheet renderer (`antiquarian/render.py`). Th
 
 The aesthetic is part of the moat. There are a dozen git-history visualizers in the world; there are zero that look like a 19th-century broadsheet. That difference is the differentiation.
 
+> **Companion:** [`visualizing-at-scale.md`](visualizing-at-scale.md) owns the *information-design* commitments — how these atoms stay legible as a codebase grows from a toy to `cpython`. This doc owns the *aesthetic*.
+
 ## What this is
 
 **Broadsheet in the streets, Tufte in the sheets.**
@@ -75,7 +77,7 @@ Earthy, restrained, print-press dark — **not** the bright/saturated chart-libr
 
 ## What this is not
 
-- **Not interactive.** The broadsheet is print-first by design. Hover tooltips and click-through belong in a different surface (e.g., an Obsidian plugin) if at all.
+- **Not interactive *at the expense of print*.** The real constraint is that the broadsheet says everything when flattened to paper — not a ban on interactivity. The SVG atoms themselves stay static; interactive affordances live in the HTML wrapper around them (file index, story pages, floating references, search, disclosure) and **must degrade losslessly to the printed page**. See [`visualizing-at-scale.md`](visualizing-at-scale.md) for the rules that govern this. *(An earlier revision of this doc stated a blanket "not interactive"; that over-extracted from "print-first" and was never the goal — removed 2026-06-17.)*
 - **Not chartlike.** No grid lines as the dominant visual element. No data-ink-to-grid-ink ratio shame. The page is composed; charts are typeset into it like figures in a book.
 - **Not dashboard-vibe.** No KPI tiles. No "drill down through bubbles forever" navigation. Software-vibe, not report-vibe.
 - **Not theme-able.** The aesthetic is the differentiation. We don't ship a dark-mode toggle. We don't ship a "minimal" variant. There is one broadsheet and it looks like the broadsheet.
