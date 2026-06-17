@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from antiquarian.cache import cache_path_for_repo
+from antiquarian.identity import parse_mailmap
 from antiquarian.todos import extract_todos
 
 # Arc-name → short tag. Stories use freeform names like "Arc 1 — Strategy
@@ -193,6 +194,21 @@ def _attach_arcs_to_commits(commits: list[_Commit], arcs: list[_Arc]) -> None:
             commit = by_sha.get(ref) or by_short.get(ref[:8]) or by_seven.get(ref[:7])
             if commit and arc.slug not in commit.arcs:
                 commit.arcs.append(arc.slug)
+
+
+def _apply_mailmap(commits: list[_Commit], repo_path: Path) -> None:
+    """Canonicalize commit identities through the repo's ``.mailmap``, if any.
+
+    Conservative and non-destructive: only rewrites identities the maintainers
+    declared equivalent. Absent a ``.mailmap`` (the common case — see #120),
+    this is a no-op and lanes stay split.
+    """
+    mailmap_path = repo_path / ".mailmap"
+    if not mailmap_path.exists():
+        return
+    mailmap = parse_mailmap(mailmap_path.read_text(encoding="utf-8", errors="replace"))
+    for c in commits:
+        c.author, c.author_email = mailmap.resolve(c.author, c.author_email)
 
 
 def _load_todos(repo_path: Path, files: list[str]) -> list[_Todo]:
@@ -591,6 +607,7 @@ def extract_render_data(repo_path: Path) -> dict:
     stories = _discover_stories(repo_path)
 
     commits = _load_commits(cache_db, file_filter=files or None)
+    _apply_mailmap(commits, repo_path)
     arcs: list[_Arc] = []
     for story_path in stories:
         arcs.extend(_parse_arcs(story_path))
