@@ -38,6 +38,13 @@ from datetime import datetime
 from pathlib import Path
 from string import Template
 
+from antiquarian.file_tree import (
+    FileNode,
+    FolderNode,
+    build_file_tree,
+    choose_open_depth,
+)
+
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
 # Earthy, restrained, serif-friendly. Type sizes are larger than the other
@@ -860,6 +867,79 @@ def _render_atom_sequence(atoms: dict[str, str]) -> str:
     return "\n    ".join(parts)
 
 
+def _render_file_index(
+    files: list[str], linked: set[str], descs: dict[str, str]
+) -> str:
+    """Render the surveyed-files list as a collapsible, searchable tree (#108/#109).
+
+    Builds the pure tree (``file_tree``), opens it to the budget-derived depth,
+    and emits ``<details>`` for folders / ``<li>`` for files. A search input sits
+    above the tree; the live-search script and ``@media print`` rules (which force
+    every disclosure open) live in the page template. Returns ``""`` for no files.
+    """
+    if not files:
+        return ""
+    tree = build_file_tree(files)
+    open_depth = choose_open_depth(tree)
+    body = _render_tree_nodes(
+        tree, linked, descs, current_depth=0, open_depth=open_depth
+    )
+    search = (
+        '<input type="search" class="file-search" '
+        'placeholder="filter files…" aria-label="Filter surveyed files">'
+    )
+    return f'{search}<ul class="file-tree">{body}</ul>'
+
+
+def _render_tree_nodes(
+    nodes: list,
+    linked: set[str],
+    descs: dict[str, str],
+    *,
+    current_depth: int,
+    open_depth: int,
+) -> str:
+    """Walk a folder/file forest, emitting ``<details>`` folders and ``<li>`` files."""
+    parts: list[str] = []
+    for node in nodes:
+        if isinstance(node, FolderNode):
+            open_attr = " open" if current_depth < open_depth else ""
+            children = _render_tree_nodes(
+                node.children,
+                linked,
+                descs,
+                current_depth=current_depth + 1,
+                open_depth=open_depth,
+            )
+            summary = (
+                f"<summary>{_xml_escape(node.name)} "
+                f'<span class="count">{node.file_count}</span></summary>'
+            )
+            parts.append(
+                f'<li class="folder"><details{open_attr}>{summary}'
+                f"<ul>{children}</ul></details></li>"
+            )
+        else:
+            parts.append(_render_file_leaf(node, linked, descs))
+    return "".join(parts)
+
+
+def _render_file_leaf(node: FileNode, linked: set[str], descs: dict[str, str]) -> str:
+    """One file row: basename shown, full path on hover, linked if it has a story."""
+    path = node.path
+    safe = _story_md_to_html_name(path.replace("/", "__") + ".md")
+    desc = descs.get(path, "")
+    desc_span = f' <span class="file-desc">— {_xml_escape(desc)}</span>' if desc else ""
+    label = (
+        f'<span class="file-name" title="{_xml_escape(path)}">'
+        f"<code>{_xml_escape(node.name)}</code></span>"
+    )
+    if (path.replace("/", "__") + ".md") in linked:
+        label = f'<a href="stories/{safe}">{label}</a>'
+    data_path = _xml_escape(path.lower())
+    return f'<li class="file" data-path="{data_path}">{label}{desc_span}</li>'
+
+
 def render_page(
     project: str,
     manifest: dict,
@@ -890,18 +970,7 @@ def render_page(
     linked = stories_with_pages or set()
     descs = story_descriptions or {}
 
-    def _file_li(f: str) -> str:
-        """A file_path that has a story gets linked to its HTML page."""
-        safe = _story_md_to_html_name(f.replace("/", "__") + ".md")
-        desc = descs.get(f, "")
-        desc_span = (
-            f' <span class="file-desc">— {_xml_escape(desc)}</span>' if desc else ""
-        )
-        if (f.replace("/", "__") + ".md") in linked:
-            return f'<li><a href="stories/{safe}"><code>{_xml_escape(f)}</code></a>{desc_span}</li>'
-        return f"<li><code>{_xml_escape(f)}</code>{desc_span}</li>"
-
-    file_lines = "".join(_file_li(f) for f in files)
+    file_index = _render_file_index(files, linked, descs)
 
     full_start = full_end = ""
     if timeline.get("full_span"):
@@ -1232,10 +1301,44 @@ def render_page(
       color: var(--rule);
       font-variant-numeric: tabular-nums;
     }}
+    /* Collapsible, searchable file index (#108/#109). */
+    .file-search {{
+      font-family: var(--serif);
+      font-size: 0.85rem;
+      width: 100%;
+      max-width: 22rem;
+      padding: 0.2rem 0.4rem;
+      margin: 0 0 0.5rem;
+      border: 1px solid var(--rule);
+      background: var(--paper-alt);
+      color: var(--ink);
+    }}
+    ul.file-tree, .file-tree ul {{
+      list-style: none;
+      padding-left: 0;
+      margin: 0;
+    }}
+    .file-tree ul {{ padding-left: 1.1rem; }}
+    .file-tree li.file {{ break-inside: avoid; }}
+    .file-tree details > summary {{
+      cursor: pointer;
+      font-style: italic;
+      color: var(--accent);
+    }}
+    .file-tree .count {{
+      color: var(--rule);
+      font-variant-numeric: tabular-nums;
+      font-style: normal;
+      font-size: 0.85em;
+    }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
       .swimlane-tail > summary {{ list-style: none; color: var(--ink-dim); }}
+      /* The file tree prints fully expanded; the live-search box is dropped. */
+      .file-tree details > *:not(summary) {{ display: block !important; }}
+      .file-tree details > summary {{ list-style: none; color: var(--ink-dim); }}
+      .file-search {{ display: none !important; }}
     }}
   </style>
 </head>
@@ -1249,7 +1352,7 @@ def render_page(
     <div class="atom">{masthead}</div>
 
     <div class="meta-table">
-      <span class="k">files surveyed</span><div><ul>{file_lines}</ul></div>
+      <span class="k">files surveyed</span><div>{file_index}</div>
       <span class="k">codebase survey</span><div>{'<a href="survey.html">full narrative synthesis</a>' if has_survey else "<em>none — run <code>antiquarian survey</code> then <code>render</code></em>"}</div>
       <span class="k">generated</span><code>{_xml_escape(generated)}</code>
     </div>{dramatis_html}
@@ -1274,6 +1377,50 @@ def render_page(
       what survived or what didn't.
     </div>
   </div>
+  <script>
+  /* Live file-index search (#109): a pure enhancement over the static tree.
+     Narrows files in place, opens the branches that contain a match, and
+     restores the server's initial open-depth when cleared. No JS → the tree
+     is still fully usable; print → the box is hidden and all folders forced
+     open by CSS. */
+  (function () {{
+    var box = document.querySelector('.file-search');
+    var tree = document.querySelector('.file-tree');
+    if (!box || !tree) return;
+    var folders = Array.prototype.slice.call(tree.querySelectorAll('li.folder'));
+    var files = Array.prototype.slice.call(tree.querySelectorAll('li.file'));
+    var initialOpen = folders.map(function (li) {{
+      var d = li.querySelector(':scope > details');
+      return d ? d.open : false;
+    }});
+    function reset() {{
+      files.forEach(function (li) {{ li.style.display = ''; }});
+      folders.forEach(function (li, i) {{
+        li.style.display = '';
+        var d = li.querySelector(':scope > details');
+        if (d) d.open = initialOpen[i];
+      }});
+    }}
+    box.addEventListener('input', function () {{
+      var q = box.value.trim().toLowerCase();
+      if (!q) {{ reset(); return; }}
+      files.forEach(function (li) {{
+        var hit = (li.getAttribute('data-path') || '').indexOf(q) !== -1;
+        li.style.display = hit ? '' : 'none';
+      }});
+      folders.forEach(function (li) {{
+        var visible = false;
+        var fs = li.querySelectorAll('li.file');
+        for (var i = 0; i < fs.length; i++) {{
+          if (fs[i].style.display !== 'none') {{ visible = true; break; }}
+        }}
+        var d = li.querySelector(':scope > details');
+        if (d) d.open = visible;
+        li.style.display = visible ? '' : 'none';
+      }});
+    }});
+  }})();
+  </script>
 </body>
 </html>
 """
