@@ -448,8 +448,8 @@ class TestEmptyTodoSections:
         timeline = {"full_span": None, "active_windows": [], "gaps": []}
         assert render_todo_strip([], timeline) == ""
 
-    def test_render_todo_strip_with_todos_returns_svg(self):
-        """Sanity check that real data still produces output."""
+    def test_render_todo_strip_at_floor_returns_svg_chart(self):
+        """At/above the density floor, real data produces the bar-chart SVG."""
         timeline = {
             "full_span": {
                 "start": "2026-01-01T00:00:00+00:00",
@@ -471,18 +471,19 @@ class TestEmptyTodoSections:
             {
                 "file_path": "src/a.py",
                 "kind": "TODO",
-                "line_number": 10,
-                "text": "fix this",
+                "line_number": 10 + i,
+                "text": f"fix this {i}",
                 "introduced_sha": "abc11111",
                 "introduced_short": "abc11111",
                 "introduced_at": "2026-01-15T10:30:00+00:00",
                 "introduced_by": "Alice",
-                "age_days": 100,
+                "age_days": 100 + i,
             }
+            for i in range(3)
         ]
         out = render_todo_strip(todos, timeline)
         assert out.startswith("<svg")
-        assert "TODO" in out or "admission" in out.lower()
+        assert "margins" in out.lower()
 
     def test_broadsheet_skips_empty_todo_chapter_mark(self, seeded_repo: Path):
         """No TODOs in the codebase → no 'i' chapter mark for the empty atom.
