@@ -32,14 +32,14 @@ The rule comes from `ethos.md`: lossy regions are themselves signal. The visual 
 
 Each commit mark on the swimlane is sized by `additions + deletions`. The legend says so explicitly. We don't render diff size as commit-message length, file-count, or any other proxy — the LoC count is the most honest cheap proxy for "how much actually changed."
 
-### 3. Dual-axis timeline strip
+### 3. One absolute time spine; the dual-axis strip is the orientation map
 
-Two ranges on every timeline:
+Two distinct surfaces, with two jobs:
 
-- **Full lifespan** — the cache's `min(timestamp)` → `max(timestamp)`. Drawn as a thin reference strip with the entire project's range visible at uniform scale. This is honest about the *real* lifespan, even when 90% of it is dormancy.
-- **Active windows** — contiguous commit clusters; gaps ≥ 365 days collapse the rendering into separate windows with explicit gap segments between them. The visualized axis at usable width.
+- **The chart axis is the absolute spine (#117).** Every time-positioned mark — swimlane commits, arc bands, year ticks — is placed by its *true* position across the full lifespan (`min(timestamp)` → `max(timestamp)`) at uniform scale. The same date lands at the same x in every atom, so the eye can compare across atoms and (on the HTML surface) a reference can be cross-linked. Dormant stretches are **not** collapsed — they keep their true width, drawn as lossy regions (commitment #1), so absence occupies the space it really spanned. This is built by `build_absolute_scale`.
+- **The dual-axis strip is the "you are here" map.** The thin reference strip — in the masthead and atop each atom — still shows *both* the full lifespan and the active-window markers (contiguous commit clusters; ≥1y gaps hatched), so the reader stays oriented to where the density actually is. It is a compass, not the plotting axis.
 
-Both appear in the masthead AND atop each atom so the reader is constantly reminded what they're looking at.
+> **Why this changed (2026-06-17):** the chart axis used to be the gap-collapsed *active-windows* scale (windows allocated proportional pixels, gaps fixed-width). That kept brief active periods legible but meant x-position was not a real date, atoms didn't align with each other, and at scale (236 contributor rows) the single axis sat thousands of pixels from any mark. The absolute spine trades some legibility of brief early periods (they compress to a sliver — an accepted cost) for an honest, shared, cross-atom-comparable date axis. Decided in `09 - Scale Rework Scope`; the old `build_active_scale` was removed.
 
 ### 4. Multi-file label prefix + rename-truncation indicator
 

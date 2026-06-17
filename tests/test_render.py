@@ -24,10 +24,14 @@ from antiquarian.cli import app
 from antiquarian.render import (
     _knotwork_ribbon_svg,
     _render_dramatis_personae,
+    _axis_ticks,
+    _render_absolute_axis,
     _strip_empty_todo_section,
     _story_md_to_html_name,
+    build_absolute_scale,
     render_broadsheet,
     render_story_page,
+    render_swimlane,
     render_survey_page,
     render_todo_strip,
 )
@@ -771,3 +775,238 @@ class TestDramatisPersonae:
         data = extract_render_data(seeded_repo)
         assert "dramatis_personae" in data
         assert len(data["dramatis_personae"]) == 2
+
+
+class TestBuildAbsoluteScale:
+    """The shared absolute time spine (#117).
+
+    Unlike ``build_active_scale`` (which collapses dormant gaps to fixed
+    pixel widths), the absolute scale maps datetimes linearly across the
+    full project lifespan, so x-position means the same date in every
+    atom that registers to it. Dormancy is shown at its true width.
+    """
+
+    def _span(self, start: str, end: str) -> dict:
+        from datetime import datetime
+
+        days = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days + 1
+        return {
+            "full_span": {"start": start, "end": end, "days": days},
+            "active_windows": [],
+            "gaps": [],
+        }
+
+    def test_maps_full_span_endpoints_to_pixel_bounds(self):
+        from datetime import datetime
+
+        timeline = self._span("2019-01-01T00:00:00", "2019-01-11T00:00:00")
+        axis = build_absolute_scale(timeline, 100)
+        assert axis["scale"](datetime.fromisoformat("2019-01-01T00:00:00")) == 0
+        assert axis["scale"](datetime.fromisoformat("2019-01-11T00:00:00")) == 100
+
+    def test_maps_midpoint_linearly(self):
+        from datetime import datetime
+
+        timeline = self._span("2019-01-01T00:00:00", "2019-01-11T00:00:00")
+        axis = build_absolute_scale(timeline, 100)
+        # Six days into a ten-day span is 0.6 of the way across.
+        assert axis["scale"](datetime.fromisoformat("2019-01-07T00:00:00")) == 60
+
+    def test_clamps_dates_outside_the_span(self):
+        from datetime import datetime
+
+        timeline = self._span("2019-01-01T00:00:00", "2019-01-11T00:00:00")
+        axis = build_absolute_scale(timeline, 100)
+        assert axis["scale"](datetime.fromisoformat("2018-01-01T00:00:00")) == 0
+        assert axis["scale"](datetime.fromisoformat("2020-01-01T00:00:00")) == 100
+
+    def test_empty_timeline_scale_returns_zero(self):
+        from datetime import datetime
+
+        axis = build_absolute_scale({"full_span": None}, 100)
+        assert axis["scale"](datetime.fromisoformat("2019-01-01T00:00:00")) == 0
+
+
+class TestAxisTicks:
+    """Axis ticks adapt their granularity to the span (#117).
+
+    A multi-year project gets year ticks (thinned past eight years); a project
+    under ~2 years gets month ticks, because year boundaries are too coarse for
+    a young repo (a sub-year one would get none). Returns ``(datetime, label)``
+    pairs, the label already formatted for the chosen granularity.
+    """
+
+    def test_year_ticks_for_multiyear_span(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2019, 4, 15, tzinfo=timezone.utc)
+        end = datetime(2026, 2, 10, tzinfo=timezone.utc)
+        ticks = _axis_ticks(start, end)
+        # Jan-1-2019 precedes the April start, so it's excluded.
+        assert [d.year for d, _ in ticks] == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+        assert [label for _, label in ticks] == [
+            "2020",
+            "2021",
+            "2022",
+            "2023",
+            "2024",
+            "2025",
+            "2026",
+        ]
+
+    def test_thins_to_every_other_year_for_long_span(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2010, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        years = [d.year for d, _ in _axis_ticks(start, end)]
+        assert years == [2010, 2012, 2014, 2016, 2018, 2020, 2022, 2024, 2026]
+
+    def test_month_ticks_for_subyear_span(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2025, 1, 15, tzinfo=timezone.utc)
+        end = datetime(2025, 8, 20, tzinfo=timezone.utc)
+        ticks = _axis_ticks(start, end)
+        # Single-year sub-2-year span → bare month abbreviations, on the 1st.
+        assert [label for _, label in ticks] == [
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+        ]
+        assert all(d.day == 1 for d, _ in ticks)
+
+    def test_month_ticks_cross_year_carry_year_suffix(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2024, 11, 5, tzinfo=timezone.utc)
+        end = datetime(2025, 3, 10, tzinfo=timezone.utc)
+        labels = [label for _, label in _axis_ticks(start, end)]
+        assert labels == ["Dec '24", "Jan '25", "Feb '25", "Mar '25"]
+
+    def test_returns_tz_aware_dates(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2021, 6, 1, tzinfo=timezone.utc)
+        end = datetime(2023, 6, 1, tzinfo=timezone.utc)
+        assert all(d.tzinfo is not None for d, _ in _axis_ticks(start, end))
+
+
+class TestSwimlaneRegistersToAbsoluteSpine:
+    """The swimlane renders on the shared absolute spine (#117).
+
+    Year ticks span the whole project lifespan (not per-active-window date
+    labels), dormant stretches are lossy-hatched at their true width, and a
+    late-dated commit lands in the right-hand portion of the chart.
+    """
+
+    def _timeline(self) -> dict:
+        return {
+            "full_span": {
+                "start": "2019-01-01T00:00:00+00:00",
+                "end": "2026-12-31T00:00:00+00:00",
+                "days": 2922,
+            },
+            "active_windows": [
+                {
+                    "start": "2019-01-01T00:00:00+00:00",
+                    "end": "2020-06-01T00:00:00+00:00",
+                    "commit_count": 1,
+                },
+                {
+                    "start": "2023-06-01T00:00:00+00:00",
+                    "end": "2026-12-31T00:00:00+00:00",
+                    "commit_count": 1,
+                },
+            ],
+            "gaps": [
+                {
+                    "start": "2020-06-01T00:00:00+00:00",
+                    "end": "2023-06-01T00:00:00+00:00",
+                    "days": 1096,
+                }
+            ],
+        }
+
+    def _swimlane(self) -> dict:
+        def commit(ts: str) -> dict:
+            return {
+                "timestamp": ts,
+                "additions": 10,
+                "deletions": 0,
+                "arcs": [],
+                "short_sha": "abc1234",
+                "subject": "a commit",
+            }
+
+        return {
+            "lanes": [
+                {
+                    "author": "Ada",
+                    "commit_count": 2,
+                    "commits": [
+                        commit("2019-03-01T00:00:00+00:00"),
+                        commit("2025-11-01T00:00:00+00:00"),
+                    ],
+                }
+            ]
+        }
+
+    def test_renders_dormancy_hatch_for_the_gap(self):
+        out = render_swimlane(self._swimlane(), self._timeline(), [])
+        assert "url(#lossy-hatch)" in out
+
+    def test_axis_labels_span_the_full_lifespan(self):
+        out = render_swimlane(self._swimlane(), self._timeline(), [])
+        # Absolute axis labels every (in-range) year, not per-window ranges.
+        assert ">2020</text>" in out
+        assert ">2026</text>" in out
+
+    def test_late_commit_lands_in_right_portion(self):
+        import re
+
+        out = render_swimlane(self._swimlane(), self._timeline(), [])
+        # margin_left=220, chart_w=760 → absolute midpoint x ≈ 600.
+        # A 2025 commit in a 2019–2026 span sits well past the midpoint.
+        cxs = sorted(float(m) for m in re.findall(r'<circle cx="([\d.]+)"', out))
+        assert cxs[-1] > 700
+
+
+class TestAbsoluteAxisAnchorsSpanEnds:
+    """The absolute axis is never blank — even a sub-year span is labelled (#117).
+
+    Year ticks alone vanish for a project that lives inside one calendar year
+    (Jan 1 falls before the start), so the axis always anchors the span's
+    first and last dates.
+    """
+
+    def test_subyear_span_still_labels_the_endpoints(self):
+        timeline = {
+            "full_span": {
+                "start": "2026-05-01T00:00:00+00:00",
+                "end": "2026-06-15T00:00:00+00:00",
+                "days": 46,
+            },
+            "active_windows": [],
+            "gaps": [],
+        }
+        out = _render_absolute_axis(timeline, 100, 600, 50)
+        assert "May 2026" in out
+        assert "Jun 2026" in out
+
+    def test_multiyear_span_keeps_interior_year_ticks(self):
+        timeline = {
+            "full_span": {
+                "start": "2019-04-01T00:00:00+00:00",
+                "end": "2026-02-01T00:00:00+00:00",
+                "days": 2498,
+            },
+            "active_windows": [],
+            "gaps": [],
+        }
+        out = _render_absolute_axis(timeline, 100, 600, 50)
+        assert ">2022</text>" in out
