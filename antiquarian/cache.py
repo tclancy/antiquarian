@@ -8,6 +8,8 @@ biographies) can reuse work done for a per-file story.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -53,6 +55,36 @@ CREATE TABLE IF NOT EXISTS narrative_chunks (
 
 def cache_path_for_repo(repo_path: str | Path) -> Path:
     return Path(repo_path) / ".antiquarian" / "cache.db"
+
+
+def archive_root() -> Path:
+    """Where archived caches live: ``$ANTIQUARIAN_CACHE_ARCHIVE`` or ~default."""
+    env = os.environ.get("ANTIQUARIAN_CACHE_ARCHIVE")
+    if env:
+        return Path(env)
+    return Path.home() / ".antiquarian" / "caches"
+
+
+def project_name_for_repo(repo_path: str | Path) -> str:
+    """Project label for the archive — the resolved repo directory name."""
+    return Path(repo_path).resolve().name
+
+
+def archive_cache(repo_path: str | Path, *, root: Path | None = None) -> Path | None:
+    """Copy ``<repo>/.antiquarian/cache.db`` into the project-named archive (#139).
+
+    Returns the destination path, or ``None`` if the repo has no cache yet.
+    Idempotent — overwrites any prior copy. So any project can be re-rendered
+    for free later without its original checkout.
+    """
+    src = cache_path_for_repo(repo_path)
+    if not src.exists():
+        return None
+    dest_root = root if root is not None else archive_root()
+    dest = dest_root / project_name_for_repo(repo_path) / "cache.db"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    return dest
 
 
 _MIGRATIONS = [

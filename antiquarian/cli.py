@@ -13,6 +13,7 @@ from pathlib import Path
 import typer
 
 from antiquarian.backends import BackendError, NarrativeBackend, get_backend
+from antiquarian.cache import archive_cache
 from antiquarian.gallery import GalleryError, build_gallery, load_manifest
 from antiquarian.generate import (
     CostEstimate,
@@ -43,6 +44,13 @@ def _main() -> None:
 
 def _stderr(msg: str) -> None:
     typer.echo(msg, err=True)
+
+
+def _archive_cache(repo_path: Path) -> None:
+    """Copy this run's cache.db into the central archive (#139), best-effort."""
+    archived = archive_cache(repo_path)
+    if archived:
+        _stderr(f"[archive] cache.db → {archived}")
 
 
 # Surveys above this size run an unattended `claude -p` call per file. The
@@ -132,6 +140,7 @@ def story(
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         _handle_claude_error(e)
 
+    _archive_cache(repo_path)
     typer.echo(narrative)
 
 
@@ -226,6 +235,7 @@ def survey(
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         _handle_claude_error(e)
 
+    _archive_cache(repo_path)
     typer.echo(narrative)
 
 
@@ -312,6 +322,7 @@ def render(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
 
+    _archive_cache(repo_path)
     typer.echo(str(written))
 
 
