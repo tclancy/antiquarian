@@ -36,10 +36,12 @@ def _commit(
     return {
         "short_sha": sha,
         "timestamp": ts,
+        "date": ts[:10],
         "additions": add,
         "deletions": dele,
         "subject": subj,
         "arcs": arcs,
+        "files_changed": [],
     }
 
 
@@ -149,3 +151,37 @@ def test_no_arc_commits_get_inert_empty_data_arcs():
     html = render_broadsheet(data)
     assert 'data-arcs=""' in html
     assert html.strip().endswith("</html>")  # complete document, no crash
+
+
+def test_tooltip_includes_when_and_files():
+    c = _commit("abc123", ["transport-api"])
+    c["date"] = "2021-06-01"
+    c["files_changed"] = ["httpx/_client.py", "httpx/_models.py"]
+    out = render_swimlane({"lanes": [_lane([c])]}, _TIMELINE, [])
+    assert "2021-06-01" in out
+    assert "httpx/_client.py" in out and "httpx/_models.py" in out
+
+
+def test_tooltip_summarizes_many_files():
+    c = _commit("abc123", [])
+    c["date"] = "2021-06-01"
+    c["files_changed"] = ["a.py", "b.py", "c.py", "d.py"]
+    out = render_swimlane({"lanes": [_lane([c])]}, _TIMELINE, [])
+    assert "4 files changed" in out
+
+
+def test_dim_the_rest_css_present():
+    from antiquarian.render import render_broadsheet
+
+    data = {
+        "project": "p",
+        "timeline": _TIMELINE,
+        "todos": [],
+        "swimlane": {"lanes": [_lane([_commit("abc123", ["a-slug"])])]},
+        "arc_band": {"arc_count": 0, "arcs": []},
+        "file_lifespans": [],
+        "files": [],
+        "generated_at": "2026-06-18",
+    }
+    html = render_broadsheet(data)
+    assert "xref-dim" in html  # the hover-dim class is wired in CSS + script

@@ -51,7 +51,8 @@ class _Commit:
     additions: int
     deletions: int
     files_changed_count: int
-    pr_number: int | None
+    files_changed: list[str] = field(default_factory=list)
+    pr_number: int | None = None
     arcs: list[str] = field(default_factory=list)
 
 
@@ -122,6 +123,7 @@ def _load_commits(
                 additions=row["additions"],
                 deletions=row["deletions"],
                 files_changed_count=len(files_changed),
+                files_changed=files_changed,
                 pr_number=row["pr_number"],
             )
         )
@@ -255,6 +257,7 @@ def _build_swimlane(commits: list[_Commit]) -> dict:
                 "deletions": c.deletions,
                 "subject": c.message_subject,
                 "arcs": c.arcs,
+                "files_changed": c.files_changed,
             }
         )
     lanes = []

@@ -652,6 +652,16 @@ def render_swimlane(
             fill = PALETTE["accent"] if decisive else PALETTE["lane"]
             stroke = PALETTE["ink"] if decisive else PALETTE["rule"]
             title = c["short_sha"] + " — " + c["subject"] + " (" + str(diff) + " LoC)"
+            when = c.get("date") or (c["timestamp"][:10] if c.get("timestamp") else "")
+            if when:
+                title += " · " + when
+            files = c.get("files_changed") or []
+            if files:
+                title += " · " + (
+                    ", ".join(files)
+                    if len(files) <= 2
+                    else f"{len(files)} files changed"
+                )
             arc_names = [lookup[s]["name"] for s in slugs if s in lookup]
             if arc_names:
                 title += " · arc: " + "; ".join(arc_names)
@@ -1248,8 +1258,9 @@ def render_page(
       font-style: normal;
       font-size: 0.85em;
     }}
-    /* Co-arc commit highlight, toggled by the overlay script on hover (#119). */
-    .commit-xref {{ stroke-width: 2.4 !important; opacity: 1 !important; }}
+    /* Co-arc hover: dim the rest so the arc's real commits pop (#119). */
+    svg.xref-dim .commit-bubble {{ opacity: 0.1; transition: opacity 0.12s ease; }}
+    svg.xref-dim .commit-bubble.commit-xref {{ opacity: 1; stroke-width: 1.4; }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1355,6 +1366,7 @@ def render_page(
       var slugs = slugsOf(b);
       if (!slugs.length) return;
       b.addEventListener('mouseenter', function () {{
+        var svg = b.closest('svg'); if (svg) svg.classList.add('xref-dim');
         bubbles.forEach(function (o) {{
           var os = slugsOf(o);
           for (var i = 0; i < slugs.length; i++) {{
@@ -1363,6 +1375,7 @@ def render_page(
         }});
       }});
       b.addEventListener('mouseleave', function () {{
+        var svg = b.closest('svg'); if (svg) svg.classList.remove('xref-dim');
         bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); }});
       }});
     }});
