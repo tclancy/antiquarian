@@ -103,3 +103,18 @@ def test_roster_groups_into_collapsible_files():
 def test_empty_band_uses_empty_atom():
     out = render_arc_roster(_band([]), _TIMELINE)
     assert "No arcs" in out
+
+
+def test_datable_arc_row_has_sparkline_with_one_dot_per_datable_commit():
+    arc = _arc(1, "a.py", datable=3, undatable=1)  # 3 datable, 1 missing
+    out = render_arc_roster(_band([arc]), _TIMELINE)
+    assert 'class="arc-spark"' in out
+    # one <circle> per datable commit (the missing one is not plotted)
+    row = out[out.index("Arc 1") :]
+    assert row.count("<circle") == 3
+
+
+def test_undatable_arc_row_has_no_sparkline():
+    out = render_arc_roster(_band([_arc(2, "b.py", datable=0, undatable=2)]), _TIMELINE)
+    assert 'class="arc-spark"' not in out
+    assert "undatable-badge" in out

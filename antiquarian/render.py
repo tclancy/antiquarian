@@ -69,6 +69,9 @@ PALETTE = {
 # budget" of visualizing-at-scale.md).
 SWIMLANE_LANE_BUDGET = 30
 
+SPARK_W = 150  # px — tiny per-arc sparkline width
+SPARK_H = 14  # px
+
 # Below this many TODO/FIXME notes, the marginalia atom degrades to a single
 # sentence rather than a bar chart — the frame shouldn't dwarf the data (#122).
 TODO_DENSITY_FLOOR = 3
@@ -744,6 +747,29 @@ def render_arc_roster(arc_band: dict, timeline: dict) -> str:
     return "".join(parts)
 
 
+def _arc_sparkline(arc: dict, timeline: dict) -> str:
+    """Tiny dot-sparkline: each datable commit as a dot on the shared full-span
+    absolute axis. Dots only — never a connecting span (the span is the lie)."""
+    scale = build_absolute_scale(timeline, SPARK_W)["scale"]
+    cy = SPARK_H / 2
+    dots = []
+    for c in arc["commits"]:
+        if not c["timestamp"]:
+            continue
+        cx = scale(_iso_to_dt(c["timestamp"]))
+        dots.append(
+            f'<circle cx="{cx:.1f}" cy="{cy}" r="1.6" '
+            f'fill="{PALETTE["accent"]}" opacity="0.85"/>'
+        )
+    return (
+        f'<svg class="arc-spark" viewBox="0 0 {SPARK_W} {SPARK_H}" '
+        f'width="{SPARK_W}" height="{SPARK_H}" aria-hidden="true">'
+        f'<line x1="0" y1="{cy}" x2="{SPARK_W}" y2="{cy}" '
+        f'stroke="{PALETTE["rule_dim"]}" stroke-width="0.5"/>'
+        f"{''.join(dots)}</svg>"
+    )
+
+
 def _render_arc_row(arc: dict, timeline: dict) -> str:
     """One arc: number, name, commit count, and a datable/undatable marker.
 
@@ -764,7 +790,7 @@ def _render_arc_row(arc: dict, timeline: dict) -> str:
             'a lossy region, kept rather than dropped">undatable</span>'
         )
     else:
-        marker = ""
+        marker = _arc_sparkline(arc, timeline)
     return f'<li class="arc-row">{label} {marker}</li>'
 
 
@@ -1243,6 +1269,7 @@ def render_page(
       font-size: 0.7rem; font-style: italic; color: var(--accent);
       border: 1px solid var(--rule); border-radius: 2px; padding: 0 0.3rem;
     }}
+    .arc-spark {{ vertical-align: middle; opacity: 0.9; }}
     /* Folded long tail of contributors (#118) — searchable, print-expanded. */
     .swimlane-tail {{
       font-family: var(--serif);
@@ -1308,6 +1335,7 @@ def render_page(
       /* The arc roster prints fully expanded (#112). */
       .arc-file > *:not(summary) {{ display: block !important; }}
       .arc-file > summary {{ list-style: none; }}
+      .arc-spark {{ opacity: 1; }}
       /* The file tree prints fully expanded; the live-search box is dropped. */
       .file-tree details > *:not(summary) {{ display: block !important; }}
       .file-tree details > summary {{ list-style: none; color: var(--ink-dim); }}
