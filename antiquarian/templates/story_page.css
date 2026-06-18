@@ -26,9 +26,99 @@ html, body {
   font-family: var(--serif);
   line-height: 1.6;
 }
-.story {
+
+/* -----------------------------------------------------------------------
+ * Layout wrapper — flex when a sidebar is present, plain block otherwise.
+ * :has(.story-nav) activates only when the nav element actually exists in
+ * the DOM, so pages rendered without a sidebar keep their centered layout.
+ * ----------------------------------------------------------------------- */
+.story-layout {
   max-width: 760px;
   margin: 0 auto;
+}
+.story-layout:has(.story-nav) {
+  display: flex;
+  align-items: flex-start;
+  gap: 2rem;
+  max-width: 1040px;
+}
+
+/* -----------------------------------------------------------------------
+ * Directory-navigation sidebar (#138)
+ * ----------------------------------------------------------------------- */
+.story-nav {
+  width: 180px;
+  flex-shrink: 0;
+  padding: 2rem 0 4rem 1.5rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ink-dim);
+  border-right: 1px solid var(--rule);
+}
+.nav-breadcrumb {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  font-weight: 500;
+  color: var(--ink-dim);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+.nav-breadcrumb a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+.nav-breadcrumb a:hover { border-bottom-style: solid; }
+.nav-sep {
+  margin: 0 0.2em;
+  color: var(--rule);
+}
+.nav-dir {
+  color: var(--ink-dim);
+}
+.nav-siblings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.nav-siblings li {
+  margin: 0;
+  padding: 0.15rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-file a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+}
+.nav-file a:hover {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+.nav-file code {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.85em;
+}
+.nav-current code {
+  color: var(--accent);
+  font-weight: 600;
+}
+.nav-unlinked {
+  color: var(--ink-dim);
+}
+
+/* -----------------------------------------------------------------------
+ * Article — takes remaining width when sidebar is present, or centers
+ * standalone when it is the only flex child.
+ * ----------------------------------------------------------------------- */
+.story {
+  flex: 1;
+  min-width: 0;
+  max-width: 760px;
   padding: 2rem 2.5rem 4rem;
 }
 .dateline {
@@ -115,4 +205,36 @@ h1.story-title code {
   font-style: italic;
   font-size: 0.85rem;
   color: var(--ink-dim);
+}
+
+/* -----------------------------------------------------------------------
+ * Narrow viewport — stack sidebar above the article.
+ * ----------------------------------------------------------------------- */
+@media (max-width: 700px) {
+  .story-layout:has(.story-nav) {
+    flex-direction: column;
+  }
+  .story-nav {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+    padding: 1rem 1.5rem;
+  }
+}
+
+/* -----------------------------------------------------------------------
+ * Print — sidebar is hidden; layout returns to single-column.
+ * The story article is the complete record; directory navigation adds
+ * no value on paper.
+ * ----------------------------------------------------------------------- */
+@media print {
+  .story-nav { display: none; }
+  .story-layout {
+    display: block;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .story {
+    padding: 1rem 0;
+  }
 }

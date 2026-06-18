@@ -117,3 +117,26 @@ def _node_depths(nodes: list[Node], depth: int):
         yield depth
         if isinstance(node, FolderNode):
             yield from _node_depths(node.children, depth + 1)
+
+
+def siblings_for_file(file_path: str, all_files: list[str]) -> list[str]:
+    """Return the files that share the same directory as ``file_path``.
+
+    "Same directory" means the parent path component(s) match exactly:
+    ``src/a.py`` and ``src/b.py`` are siblings; ``src/api/views.py`` is not.
+    Root-level files (no ``/`` in the path) are siblings of each other.
+
+    ``file_path`` does not need to appear in ``all_files`` — callers that
+    exclude the current file from their survey list still get the correct
+    sibling set.  Returns a sorted list.
+    """
+    parts = file_path.split("/")
+    parent_dir = "/".join(parts[:-1])  # "" for root-level files
+
+    result = []
+    for fp in all_files:
+        fp_parts = fp.split("/")
+        fp_parent = "/".join(fp_parts[:-1])
+        if fp_parent == parent_dir:
+            result.append(fp)
+    return sorted(result)

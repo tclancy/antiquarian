@@ -429,10 +429,21 @@ def _render_story_pages(
     pages_dir.mkdir(parents=True, exist_ok=True)
     candidates = [n for n in data.get("stories", []) if (stories_dir / n).exists()]
 
+    # Pre-compute the sidebar inputs once: all surveyed files and the full set
+    # of candidates (all have story pages, by definition of this function).
+    all_files: list[str] = data.get("files", [])
+    all_candidates: set[str] = set(candidates)
+
     def _render_one(story_md_name: str) -> str:
         file_path = story_md_name.replace("__", "/").removesuffix(".md")
         story_md = (stories_dir / story_md_name).read_text(encoding="utf-8")
-        story_html = render_story_page(file_path, story_md, data["project"])
+        story_html = render_story_page(
+            file_path,
+            story_md,
+            data["project"],
+            all_files=all_files,
+            files_with_stories=all_candidates,
+        )
         (pages_dir / _story_md_to_html_name(story_md_name)).write_text(
             story_html, encoding="utf-8"
         )
