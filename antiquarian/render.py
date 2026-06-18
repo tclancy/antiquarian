@@ -569,7 +569,7 @@ def render_swimlane(
 
     ``arc_lookup`` maps arc slug → ``{"name": str, "story_href": str | None}``;
     optional. When provided, decisive commits gain an arc-name tooltip suffix
-    and, if a story page exists, are wrapped in a ``<a href="…">`` link.
+    and, if a story page exists, carry a ``data-story-url`` attribute on the bubble.
     """
     lanes = swimlane["lanes"]
     if not lanes:
@@ -701,6 +701,16 @@ def render_swimlane(
                 lens_attrs += f' data-pr-url="{_xml_escape(c["pr_url"])}"'
             if c.get("commit_url"):
                 lens_attrs += f' data-commit-url="{_xml_escape(c["commit_url"])}"'
+            story_href = next(
+                (
+                    lookup[s]["story_href"]
+                    for s in slugs
+                    if lookup.get(s, {}).get("story_href")
+                ),
+                None,
+            )
+            if story_href:
+                lens_attrs += f' data-story-url="{_xml_escape(story_href)}"'
             circle = (
                 f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}"'
                 f"{arc_color_attr}"
@@ -710,17 +720,7 @@ def render_swimlane(
                 f"<title>{_xml_escape(title)}</title>"
                 "</circle>"
             )
-            href = next(
-                (
-                    lookup[s]["story_href"]
-                    for s in slugs
-                    if lookup.get(s, {}).get("story_href")
-                ),
-                None,
-            )
-            parts.append(
-                f'<a href="{_xml_escape(href)}">{circle}</a>' if href else circle
-            )
+            parts.append(circle)
 
     axis_y = chart_bottom + 10
     parts.append(_render_absolute_axis(timeline, margin_left, chart_w, axis_y))
