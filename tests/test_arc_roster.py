@@ -58,3 +58,47 @@ def test_group_counts():
 
 def test_empty():
     assert group_arcs_by_file([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Render tests — Step 1 of Task 2
+# ---------------------------------------------------------------------------
+from antiquarian.render import render_arc_roster  # noqa: E402
+
+_TIMELINE = {
+    "full_span": {
+        "start": "2019-01-01T00:00:00+00:00",
+        "end": "2026-01-01T00:00:00+00:00",
+        "days": 2557,
+    },
+    "active_windows": [],
+    "gaps": [],
+}
+
+
+def _band(arcs):
+    return {"arc_count": len(arcs), "arcs": arcs}
+
+
+def test_roster_lists_every_arc_including_undatable():
+    arcs = [_arc(1, "a.py", datable=2), _arc(2, "b.py", datable=0, undatable=3)]
+    out = render_arc_roster(_band(arcs), _TIMELINE)
+    assert "Arc 1" in out and "Arc 2" in out
+    assert "a.py" in out and "b.py" in out
+
+
+def test_undatable_arc_is_badged_not_dropped():
+    out = render_arc_roster(_band([_arc(9, "x.py", datable=0, undatable=2)]), _TIMELINE)
+    assert "undatable-badge" in out
+    assert "Arc 9" in out
+
+
+def test_roster_groups_into_collapsible_files():
+    out = render_arc_roster(_band([_arc(1, "a.py")]), _TIMELINE)
+    assert 'class="arc-file"' in out
+    assert "<summary" in out
+
+
+def test_empty_band_uses_empty_atom():
+    out = render_arc_roster(_band([]), _TIMELINE)
+    assert "No arcs" in out

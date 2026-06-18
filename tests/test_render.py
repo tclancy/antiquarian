@@ -200,6 +200,14 @@ class TestExtractRenderData:
         names = {a["name"] for a in data["arcs"]}
         assert names == {"Initial sketch", "Hardening"}
 
+    def test_arc_band_includes_datable_count(self, seeded_repo):
+        data = extract_render_data(seeded_repo)
+        for arc in data["arc_band"]["arcs"]:
+            assert "datable_count" in arc
+            assert arc["datable_count"] == sum(
+                1 for c in arc["commits"] if c["timestamp"]
+            )
+
 
 class TestRenderBroadsheet:
     def test_produces_html_document(self, seeded_repo: Path):
@@ -488,7 +496,7 @@ class TestEmptyTodoSections:
     def test_broadsheet_skips_empty_todo_chapter_mark(self, seeded_repo: Path):
         """No TODOs in the codebase → no 'i' chapter mark for the empty atom.
 
-        The remaining atoms renumber: swimlane becomes 'i', arc_band 'ii'.
+        The remaining atoms renumber: swimlane becomes 'i', arc_roster 'ii'.
         """
         data = extract_render_data(seeded_repo)
         # Seeded repo has no TODOs (no live HEAD files with TODO comments)

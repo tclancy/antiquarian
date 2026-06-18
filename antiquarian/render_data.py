@@ -454,6 +454,7 @@ def _build_arc_band(arcs: list[_Arc], commits: list[_Commit]) -> dict:
                 "file_path": arc.file_path,
                 "commits": arc_commits,
                 "commit_count": len(arc_commits),
+                "datable_count": sum(1 for c in arc_commits if c["timestamp"]),
             }
         )
     return {"arc_count": len(bands), "arcs": bands}
