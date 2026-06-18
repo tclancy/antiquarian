@@ -79,7 +79,17 @@ def _truncate_words(text: str | None, n: int = DETAIL_WORD_CAP) -> str:
     return " ".join(words[:n]) + "…"
 ```
 
-Add to `_Commit` (after `message_subject`): `message: str = ""` and (after `pr_number`): `pr_body: str | None = None`.
+Add `message`/`pr_body` to `_Commit` **in the defaulted-fields block** (a defaulted field must NOT precede the non-default fields `additions`/`deletions`/`files_changed_count`, or the class fails to import). Place them like so:
+
+```python
+    files_changed_count: int
+    message: str = ""
+    files_changed: list[str] = field(default_factory=list)
+    pr_number: int | None = None
+    pr_body: str | None = None
+    arcs: list[str] = field(default_factory=list)
+```
+(Construction in `_load_commits` is all-keyword, so position doesn't affect the call.)
 
 In `_load_commits`, where the `_Commit(...)` is constructed, add `message=msg,` and `pr_body=row["pr_body"],` (the row already exposes `message` and `pr_body` per the cache schema; `msg` is already computed from `row["message"]`).
 
@@ -88,8 +98,6 @@ In `_load_commits`, where the `_Commit(...)` is constructed, add `message=msg,` 
 Change the signature to `def _build_swimlane(commits: list[_Commit], base_url: str | None = None) -> dict:`. In the per-commit dict, add:
 
 ```python
-                "message": c.message,
-                "pr_body": c.pr_body,
                 "detail_source": "pr" if c.pr_body else "commit",
                 "detail": _truncate_words(c.pr_body or c.message or c.message_subject),
                 "pr_url": (f"{base_url}/pull/{c.pr_number}" if base_url and c.pr_number else None),
@@ -104,7 +112,9 @@ In `extract_render_data(repo_path)`, before building the bundle, compute the bas
 ```
 and change the call to `"swimlane": _build_swimlane(commits, base_url),`. Add the import `from antiquarian.prs import detect_github_repo` if not already present.
 
-- [ ] **Step 5: Add an integration test (tests/test_commit_detail.py)**
+- [ ] **Step 5a: Make `seeded_repo` a shared fixture.** It is currently module-scoped in `tests/test_render.py` (~line 133), and `tests/conftest.py` defines **no** fixtures — so a new test module can't use it. **Move `seeded_repo` and its `_seed_cache_db` helper from `tests/test_render.py` into `tests/conftest.py`** (cut them out of test_render.py; conftest fixtures are auto-available to all test modules, so test_render.py keeps working). Run `uv run pytest tests/test_render.py -q` to confirm test_render still passes after the move.
+
+- [ ] **Step 5b: Add the integration test (tests/test_commit_detail.py)**
 
 ```python
 from pathlib import Path  # noqa: E402
@@ -326,13 +336,24 @@ After the existing co-arc `</script>`, before `</body>`, add (every brace double
         .slice(0, LENS_N).map(function (p) {{ return p.b; }})
         .sort(function (a, c) {{ return parseFloat(a.getAttribute('cx')) - parseFloat(c.getAttribute('cx')); }});
     }}
+    /* DOM nodes, NOT innerHTML — detail text comes from untrusted third-party
+       commit/PR bodies; getAttribute decodes the escaped value, so innerHTML
+       would re-parse it as HTML (DOM-XSS). textContent is safe. */
     function showDetail(panel, b) {{
-      var src = b.getAttribute('data-detail-source') === 'pr' ? 'PR' : 'commit';
-      var html = '<em>' + src + ':</em> ' + (b.getAttribute('data-detail') || '(no message)') + '<br>';
-      var pr = b.getAttribute('data-pr-url'); var cm = b.getAttribute('data-commit-url');
-      if (pr) html += '<a href="' + pr + '" target="_blank" rel="noopener">view PR &rarr;</a>';
-      if (cm) html += '<a href="' + cm + '" target="_blank" rel="noopener">view commit &rarr;</a>';
-      panel.innerHTML = html;
+      panel.textContent = '';
+      var lbl = document.createElement('em');
+      lbl.textContent = (b.getAttribute('data-detail-source') === 'pr' ? 'PR' : 'commit') + ':';
+      panel.appendChild(lbl);
+      panel.appendChild(document.createTextNode(' ' + (b.getAttribute('data-detail') || '(no message)')));
+      panel.appendChild(document.createElement('br'));
+      [['data-pr-url', 'view PR →'], ['data-commit-url', 'view commit →']].forEach(function (pair) {{
+        var u = b.getAttribute(pair[0]);
+        if (!u) return;
+        var a = document.createElement('a');
+        a.href = u; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = pair[1];
+        panel.appendChild(a);
+      }});
     }}
     hits.forEach(function (hit) {{
       hit.addEventListener('click', function (evt) {{
@@ -344,7 +365,9 @@ After the existing co-arc `</script>`, before `</body>`, add (every brace double
         lensEl = document.createElement('div');
         lensEl.className = 'commit-lens';
         var head = document.createElement('div'); head.className = 'commit-lens-head';
-        head.innerHTML = '<span>' + (hit.getAttribute('data-author') || '') + ' &middot; ' + chosen.length + ' commits</span>';
+        var label = document.createElement('span');  // textContent — author is untrusted
+        label.textContent = (hit.getAttribute('data-author') || '') + ' · ' + chosen.length + ' commits';
+        head.appendChild(label);
         var close = document.createElement('button'); close.className = 'commit-lens-close'; close.textContent = '×';
         close.addEventListener('click', clearLens); head.appendChild(close);
         var strip = document.createElement('div'); strip.className = 'commit-lens-strip';
@@ -389,7 +412,10 @@ git commit -m "feat(render): commit lens — click-to-pin zoom inset + detail pa
 
 - [ ] **Re-render** httpx; confirm `.commit-lens` CSS, `lane-hit` rects, `data-detail`/`data-commit-url` on bubbles.
 - [ ] **Feel-test with rodney:** dispatch a `click` on a `.lane-hit` (synthesize an event with clientX over a dense part of a row); confirm a `.commit-lens` appears with dot buttons; click a dot; confirm the detail panel fills (detail + links) and the arc footprint lights above. Screenshot the open lens, **commit it under `docs/evolution/`**.
-- [ ] **Present to Tom — do NOT auto-merge.** This is the big interactive first cut; expect feel-test iteration (window heuristic, inset density, dismiss). Flag known rough edges (adaptive window = nearest-12 for now; no click-away dismiss yet, ✕ only).
+- [ ] **Present to Tom — do NOT auto-merge.** This is the big interactive first cut; expect feel-test iteration. Flag the known rough edges explicitly for his call:
+  - **Click target = the row's empty space.** The lane-hit rect is a sibling drawn under the bubbles, so a click that lands *on a bubble* does NOT open the lens — and clicking a *decisive* (story-linked) bubble navigates to its story page. You open the lens by clicking the row near (not on) the marks. Acceptable first cut, or do we route bubble-clicks into the lens too?
+  - Adaptive window = the nearest-12 commits in that row (density-adaptive); no pixel-window tuning yet.
+  - Dismiss is ✕ only (no click-away); hovering another bubble after pinning clears the highlighted footprint (the existing mouseleave wipes it).
 
 ## Self-Review
 - Coverage: data (detail PR-first ≤50w + URLs), markup (data-* + lane-hit), the inset+detail+macro-tie-in+dismiss; httpx feel-test. ✓
