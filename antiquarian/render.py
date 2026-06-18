@@ -1446,7 +1446,8 @@ def render_page(
   <script>
   /* Commit lens (#143): click a contributor's row region -> pinned zoom inset
      of that contributor's nearby commits; pick one -> detail panel (PR body or
-     commit message, +links) and light its arc footprint above. Pure screen
+     commit message, +links) and light its arc footprint above. Clicking a
+     bubble directly opens the lens pre-selected on that commit. Pure screen
      enhancement; print/no-JS show only the static swimlane. */
   (function () {{
     var LENS_N = 12;
@@ -1493,40 +1494,61 @@ def render_page(
         a.textContent = pair[1];
         panel.appendChild(a);
       }});
+      var story = b.getAttribute('data-story-url');
+      if (story) {{
+        var sa = document.createElement('a');
+        sa.href = story; sa.textContent = "read the file's story →";
+        panel.appendChild(sa);
+      }}
+    }}
+    function openLens(lane, centerX, preselectSha) {{
+      var bubbles = Array.prototype.slice.call(svg.querySelectorAll('.commit-bubble[data-lane="' + lane + '"]'));
+      if (!bubbles.length) return;
+      var author = svg.querySelector('.lane-hit[data-lane="' + lane + '"]').getAttribute('data-author');
+      var chosen = pick(bubbles, centerX);
+      lensEl = document.createElement('div');
+      lensEl.className = 'commit-lens';
+      var head = document.createElement('div'); head.className = 'commit-lens-head';
+      var label = document.createElement('span');  // textContent — author is untrusted
+      label.textContent = (author || '') + ' · ' + chosen.length + ' commits';
+      head.appendChild(label);
+      var close = document.createElement('button'); close.className = 'commit-lens-close'; close.textContent = '×';
+      close.addEventListener('click', clearLens); head.appendChild(close);
+      var strip = document.createElement('div'); strip.className = 'commit-lens-strip';
+      var detail = document.createElement('div'); detail.className = 'commit-lens-detail';
+      detail.textContent = 'Select a commit to see its story.';
+      chosen.forEach(function (b) {{
+        var dot = document.createElement('button'); dot.className = 'commit-lens-dot';
+        dot.textContent = b.getAttribute('data-date') || b.getAttribute('data-sha');
+        dot.dataset.sha = b.getAttribute('data-sha');
+        dot.addEventListener('click', function () {{
+          strip.querySelectorAll('.sel').forEach(function (s) {{ s.classList.remove('sel'); }});
+          dot.classList.add('sel');
+          showDetail(detail, b);
+          svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (x) {{ x.classList.remove('commit-xref'); x.style.fill=''; }});
+          b.dispatchEvent(new MouseEvent('mouseenter'));
+        }});
+        strip.appendChild(dot);
+      }});
+      lensEl.appendChild(head); lensEl.appendChild(strip); lensEl.appendChild(detail);
+      var atom = svg.closest('.atom') || svg.parentNode;
+      atom.parentNode.insertBefore(lensEl, atom.nextSibling);
+      if (preselectSha) {{
+        var presel = strip.querySelector('.commit-lens-dot[data-sha="' + preselectSha + '"]');
+        if (presel) presel.click();
+      }}
     }}
     hits.forEach(function (hit) {{
       hit.addEventListener('click', function (evt) {{
         clearLens();
-        var lane = hit.getAttribute('data-lane');
-        var bubbles = Array.prototype.slice.call(svg.querySelectorAll('.commit-bubble[data-lane="' + lane + '"]'));
-        if (!bubbles.length) return;
-        var chosen = pick(bubbles, svgX(evt));
-        lensEl = document.createElement('div');
-        lensEl.className = 'commit-lens';
-        var head = document.createElement('div'); head.className = 'commit-lens-head';
-        var label = document.createElement('span');  // textContent — author is untrusted
-        label.textContent = (hit.getAttribute('data-author') || '') + ' · ' + chosen.length + ' commits';
-        head.appendChild(label);
-        var close = document.createElement('button'); close.className = 'commit-lens-close'; close.textContent = '×';
-        close.addEventListener('click', clearLens); head.appendChild(close);
-        var strip = document.createElement('div'); strip.className = 'commit-lens-strip';
-        var detail = document.createElement('div'); detail.className = 'commit-lens-detail';
-        detail.textContent = 'Select a commit to see its story.';
-        chosen.forEach(function (b) {{
-          var dot = document.createElement('button'); dot.className = 'commit-lens-dot';
-          dot.textContent = b.getAttribute('data-date') || b.getAttribute('data-sha');
-          dot.addEventListener('click', function () {{
-            strip.querySelectorAll('.sel').forEach(function (s) {{ s.classList.remove('sel'); }});
-            dot.classList.add('sel');
-            showDetail(detail, b);
-            svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (x) {{ x.classList.remove('commit-xref'); x.style.fill=''; }});
-            b.dispatchEvent(new MouseEvent('mouseenter'));
-          }});
-          strip.appendChild(dot);
-        }});
-        lensEl.appendChild(head); lensEl.appendChild(strip); lensEl.appendChild(detail);
-        var atom = svg.closest('.atom') || svg.parentNode;
-        atom.parentNode.insertBefore(lensEl, atom.nextSibling);
+        openLens(hit.getAttribute('data-lane'), svgX(evt), null);
+      }});
+    }});
+    svg.querySelectorAll('.commit-bubble').forEach(function (b) {{
+      b.addEventListener('click', function (evt) {{
+        evt.stopPropagation();
+        clearLens();
+        openLens(b.getAttribute('data-lane'), parseFloat(b.getAttribute('cx')), b.getAttribute('data-sha'));
       }});
     }});
   }})();

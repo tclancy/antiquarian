@@ -89,3 +89,9 @@ def test_lens_css_and_script_present():
     # print hides the lens
     print_block = html[html.index("@media print") :]
     assert "commit-lens" in print_block
+
+
+def test_lens_script_handles_bubble_click_and_story_link():
+    html = _page()
+    assert "data-story-url" in html  # script references the story link attr
+    assert "commit-bubble" in html
