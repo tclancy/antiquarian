@@ -983,7 +983,10 @@ class TestSwimlaneRegistersToAbsoluteSpine:
         out = render_swimlane(self._swimlane(), self._timeline(), [])
         # margin_left=220, chart_w=760 → absolute midpoint x ≈ 600.
         # A 2025 commit in a 2019–2026 span sits well past the midpoint.
-        cxs = sorted(float(m) for m in re.findall(r'<circle cx="([\d.]+)"', out))
+        cxs = sorted(
+            float(m)
+            for m in re.findall(r'<circle class="commit-bubble"[^>]*cx="([\d.]+)"', out)
+        )
         assert cxs[-1] > 700
 
 

@@ -550,6 +550,7 @@ def render_swimlane(
     swimlane: dict,
     timeline: dict,
     file_lifespans: list[dict],
+    arc_lookup: dict | None = None,
     lane_budget: int = SWIMLANE_LANE_BUDGET,
 ) -> str:
     """Author swimlane — absolute spine, lossy hatching, Diff size (LoC) legend.
@@ -557,6 +558,10 @@ def render_swimlane(
     Lanes arrive ranked by contribution (#118). The top ``lane_budget`` render
     as SVG; the rest fold into a searchable HTML tail below the chart, so the
     SVG stays bounded while every name remains in the DOM.
+
+    ``arc_lookup`` maps arc slug → ``{"name": str, "story_href": str | None}``;
+    optional. When provided, decisive commits gain an arc-name tooltip suffix
+    and, if a story page exists, are wrapped in a ``<a href="…">`` link.
     """
     lanes = swimlane["lanes"]
     if not lanes:
@@ -641,18 +646,36 @@ def render_swimlane(
             f'<line x1="{margin_left}" y1="{y}" x2="{margin_left + chart_w}" y2="{y}" '
             f'stroke="{PALETTE["rule_dim"]}" stroke-width="0.6"/>'
         )
+        lookup = arc_lookup or {}
         for c in lane["commits"]:
             cx = margin_left + axis["scale"](_iso_to_dt(c["timestamp"]))
             diff = c["additions"] + c["deletions"]
             r = 4 + math.sqrt(diff / max_diff) * 14
-            decisive = bool(c["arcs"])
+            slugs = c["arcs"]
+            decisive = bool(slugs)
             fill = PALETTE["accent"] if decisive else PALETTE["lane"]
             stroke = PALETTE["ink"] if decisive else PALETTE["rule"]
-            parts.append(
-                f'<circle cx="{cx}" cy="{y}" r="{r}" fill="{fill}" '
+            title = c["short_sha"] + " — " + c["subject"] + " (" + str(diff) + " LoC)"
+            arc_names = [lookup[s]["name"] for s in slugs if s in lookup]
+            if arc_names:
+                title += " · arc: " + "; ".join(arc_names)
+            circle = (
+                f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}" '
+                f'cx="{cx}" cy="{y}" r="{r}" fill="{fill}" '
                 f'stroke="{stroke}" stroke-width="0.8" opacity="0.88">'
-                f"<title>{_xml_escape(c['short_sha'] + ' — ' + c['subject'] + ' (' + str(diff) + ' LoC)')}</title>"
+                f"<title>{_xml_escape(title)}</title>"
                 "</circle>"
+            )
+            href = next(
+                (
+                    lookup[s]["story_href"]
+                    for s in slugs
+                    if lookup.get(s, {}).get("story_href")
+                ),
+                None,
+            )
+            parts.append(
+                f'<a href="{_xml_escape(href)}">{circle}</a>' if href else circle
             )
 
     axis_y = chart_bottom + 10
@@ -1326,6 +1349,8 @@ def render_page(
       font-style: normal;
       font-size: 0.85em;
     }}
+    /* Co-arc commit highlight, toggled by the overlay script on hover (#119). */
+    .commit-xref {{ stroke-width: 2.4 !important; opacity: 1 !important; }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1420,6 +1445,34 @@ def render_page(
     }});
   }})();
   </script>
+  <script>
+  /* Honest co-arc commit highlight (#119): hover a decisive commit, light the
+     OTHER real commits in the same arc(s). Joins on arc slug; marks only, no
+     band. Pure enhancement — no JS, no highlight; nothing else depends on it. */
+  (function () {{
+    var bubbles = Array.prototype.slice.call(document.querySelectorAll('.commit-bubble'));
+    if (!bubbles.length) return;
+    function slugsOf(b) {{
+      var v = (b.getAttribute('data-arcs') || '').trim();
+      return v ? v.split(/\\s+/) : [];
+    }}
+    bubbles.forEach(function (b) {{
+      var slugs = slugsOf(b);
+      if (!slugs.length) return;
+      b.addEventListener('mouseenter', function () {{
+        bubbles.forEach(function (o) {{
+          var os = slugsOf(o);
+          for (var i = 0; i < slugs.length; i++) {{
+            if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); break; }}
+          }}
+        }});
+      }});
+      b.addEventListener('mouseleave', function () {{
+        bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); }});
+      }});
+    }});
+  }})();
+  </script>
 </body>
 </html>
 """
@@ -1445,9 +1498,19 @@ def render_broadsheet(
     """
     timeline = data["timeline"]
     masthead_svg = render_timeline_masthead(timeline)
+    linked = stories_with_pages or set()
+    arc_lookup = {}
+    for arc in data.get("arc_band", {}).get("arcs", []):
+        md_name = arc["file_path"].replace("/", "__") + ".md"
+        href = (
+            f"stories/{_story_md_to_html_name(md_name)}" if md_name in linked else None
+        )
+        arc_lookup[arc["slug"]] = {"name": arc["name"], "story_href": href}
     atoms = {
         "todo_strip": render_todo_strip(data["todos"], timeline),
-        "swimlane": render_swimlane(data["swimlane"], timeline, data["file_lifespans"]),
+        "swimlane": render_swimlane(
+            data["swimlane"], timeline, data["file_lifespans"], arc_lookup=arc_lookup
+        ),
         "arc_roster": render_arc_roster(data["arc_band"], timeline),
     }
     raw_excerpt = data.get("survey_excerpt")
