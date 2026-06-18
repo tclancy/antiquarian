@@ -654,6 +654,11 @@ def render_swimlane(
             f'<line x1="{margin_left}" y1="{y}" x2="{margin_left + chart_w}" y2="{y}" '
             f'stroke="{PALETTE["rule_dim"]}" stroke-width="0.6"/>'
         )
+        parts.append(
+            f'<rect class="lane-hit" data-lane="{i}" data-author="{_xml_escape(lane["author"])}" '
+            f'x="{margin_left}" y="{margin_top + i * row_h}" width="{chart_w}" height="{row_h}" '
+            f'fill="transparent" pointer-events="all"/>'
+        )
         lookup = arc_lookup or {}
         for c in lane["commits"]:
             cx = margin_left + axis["scale"](_iso_to_dt(c["timestamp"]))
@@ -686,9 +691,20 @@ def render_swimlane(
                 None,
             )
             arc_color_attr = f' data-arc-color="{arc_color}"' if arc_color else ""
+            lens_attrs = (
+                f' data-sha="{_xml_escape(c["short_sha"])}" data-lane="{i}" '
+                f'data-date="{_xml_escape(c.get("date") or "")}" '
+                f'data-detail="{_xml_escape(c.get("detail") or "")}" '
+                f'data-detail-source="{_xml_escape(c.get("detail_source") or "commit")}"'
+            )
+            if c.get("pr_url"):
+                lens_attrs += f' data-pr-url="{_xml_escape(c["pr_url"])}"'
+            if c.get("commit_url"):
+                lens_attrs += f' data-commit-url="{_xml_escape(c["commit_url"])}"'
             circle = (
                 f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}"'
-                f"{arc_color_attr} "
+                f"{arc_color_attr}"
+                f"{lens_attrs} "
                 f'cx="{cx}" cy="{y}" r="{r}" fill="{fill}" '
                 f'stroke="{stroke}" stroke-width="0.8" opacity="0.88">'
                 f"<title>{_xml_escape(title)}</title>"
