@@ -21,7 +21,7 @@ class FileArcGroup:
     """All arcs named in one file, with datable/total counts."""
 
     file_path: str
-    arcs: list
+    arcs: list[dict]
     arc_count: int
     datable_arc_count: int
 

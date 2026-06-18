@@ -771,11 +771,9 @@ def _arc_sparkline(arc: dict, timeline: dict) -> str:
 
 
 def _render_arc_row(arc: dict, timeline: dict) -> str:
-    """One arc: number, name, commit count, and a datable/undatable marker.
-
-    The sparkline marker is filled in by the next task; for now datable arcs
-    show their commit count and undatable arcs show the badge.
-    """
+    """One arc row: number, name, commit count, and a marker — a tiny dot-
+    sparkline for datable arcs, or an 'undatable' badge for arcs with no
+    datable commit."""
     n_datable = datable_count(arc)
     name = _xml_escape(arc["name"])
     label = (
