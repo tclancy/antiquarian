@@ -1349,6 +1349,8 @@ def render_page(
       font-style: normal;
       font-size: 0.85em;
     }}
+    /* Co-arc commit highlight, toggled by the overlay script on hover (#119). */
+    .commit-xref {{ stroke-width: 2.4 !important; opacity: 1 !important; }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1439,6 +1441,34 @@ def render_page(
         var d = li.querySelector(':scope > details');
         if (d) d.open = visible;
         li.style.display = visible ? '' : 'none';
+      }});
+    }});
+  }})();
+  </script>
+  <script>
+  /* Honest co-arc commit highlight (#119): hover a decisive commit, light the
+     OTHER real commits in the same arc(s). Joins on arc slug; marks only, no
+     band. Pure enhancement — no JS, no highlight; nothing else depends on it. */
+  (function () {{
+    var bubbles = Array.prototype.slice.call(document.querySelectorAll('.commit-bubble'));
+    if (!bubbles.length) return;
+    function slugsOf(b) {{
+      var v = (b.getAttribute('data-arcs') || '').trim();
+      return v ? v.split(/\\s+/) : [];
+    }}
+    bubbles.forEach(function (b) {{
+      var slugs = slugsOf(b);
+      if (!slugs.length) return;
+      b.addEventListener('mouseenter', function () {{
+        bubbles.forEach(function (o) {{
+          var os = slugsOf(o);
+          for (var i = 0; i < slugs.length; i++) {{
+            if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); break; }}
+          }}
+        }});
+      }});
+      b.addEventListener('mouseleave', function () {{
+        bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); }});
       }});
     }});
   }})();

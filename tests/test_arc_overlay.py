@@ -90,3 +90,62 @@ def test_no_lookup_keeps_data_arcs_but_no_link():
     )
     assert 'data-arcs="transport-api"' in out
     assert "<a href=" not in out  # no lookup → no story link
+
+
+from antiquarian.render import render_broadsheet  # noqa: E402
+
+
+def _page():
+    data = {
+        "project": "p",
+        "timeline": _TIMELINE,
+        "todos": [],
+        "swimlane": {
+            "lanes": [
+                _lane([_commit("abc123", ["a-slug"]), _commit("def456", ["a-slug"])])
+            ]
+        },
+        "arc_band": {
+            "arc_count": 1,
+            "arcs": [
+                {
+                    "arc_number": 1,
+                    "name": "An arc",
+                    "slug": "a-slug",
+                    "file_path": "a.py",
+                    "commits": [],
+                    "commit_count": 0,
+                    "datable_count": 0,
+                }
+            ],
+        },
+        "file_lifespans": [],
+        "files": [],
+        "generated_at": "2026-06-18",
+    }
+    return render_broadsheet(data)
+
+
+def test_highlight_css_and_script_present():
+    html = _page()
+    assert ".commit-xref" in html
+    assert "data-arcs" in html
+    assert "<script" in html
+
+
+def test_no_arc_commits_get_inert_empty_data_arcs():
+    # a commit with no arcs renders an inert bubble (empty data-arcs → the
+    # script's mouseenter guard skips it, so no mass-highlight is possible)
+    data = {
+        "project": "p",
+        "timeline": _TIMELINE,
+        "todos": [],
+        "swimlane": {"lanes": [_lane([_commit("zzz999", [])])]},
+        "arc_band": {"arc_count": 0, "arcs": []},
+        "file_lifespans": [],
+        "files": [],
+        "generated_at": "2026-06-18",
+    }
+    html = render_broadsheet(data)
+    assert 'data-arcs=""' in html
+    assert html.strip().endswith("</html>")  # complete document, no crash
