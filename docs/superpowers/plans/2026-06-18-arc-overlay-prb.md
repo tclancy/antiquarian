@@ -168,11 +168,13 @@ In `render_broadsheet`, before the `atoms = {` block (~line 1448), build the loo
 ```python
     linked = stories_with_pages or set()
     arc_lookup = {}
-    for arc in data["arc_band"]["arcs"]:
+    for arc in data.get("arc_band", {}).get("arcs", []):
         md_name = arc["file_path"].replace("/", "__") + ".md"
         href = f"stories/{_story_md_to_html_name(md_name)}" if md_name in linked else None
         arc_lookup[arc["slug"]] = {"name": arc["name"], "story_href": href}
 ```
+
+The `data.get("arc_band", {}).get("arcs", [])` guard is **mandatory** (matches the codebase's defensive pattern; some callers/tests omit `arc_band`).
 
 Then change the swimlane atom line (~1450) to pass it:
 
@@ -180,7 +182,7 @@ Then change the swimlane atom line (~1450) to pass it:
         "swimlane": render_swimlane(data["swimlane"], timeline, data["file_lifespans"], arc_lookup=arc_lookup),
 ```
 
-(Confirm `render_broadsheet`'s signature already has `stories_with_pages` — it does, line ~1429. If `arc_band` could be absent, default with `data.get("arc_band", {}).get("arcs", [])`.)
+(`render_broadsheet`'s signature already has `stories_with_pages`, line ~1429.)
 
 - [ ] **Step 6: Run new tests + full suite**
 
@@ -189,7 +191,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 uv run pytest tests/test_arc_overlay.py -q   # expect 5 passed
 uv run pytest -q   # full suite green; render_swimlane's new param is optional so existing callers are unaffected
 ```
-If a test asserted the old bare `<circle cx=` for swimlane commits, update its anchor to `class="commit-bubble"[^>]*cx=` and note it.
+**Known breakage to fix in this step:** `tests/test_render.py::TestSwimlane...::test_late_commit_lands_in_right_portion` (~line 986) matches `re.findall(r'<circle cx="([\d.]+)"', out)`. After this task, swimlane commit circles read `<circle class="commit-bubble" data-arcs="…" cx="…">`, so `cx` no longer follows `<circle ` directly and the regex would match only the *legend* circles (max cx≈640), failing `cxs[-1] > 700`. **Update that regex to** `r'<circle class="commit-bubble"[^>]*cx="([\d.]+)"'` so it targets commit bubbles. Run the full suite to catch any other circle-anchored swimlane test and fix the same way.
 
 - [ ] **Step 7: pre-commit + commit**
 
@@ -237,10 +239,18 @@ def test_highlight_css_and_script_present():
     assert "<script" in html
 
 
-def test_highlight_degrades_no_behavior_without_arcs():
-    # a page whose commits have no arcs still renders and carries the script safely
-    html = _page()
-    assert "@media print" in html  # print path intact
+def test_no_arc_commits_get_inert_empty_data_arcs():
+    # a commit with no arcs renders an inert bubble (empty data-arcs → the
+    # script's mouseenter guard skips it, so no mass-highlight is possible)
+    data = {
+        "project": "p", "timeline": _TIMELINE, "todos": [],
+        "swimlane": {"lanes": [_lane([_commit("zzz999", [])])]},
+        "arc_band": {"arc_count": 0, "arcs": []},
+        "file_lifespans": [], "files": [], "generated_at": "2026-06-18",
+    }
+    html = render_broadsheet(data)
+    assert 'data-arcs=""' in html
+    assert html.strip().endswith("</html>")  # complete document, no crash
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -271,7 +281,7 @@ After the existing file-search `</script>` (before `</body>`), add:
     if (!bubbles.length) return;
     function slugsOf(b) {{
       var v = (b.getAttribute('data-arcs') || '').trim();
-      return v ? v.split(/\s+/) : [];
+      return v ? v.split(/\\s+/) : [];
     }}
     bubbles.forEach(function (b) {{
       var slugs = slugsOf(b);
@@ -291,6 +301,8 @@ After the existing file-search `</script>` (before `</body>`), add:
   }})();
   </script>
 ```
+
+**Transcribe `/\\s+/` exactly — keep the DOUBLE backslash.** The page template is a plain (non-raw) Python f-string, so `\s` would be an invalid escape sequence (SyntaxWarning on import, a hard error in a future Python). `\\s+` in the f-string renders as `\s+` in the emitted JS. Do not "simplify" it to `\s+`.
 
 - [ ] **Step 5: Run new tests + full suite**
 
