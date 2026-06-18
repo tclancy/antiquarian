@@ -40,13 +40,17 @@ The lens solves all three problems at once: tiny tooltips → a roomy detail pan
 
 (Phasing TBD at planning — Phase 2 is independent and could even come first as a quick win, since the dim already exists.)
 
-## Open questions for Tom
+## Decisions (Tom, 2026-06-18)
 
-1. **What counts as a "region"?** Click anywhere on a contributor's row → zoom a fixed window centred on the click (say ±N months)? Or divide each row into a few clickable buckets? Or click the contributor's *name* → lens their whole timeline? (Leaning: click the row → window around the click, with the window width adaptive to local density.)
-2. **Where does the lens sit?** Pinned directly under the swimlane atom (pushing content down), or as a fixed panel that overlays the lower viewport? (Leaning: inline under the swimlane, so it prints/screenshots in place if expanded.)
-3. **Arc colour ramp** for the grow/tint — revive the retired `ARC_COLORS` (the broadsheet's oxide/ink/blue family) or a new, more distinguishable set? With 202 arcs, colours will repeat — is colour just "this-arc-vs-not" emphasis, or do we want a stable per-arc hue?
-4. **Detail source priority** when both exist — show PR body or commit message first? (Leaning: PR body if present, else commit message; label which it is.)
-5. **Mobile/narrow** — out of scope for the print-first broadsheet, or should the lens degrade to a stacked panel? (Leaning: out of scope for now.)
+1. **Region = click the row → adaptive window around the click.** Window width adapts to local commit density (wider where sparse, tighter where dense) so the zoomed bubbles are always separable.
+2. **Lens sits inline**, pinned directly under the swimlane atom (pushes content down) — try it and see how it reads; revisit if it's awkward.
+3. **Arc colour = the existing colour *types*, but bright/near-neon for this active state.** At rest the swimlane stays the muted broadsheet palette; on selection the co-arc commits flare to a bright/neon version (a screen-interaction state only — never print). Colour cycles per arc as "this-arc-vs-not" emphasis (202 arcs → hues repeat; that's fine).
+4. **Detail panel: PR body first**, else the commit message; label which it is. ≤50 words → ellipsis → links to both PR and commit.
+5. **Narrow/mobile: way out of scope.** The lens is a desktop-broadsheet affordance.
+
+## Still-open (planning-time) details
+- Exact "adaptive window" heuristic (how width responds to density) — settle in the plan, tune by feel.
+- Grow mechanism (CSS `transform: scale` with `transform-box: fill-box` vs animating `r`) — plan-time call.
 
 ## Out of scope
 - The story-page sidebar / gutter timeline (#138 — separate thread, first cut on `claude/story-sidebar-138`).
