@@ -1493,7 +1493,6 @@ def render_page(
     }}
     function openLens(lane, centerX, preselectSha) {{
       var bubbles = Array.prototype.slice.call(svg.querySelectorAll('.commit-bubble[data-lane="' + lane + '"]'));
-      console.log('[lens] openLens lane=' + lane + ' center=' + Math.round(centerX) + ' preselect=' + preselectSha + ' bubbles=' + bubbles.length);
       if (!bubbles.length) return;
       var author = svg.querySelector('.lane-hit[data-lane="' + lane + '"]').getAttribute('data-author');
       var chosen = pick(bubbles, centerX);
@@ -1508,10 +1507,14 @@ def render_page(
       var strip = document.createElement('div'); strip.className = 'commit-lens-strip';
       var detail = document.createElement('div'); detail.className = 'commit-lens-detail';
       detail.textContent = 'Select a commit to see its story.';
+      var dateCounts = {{}};
+      chosen.forEach(function (b) {{ var d = b.getAttribute('data-date') || ''; dateCounts[d] = (dateCounts[d] || 0) + 1; }});
       chosen.forEach(function (b) {{
         var dot = document.createElement('button'); dot.className = 'commit-lens-dot';
-        dot.textContent = b.getAttribute('data-date') || b.getAttribute('data-sha');
-        dot.dataset.sha = b.getAttribute('data-sha');
+        var date = b.getAttribute('data-date') || '';
+        var sha = b.getAttribute('data-sha') || '';
+        dot.textContent = (dateCounts[date] > 1) ? (date + ' · ' + sha.slice(0, 7)) : (date || sha);
+        dot.dataset.sha = sha;
         dot.addEventListener('click', function () {{
           strip.querySelectorAll('.sel').forEach(function (s) {{ s.classList.remove('sel'); }});
           dot.classList.add('sel');
@@ -1538,7 +1541,6 @@ def render_page(
     }}
     hits.forEach(function (hit) {{
       hit.addEventListener('click', function (evt) {{
-        console.log('[lens] lane-hit click lane=' + hit.getAttribute('data-lane'));
         clearLens();
         openLens(hit.getAttribute('data-lane'), svgX(evt), null);
       }});
@@ -1546,7 +1548,6 @@ def render_page(
     var bubbleEls = svg.querySelectorAll('.commit-bubble');
     bubbleEls.forEach(function (b) {{
       b.addEventListener('click', function (evt) {{
-        console.log('[lens] bubble click sha=' + b.getAttribute('data-sha') + ' lane=' + b.getAttribute('data-lane'));
         evt.stopPropagation();
         clearLens();
         openLens(b.getAttribute('data-lane'), parseFloat(b.getAttribute('cx')), b.getAttribute('data-sha'));
@@ -1554,7 +1555,6 @@ def render_page(
       b.addEventListener('mouseenter', function () {{ if (!pinned) paint(b); }});
       b.addEventListener('mouseleave', function () {{ if (!pinned) unpaint(); }});
     }});
-    console.log('[lens] wired: ' + bubbleEls.length + ' bubbles, ' + hits.length + ' lane-hits');
   }})();
   </script>
 </body>
