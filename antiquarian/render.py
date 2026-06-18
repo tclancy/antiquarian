@@ -72,6 +72,18 @@ SWIMLANE_LANE_BUDGET = 30
 # sentence rather than a bar chart — the frame shouldn't dwarf the data (#122).
 TODO_DENSITY_FLOOR = 3
 
+# Bright, near-neon arc-highlight colours — a SCREEN-ONLY interaction state
+# (the at-rest swimlane and print stay the muted broadsheet palette). Cycled
+# per arc as "this-arc-vs-not" emphasis (#119 commit-lens, decision #3).
+NEON_ARC_COLORS = [
+    "#ff2d95",  # hot magenta-red
+    "#00e0ff",  # electric cyan
+    "#39ff14",  # neon green
+    "#ffd400",  # vivid amber
+    "#b14bff",  # bright violet
+    "#ff7a18",  # neon orange
+]
+
 
 def _iso_to_dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
@@ -665,8 +677,18 @@ def render_swimlane(
             arc_names = [lookup[s]["name"] for s in slugs if s in lookup]
             if arc_names:
                 title += " · arc: " + "; ".join(arc_names)
+            arc_color = next(
+                (
+                    lookup[s]["color"]
+                    for s in slugs
+                    if s in lookup and lookup[s].get("color")
+                ),
+                None,
+            )
+            arc_color_attr = f' data-arc-color="{arc_color}"' if arc_color else ""
             circle = (
-                f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}" '
+                f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}"'
+                f"{arc_color_attr} "
                 f'cx="{cx}" cy="{y}" r="{r}" fill="{fill}" '
                 f'stroke="{stroke}" stroke-width="0.8" opacity="0.88">'
                 f"<title>{_xml_escape(title)}</title>"
@@ -1260,7 +1282,14 @@ def render_page(
     }}
     /* Co-arc hover: dim the rest so the arc's real commits pop (#119). */
     svg.xref-dim .commit-bubble {{ opacity: 0.1; transition: opacity 0.12s ease; }}
-    svg.xref-dim .commit-bubble.commit-xref {{ opacity: 1; stroke-width: 1.4; }}
+    svg.xref-dim .commit-bubble.commit-xref {{
+      opacity: 1;
+      stroke: var(--ink);
+      stroke-width: 1;
+      transform: scale(1.8);
+      transform-box: fill-box;
+      transform-origin: center;
+    }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1366,17 +1395,18 @@ def render_page(
       var slugs = slugsOf(b);
       if (!slugs.length) return;
       b.addEventListener('mouseenter', function () {{
+        var color = b.getAttribute('data-arc-color');
         var svg = b.closest('svg'); if (svg) svg.classList.add('xref-dim');
         bubbles.forEach(function (o) {{
           var os = slugsOf(o);
           for (var i = 0; i < slugs.length; i++) {{
-            if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); break; }}
+            if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); if (color) o.style.fill = color; break; }}
           }}
         }});
       }});
       b.addEventListener('mouseleave', function () {{
         var svg = b.closest('svg'); if (svg) svg.classList.remove('xref-dim');
-        bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); }});
+        bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); o.style.fill = ''; }});
       }});
     }});
   }})();
@@ -1408,12 +1438,16 @@ def render_broadsheet(
     masthead_svg = render_timeline_masthead(timeline)
     linked = stories_with_pages or set()
     arc_lookup = {}
-    for arc in data.get("arc_band", {}).get("arcs", []):
+    for i, arc in enumerate(data.get("arc_band", {}).get("arcs", [])):
         md_name = arc["file_path"].replace("/", "__") + ".md"
         href = (
             f"stories/{_story_md_to_html_name(md_name)}" if md_name in linked else None
         )
-        arc_lookup[arc["slug"]] = {"name": arc["name"], "story_href": href}
+        arc_lookup[arc["slug"]] = {
+            "name": arc["name"],
+            "story_href": href,
+            "color": NEON_ARC_COLORS[i % len(NEON_ARC_COLORS)],
+        }
     atoms = {
         "todo_strip": render_todo_strip(data["todos"], timeline),
         "swimlane": render_swimlane(
