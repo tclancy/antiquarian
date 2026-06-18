@@ -102,3 +102,12 @@ def test_lens_css_is_absolute_overlay():
     # the lens overlays (absolute), and the atom is a positioning context
     assert "position: absolute" in html
     assert ".atom {" in html and "position: relative" in html
+
+
+def test_single_merged_highlight_script_has_pin():
+    html = _page()
+    # the footprint highlight + lens now share one script with a pin concept
+    assert "pinned" in html  # the pin flag exists in the script
+    assert "function paint" in html  # shared paint fn
+    # the old standalone co-arc IIFE marker should be gone (merged)
+    assert "Honest co-arc commit highlight" not in html

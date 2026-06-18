@@ -1416,37 +1416,6 @@ def render_page(
   }})();
   </script>
   <script>
-  /* Honest co-arc commit highlight (#119): hover a decisive commit, light the
-     OTHER real commits in the same arc(s). Joins on arc slug; marks only, no
-     band. Pure enhancement — no JS, no highlight; nothing else depends on it. */
-  (function () {{
-    var bubbles = Array.prototype.slice.call(document.querySelectorAll('.commit-bubble'));
-    if (!bubbles.length) return;
-    function slugsOf(b) {{
-      var v = (b.getAttribute('data-arcs') || '').trim();
-      return v ? v.split(/\\s+/) : [];
-    }}
-    bubbles.forEach(function (b) {{
-      var slugs = slugsOf(b);
-      if (!slugs.length) return;
-      b.addEventListener('mouseenter', function () {{
-        var color = b.getAttribute('data-arc-color');
-        var svg = b.closest('svg'); if (svg) svg.classList.add('xref-dim');
-        bubbles.forEach(function (o) {{
-          var os = slugsOf(o);
-          for (var i = 0; i < slugs.length; i++) {{
-            if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); if (color) o.style.fill = color; break; }}
-          }}
-        }});
-      }});
-      b.addEventListener('mouseleave', function () {{
-        var svg = b.closest('svg'); if (svg) svg.classList.remove('xref-dim');
-        bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); o.style.fill = ''; }});
-      }});
-    }});
-  }})();
-  </script>
-  <script>
   /* Commit lens (#143): click a contributor's row region -> pinned zoom inset
      of that contributor's nearby commits; pick one -> detail panel (PR body or
      commit message, +links) and light its arc footprint above. Clicking a
@@ -1460,6 +1429,26 @@ def render_page(
     var hits = svg.querySelectorAll('.lane-hit');
     if (!hits.length) return;
     var lensEl = null;
+    var pinned = null;
+    function slugsOf(b) {{
+      var v = (b.getAttribute('data-arcs') || '').trim();
+      return v ? v.split(/\\s+/) : [];
+    }}
+    function paint(b) {{
+      var slugs = slugsOf(b); if (!slugs.length) return;
+      var color = b.getAttribute('data-arc-color');
+      svg.classList.add('xref-dim');
+      svg.querySelectorAll('.commit-bubble').forEach(function (o) {{
+        var os = slugsOf(o);
+        for (var i = 0; i < slugs.length; i++) {{
+          if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); if (color) o.style.fill = color; break; }}
+        }}
+      }});
+    }}
+    function unpaint() {{
+      svg.classList.remove('xref-dim');
+      svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (o) {{ o.classList.remove('commit-xref'); o.style.fill = ''; }});
+    }}
 
     function svgX(evt) {{
       var pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
@@ -1467,10 +1456,8 @@ def render_page(
     }}
     function clearLens() {{
       if (lensEl) {{ lensEl.remove(); lensEl = null; }}
-      svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (b) {{
-        b.classList.remove('commit-xref'); b.style.fill = '';
-      }});
-      svg.classList.remove('xref-dim');
+      pinned = null;
+      unpaint();
     }}
     function pick(bubbles, x) {{
       return bubbles
@@ -1529,8 +1516,9 @@ def render_page(
           strip.querySelectorAll('.sel').forEach(function (s) {{ s.classList.remove('sel'); }});
           dot.classList.add('sel');
           showDetail(detail, b);
-          svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (x) {{ x.classList.remove('commit-xref'); x.style.fill=''; }});
-          b.dispatchEvent(new MouseEvent('mouseenter'));
+          pinned = b;
+          unpaint();
+          paint(b);
         }});
         strip.appendChild(dot);
       }});
@@ -1563,6 +1551,8 @@ def render_page(
         clearLens();
         openLens(b.getAttribute('data-lane'), parseFloat(b.getAttribute('cx')), b.getAttribute('data-sha'));
       }});
+      b.addEventListener('mouseenter', function () {{ if (!pinned) paint(b); }});
+      b.addEventListener('mouseleave', function () {{ if (!pinned) unpaint(); }});
     }});
     console.log('[lens] wired: ' + bubbleEls.length + ' bubbles, ' + hits.length + ' lane-hits');
   }})();
