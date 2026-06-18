@@ -1201,6 +1201,7 @@ def render_page(
       color: var(--accent);
     }}
     .atom {{
+      position: relative;
       margin: 0.5rem -1rem 2rem;
       padding: 0.5rem 1rem;
       background: var(--paper);
@@ -1308,8 +1309,10 @@ def render_page(
     }}
     .lane-hit {{ cursor: zoom-in; }}
     .commit-lens {{
-      font-family: var(--serif); border: 1px solid var(--rule); background: var(--paper-alt);
-      margin: 0.5rem 0 1.5rem; padding: 0.6rem 0.9rem;
+      position: absolute; z-index: 20; left: 2.5rem; right: 2.5rem;
+      font-family: var(--serif); border: 1px solid var(--rule); background: var(--paper);
+      box-shadow: 0 6px 18px rgba(31, 26, 20, 0.28);
+      padding: 0.6rem 0.9rem;
     }}
     .commit-lens-head {{ display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; }}
     .commit-lens-close {{ cursor: pointer; color: var(--accent); border: none; background: none; font-size: 1rem; }}
@@ -1532,8 +1535,14 @@ def render_page(
         strip.appendChild(dot);
       }});
       lensEl.appendChild(head); lensEl.appendChild(strip); lensEl.appendChild(detail);
-      var atom = svg.closest('.atom') || svg.parentNode;
-      atom.parentNode.insertBefore(lensEl, atom.nextSibling);
+      var atomEl = svg.closest('.atom') || svg.parentNode;
+      atomEl.appendChild(lensEl);
+      var laneHit = svg.querySelector('.lane-hit[data-lane="' + lane + '"]');
+      if (laneHit) {{
+        var aRect = atomEl.getBoundingClientRect();
+        var rRect = laneHit.getBoundingClientRect();
+        lensEl.style.top = (rRect.bottom - aRect.top) + 'px';
+      }}
       if (preselectSha) {{
         var presel = strip.querySelector('.commit-lens-dot[data-sha="' + preselectSha + '"]');
         if (presel) presel.click();

@@ -95,3 +95,10 @@ def test_lens_script_handles_bubble_click_and_story_link():
     html = _page()
     assert "data-story-url" in html  # script references the story link attr
     assert "commit-bubble" in html
+
+
+def test_lens_css_is_absolute_overlay():
+    html = _page()
+    # the lens overlays (absolute), and the atom is a positioning context
+    assert "position: absolute" in html
+    assert ".atom {" in html and "position: relative" in html
