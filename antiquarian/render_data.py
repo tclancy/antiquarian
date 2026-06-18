@@ -22,6 +22,7 @@ from pathlib import Path
 
 from antiquarian.cache import cache_path_for_repo
 from antiquarian.identity import parse_mailmap
+from antiquarian.prs import detect_github_repo
 from antiquarian.todos import extract_todos
 
 # Arc-name → short tag. Stories use freeform names like "Arc 1 — Strategy
@@ -38,6 +39,18 @@ _DATE_RANGE_RE = re.compile(r"\(([^)]+\d{4}[^)]*)\)")
 # every short vacation.
 _TIMELINE_GAP_THRESHOLD_DAYS = 365
 
+DETAIL_WORD_CAP = 50
+
+
+def _truncate_words(text: str | None, n: int = DETAIL_WORD_CAP) -> str:
+    """Collapse whitespace and keep at most ``n`` words, adding an ellipsis if cut."""
+    words = (text or "").split()
+    if not words:
+        return ""
+    if len(words) <= n:
+        return " ".join(words)
+    return " ".join(words[:n]) + "…"
+
 
 @dataclass
 class _Commit:
@@ -51,8 +64,10 @@ class _Commit:
     additions: int
     deletions: int
     files_changed_count: int
+    message: str = ""
     files_changed: list[str] = field(default_factory=list)
     pr_number: int | None = None
+    pr_body: str | None = None
     arcs: list[str] = field(default_factory=list)
 
 
@@ -123,8 +138,10 @@ def _load_commits(
                 additions=row["additions"],
                 deletions=row["deletions"],
                 files_changed_count=len(files_changed),
+                message=msg,
                 files_changed=files_changed,
                 pr_number=row["pr_number"],
+                pr_body=row["pr_body"],
             )
         )
     # Deduplicate (the same SHA may appear under different file_path rows).
@@ -234,7 +251,7 @@ def _load_todos(repo_path: Path, files: list[str]) -> list[_Todo]:
     return todos
 
 
-def _build_swimlane(commits: list[_Commit]) -> dict:
+def _build_swimlane(commits: list[_Commit], base_url: str | None = None) -> dict:
     """One row per author, time on X, marks per commit.
 
     Author email is sticky — same person can show two different display names
@@ -258,6 +275,14 @@ def _build_swimlane(commits: list[_Commit]) -> dict:
                 "subject": c.message_subject,
                 "arcs": c.arcs,
                 "files_changed": c.files_changed,
+                "detail_source": "pr" if c.pr_body else "commit",
+                "detail": _truncate_words(c.pr_body or c.message or c.message_subject),
+                "pr_url": (
+                    f"{base_url}/pull/{c.pr_number}"
+                    if base_url and c.pr_number
+                    else None
+                ),
+                "commit_url": (f"{base_url}/commit/{c.sha}" if base_url else None),
             }
         )
     lanes = []
@@ -618,6 +643,9 @@ def extract_render_data(repo_path: Path) -> dict:
     _attach_arcs_to_commits(commits, arcs)
     todos = _load_todos(repo_path, files)
 
+    gh = detect_github_repo(repo_path)
+    base_url = f"https://github.com/{gh[0]}/{gh[1]}" if gh else None
+
     return {
         "project": repo_path.name,
         "repo_path": str(repo_path),
@@ -627,7 +655,7 @@ def extract_render_data(repo_path: Path) -> dict:
         "commits": [asdict(c) for c in commits],
         "todos": [asdict(t) for t in todos],
         "arcs": [asdict(a) for a in arcs],
-        "swimlane": _build_swimlane(commits),
+        "swimlane": _build_swimlane(commits, base_url),
         "arc_band": _build_arc_band(arcs, commits),
         "timeline": _build_timeline(commits),
         "file_lifespans": _build_per_file_lifespans(cache_db, files, commits),
