@@ -185,3 +185,57 @@ def test_dim_the_rest_css_present():
     }
     html = render_broadsheet(data)
     assert "xref-dim" in html  # the hover-dim class is wired in CSS + script
+
+
+def test_decisive_bubble_carries_arc_color():
+    lookup = {
+        "transport-api": {
+            "name": "Transport API rework",
+            "story_href": None,
+            "color": "#ff2d95",
+        }
+    }
+    out = render_swimlane(
+        {"lanes": [_lane([_commit("abc123", ["transport-api"])])]},
+        _TIMELINE,
+        [],
+        arc_lookup=lookup,
+    )
+    assert 'data-arc-color="#ff2d95"' in out
+
+
+def test_non_decisive_bubble_has_no_arc_color():
+    out = render_swimlane({"lanes": [_lane([_commit("abc123", [])])]}, _TIMELINE, [])
+    assert "data-arc-color=" not in out
+
+
+def test_broadsheet_assigns_neon_colors_and_grow_css():
+    from antiquarian.render import render_broadsheet, NEON_ARC_COLORS
+
+    data = {
+        "project": "p",
+        "timeline": _TIMELINE,
+        "todos": [],
+        "swimlane": {"lanes": [_lane([_commit("abc123", ["a-slug"])])]},
+        "arc_band": {
+            "arc_count": 1,
+            "arcs": [
+                {
+                    "arc_number": 1,
+                    "name": "An arc",
+                    "slug": "a-slug",
+                    "file_path": "a.py",
+                    "commits": [],
+                    "commit_count": 0,
+                    "datable_count": 0,
+                }
+            ],
+        },
+        "file_lifespans": [],
+        "files": [],
+        "generated_at": "2026-06-18",
+    }
+    html = render_broadsheet(data)
+    assert f'data-arc-color="{NEON_ARC_COLORS[0]}"' in html  # first arc → first neon
+    assert "transform: scale" in html  # the grow
+    assert "data-arc-color" in html  # the script reads it (see below)
