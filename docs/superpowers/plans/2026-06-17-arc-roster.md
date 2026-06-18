@@ -305,7 +305,11 @@ Add the import near the other local imports (top of file, after the `file_tree` 
 from antiquarian.arc_roster import datable_count, group_arcs_by_file
 ```
 
+Also **delete the now-dead `ARC_COLORS` constant** (defined ~line 69) — it was used only inside the retired `render_arc_band`, so after this task it is unused module code a reviewer would reject. Remove its definition.
+
 - [ ] **Step 5: Rewire the atom**
+
+> **CRITICAL — atom key vs data key.** Rename ONLY the *atom* key. `render_data.py` produces a `data["arc_band"]` dict, and `tests/test_render.py` (~lines 155, 333, 622) assert that **data** key. Leave `data["arc_band"]`, the `_build_arc_band` function, and the render-data `"arc_band"` output **unchanged**. Do **NOT** global-replace `arc_band`→`arc_roster`; touch only the two spots below.
 
 In `_ATOM_ORDER` change `"arc_band"` to `"arc_roster"`:
 
@@ -313,7 +317,7 @@ In `_ATOM_ORDER` change `"arc_band"` to `"arc_roster"`:
 _ATOM_ORDER = ("swimlane", "arc_roster", "todo_strip")
 ```
 
-In `render_broadsheet`'s `atoms` dict, replace the `"arc_band": render_arc_band(...)` entry with:
+In `render_broadsheet`'s `atoms` dict, replace the `"arc_band": render_arc_band(...)` entry with (note the value still reads from `data["arc_band"]`):
 
 ```python
         "arc_roster": render_arc_roster(data["arc_band"], timeline),
@@ -365,6 +369,10 @@ def test_arc_band_includes_datable_count(seeded_repo):
         assert "datable_count" in arc
         assert arc["datable_count"] == sum(1 for c in arc["commits"] if c["timestamp"])
 ```
+
+- [ ] **Step 8b: Fix the stale atom-name comment in test_render.py**
+
+`tests/test_render.py` has `test_broadsheet_skips_empty_todo_chapter_mark` (~lines 488–501) whose comment/docstring says the surviving atoms are "swimlane + arc_band". The `chapter_count == 2` assertion still holds (an empty roster returns a truthy `_empty_atom` just like the old band), but the comment is now stale — update the wording `arc_band` → `arc_roster` in that test's comment/docstring. Do not change the assertion.
 
 - [ ] **Step 9: Run new tests, then the full suite**
 
