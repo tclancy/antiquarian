@@ -21,7 +21,9 @@ Two facts from the review make this concrete on httpx:
 Promote the **swimlane to the single canonical time spine** (it already plots real commits at real positions). Express arcs two ways, both commit-mediated and honest:
 
 1. **Overlay on the commits already plotted.** Arc-named ("decisive") commits keep their pigment outline (already implemented). Hovering an arc (in the roster) or a decisive commit **brackets the *set* of that arc's commits** through their real x-positions — a connector across real points, never a filled band. Arc-named commits authored by *tail* contributors (whose lane is folded) get a slim **"decisive commits" rail** beneath the axis, so no named commit is invisible.
-2. **A first-class arc roster** beneath the spine: the current folded `<details>` arc list, **promoted to a file-grouped table** (reuse `file_tree.py` grouping), print-expanded and searchable. Each row: `Arc N · name · file · k named commits`, with an **undatable badge** when no commit resolves — so the 96 dropped arcs become a labeled lossy state, not a silent drop (#133).
+2. **A first-class arc roster** beneath the spine: the current folded `<details>` arc list, **promoted to a file-grouped table** (reuse `file_tree.py` grouping), print-expanded and searchable. Each row: `Arc N · name · file · k named commits · [tiny sparkline]`, with an **undatable badge** when no commit resolves — so the 96 dropped arcs become a labeled lossy state, not a silent drop (#133).
+
+   **Per-arc sparkline (Tom's call, 2026-06-17):** each datable row carries a *small* sparkline — the arc's commit timestamps plotted as **dots on a mini absolute axis** (shared full-span scale), **never a connecting span/band**. This gives an honest at-a-glance "when" per arc without re-introducing the lie. Undatable rows show the badge in place of the sparkline. Watch the ink budget — keep it genuinely tiny (a thin strip), since over-decorating each of ~200 rows is the clutter we're escaping.
 
 ### The honest interaction (replaces PR2's band-highlight)
 
