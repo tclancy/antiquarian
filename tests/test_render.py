@@ -259,6 +259,19 @@ class TestRenderBroadsheet:
         html = render_broadsheet(data)
         assert "font-size: 120%" in html
 
+    def test_no_standalone_arc_roster_section(self, seeded_repo):
+        """The arc roster atom is retired — arcs live on story pages + swimlane overlay.
+
+        The arc *data* still flows to the swimlane overlay (data-arcs= attribute),
+        but there is no standalone roster section rendered in the broadsheet.
+        """
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert 'class="arc-roster"' not in html
+        assert "The named arcs of the work" not in html
+        # arc data still flows to the swimlane overlay
+        assert "data-arcs=" in html
+
 
 class TestRenderCli:
     def test_render_command_writes_file(self, seeded_repo: Path):
@@ -494,19 +507,21 @@ class TestEmptyTodoSections:
         assert "margins" in out.lower()
 
     def test_broadsheet_skips_empty_todo_chapter_mark(self, seeded_repo: Path):
-        """No TODOs in the codebase → no 'i' chapter mark for the empty atom.
+        """No TODOs in the codebase → no chapter mark for the empty todo_strip atom.
 
-        The remaining atoms renumber: swimlane becomes 'i', arc_roster 'ii'.
+        Atom order is (swimlane, todo_strip). With no TODOs, todo_strip renders
+        empty and is skipped, leaving only swimlane with chapter mark 'i'.
+        If TODOs were present, both swimlane ('i') and todo_strip ('ii') would appear.
         """
         data = extract_render_data(seeded_repo)
         # Seeded repo has no TODOs (no live HEAD files with TODO comments)
         assert data["todos"] == []
         html = render_broadsheet(data)
-        # The HTML still has chapter marks for the present atoms
+        # The HTML still has a chapter mark for the swimlane
         assert 'class="chapter-mark">i</div>' in html
-        # But only as many as there are non-empty atoms
+        # But only as many as there are non-empty atoms (swimlane only, todo_strip skipped)
         chapter_count = html.count('class="chapter-mark"')
-        assert chapter_count == 2  # swimlane + arc_roster, not 3
+        assert chapter_count == 1  # swimlane only; todo_strip empty → skipped
 
     def test_strip_empty_todo_section_removes_canonical_placeholder(self):
         md = (
