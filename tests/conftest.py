@@ -1,4 +1,4 @@
-"""Pytest configuration — register Hypothesis profiles.
+"""Pytest configuration — register Hypothesis profiles and shared fixtures.
 
 Profiles:
 - ``dev`` — 30 examples per test. Default for fast local iteration.
@@ -17,7 +17,10 @@ Pick one of three ways:
 from __future__ import annotations
 
 import os
+import sqlite3
+from pathlib import Path
 
+import pytest
 from hypothesis import HealthCheck
 from hypothesis import settings as hypothesis_settings
 
@@ -32,3 +35,97 @@ hypothesis_settings.register_profile(
 )
 
 hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
+
+
+def _seed_cache_db(repo: Path) -> None:
+    """Seed a minimal .antiquarian/cache.db with two commits over two files.
+
+    Schema matches antiquarian/cache.py — kept inline because we want the
+    tests to break loudly when the schema drifts, not to silently re-create it.
+    """
+    db_path = repo / ".antiquarian" / "cache.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE commit_features (
+            sha TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            id TEXT NOT NULL,
+            jj_change_id TEXT,
+            jj_commit_id TEXT,
+            author TEXT NOT NULL,
+            author_email TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            hour_of_day INTEGER NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            files_changed TEXT NOT NULL,
+            additions INTEGER NOT NULL,
+            deletions INTEGER NOT NULL,
+            pr_number INTEGER,
+            pr_body TEXT,
+            is_revert INTEGER NOT NULL DEFAULT 0,
+            commit_binge_window_minutes INTEGER,
+            PRIMARY KEY (sha, file_path)
+        );
+        """
+    )
+    rows = [
+        (
+            "aaa11111",
+            "src/a.py",
+            "id-a",
+            None,
+            None,
+            "Alice",
+            "alice@example.com",
+            "2026-01-15T10:30:00+00:00",
+            10,
+            3,
+            "Initial commit",
+            '["src/a.py"]',
+            12,
+            0,
+            None,
+            None,
+        ),
+        (
+            "bbb22222",
+            "src/b.py",
+            "id-b",
+            None,
+            None,
+            "Bob",
+            "bob@example.com",
+            "2026-03-20T14:15:00+00:00",
+            14,
+            4,
+            "Second commit",
+            '["src/b.py", "src/a.py"]',
+            30,
+            5,
+            None,
+            None,
+        ),
+    ]
+    conn.executemany(
+        "INSERT INTO commit_features ("
+        "sha, file_path, id, jj_change_id, jj_commit_id, author, author_email,"
+        " timestamp, hour_of_day, day_of_week, message, files_changed,"
+        " additions, deletions, pr_number, pr_body"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture
+def seeded_repo(tmp_path: Path) -> Path:
+    """A tmp git-like dir with a populated .antiquarian/cache.db."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1\n")
+    (tmp_path / "src" / "b.py").write_text("y = 2\n")
+    _seed_cache_db(tmp_path)
+    return tmp_path

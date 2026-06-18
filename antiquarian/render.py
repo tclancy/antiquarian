@@ -569,7 +569,7 @@ def render_swimlane(
 
     ``arc_lookup`` maps arc slug → ``{"name": str, "story_href": str | None}``;
     optional. When provided, decisive commits gain an arc-name tooltip suffix
-    and, if a story page exists, are wrapped in a ``<a href="…">`` link.
+    and, if a story page exists, carry a ``data-story-url`` attribute on the bubble.
     """
     lanes = swimlane["lanes"]
     if not lanes:
@@ -654,6 +654,11 @@ def render_swimlane(
             f'<line x1="{margin_left}" y1="{y}" x2="{margin_left + chart_w}" y2="{y}" '
             f'stroke="{PALETTE["rule_dim"]}" stroke-width="0.6"/>'
         )
+        parts.append(
+            f'<rect class="lane-hit" data-lane="{i}" data-author="{_xml_escape(lane["author"])}" '
+            f'x="{margin_left}" y="{margin_top + i * row_h}" width="{chart_w}" height="{row_h}" '
+            f'fill="transparent" pointer-events="all"/>'
+        )
         lookup = arc_lookup or {}
         for c in lane["commits"]:
             cx = margin_left + axis["scale"](_iso_to_dt(c["timestamp"]))
@@ -686,15 +691,17 @@ def render_swimlane(
                 None,
             )
             arc_color_attr = f' data-arc-color="{arc_color}"' if arc_color else ""
-            circle = (
-                f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}"'
-                f"{arc_color_attr} "
-                f'cx="{cx}" cy="{y}" r="{r}" fill="{fill}" '
-                f'stroke="{stroke}" stroke-width="0.8" opacity="0.88">'
-                f"<title>{_xml_escape(title)}</title>"
-                "</circle>"
+            lens_attrs = (
+                f' data-sha="{_xml_escape(c["short_sha"])}" data-lane="{i}" '
+                f'data-date="{_xml_escape(c.get("date") or "")}" '
+                f'data-detail="{_xml_escape(c.get("detail") or "")}" '
+                f'data-detail-source="{_xml_escape(c.get("detail_source") or "commit")}"'
             )
-            href = next(
+            if c.get("pr_url"):
+                lens_attrs += f' data-pr-url="{_xml_escape(c["pr_url"])}"'
+            if c.get("commit_url"):
+                lens_attrs += f' data-commit-url="{_xml_escape(c["commit_url"])}"'
+            story_href = next(
                 (
                     lookup[s]["story_href"]
                     for s in slugs
@@ -702,9 +709,18 @@ def render_swimlane(
                 ),
                 None,
             )
-            parts.append(
-                f'<a href="{_xml_escape(href)}">{circle}</a>' if href else circle
+            if story_href:
+                lens_attrs += f' data-story-url="{_xml_escape(story_href)}"'
+            circle = (
+                f'<circle class="commit-bubble" data-arcs="{_xml_escape(" ".join(slugs))}"'
+                f"{arc_color_attr}"
+                f"{lens_attrs} "
+                f'cx="{cx}" cy="{y}" r="{r}" fill="{fill}" '
+                f'stroke="{stroke}" stroke-width="0.8" opacity="0.88">'
+                f"<title>{_xml_escape(title)}</title>"
+                "</circle>"
             )
+            parts.append(circle)
 
     axis_y = chart_bottom + 10
     parts.append(_render_absolute_axis(timeline, margin_left, chart_w, axis_y))
@@ -1185,6 +1201,7 @@ def render_page(
       color: var(--accent);
     }}
     .atom {{
+      position: relative;
       margin: 0.5rem -1rem 2rem;
       padding: 0.5rem 1rem;
       background: var(--paper);
@@ -1290,6 +1307,24 @@ def render_page(
       transform-box: fill-box;
       transform-origin: center;
     }}
+    .lane-hit {{ cursor: zoom-in; }}
+    .commit-lens {{
+      position: absolute; z-index: 20; left: 2.5rem; right: 2.5rem;
+      font-family: var(--serif); border: 1px solid var(--rule); background: var(--paper);
+      box-shadow: 0 6px 18px rgba(31, 26, 20, 0.28);
+      padding: 0.6rem 0.9rem;
+    }}
+    .commit-lens-head {{ display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; }}
+    .commit-lens-close {{ cursor: pointer; color: var(--accent); border: none; background: none; font-size: 1rem; }}
+    .commit-lens-strip {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0; }}
+    .commit-lens-dot {{
+      cursor: pointer; border: 1px solid var(--rule); background: var(--paper);
+      border-radius: 4px; padding: 0.15rem 0.4rem; font-size: 0.75rem; font-variant-numeric: tabular-nums;
+    }}
+    .commit-lens-dot.sel {{ background: var(--accent); color: var(--paper); }}
+    .commit-lens-detail {{ font-size: 0.85rem; min-height: 2.5em; border-top: 1px solid var(--rule); padding-top: 0.4rem; }}
+    .commit-lens-detail a {{ color: var(--accent); margin-right: 0.8rem; }}
+    @media print {{ .commit-lens, .lane-hit {{ display: none !important; }} }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1381,33 +1416,144 @@ def render_page(
   }})();
   </script>
   <script>
-  /* Honest co-arc commit highlight (#119): hover a decisive commit, light the
-     OTHER real commits in the same arc(s). Joins on arc slug; marks only, no
-     band. Pure enhancement — no JS, no highlight; nothing else depends on it. */
+  /* Commit lens (#143): click a contributor's row region -> pinned zoom inset
+     of that contributor's nearby commits; pick one -> detail panel (PR body or
+     commit message, +links) and light its arc footprint above. Clicking a
+     bubble directly opens the lens pre-selected on that commit. Pure screen
+     enhancement; print/no-JS show only the static swimlane. */
   (function () {{
-    var bubbles = Array.prototype.slice.call(document.querySelectorAll('.commit-bubble'));
-    if (!bubbles.length) return;
+    var LENS_N = 12;
+    var first = document.querySelector('.commit-bubble');
+    if (!first) return;
+    var svg = first.closest('svg');
+    var hits = svg.querySelectorAll('.lane-hit');
+    if (!hits.length) return;
+    var lensEl = null;
+    var pinned = null;
     function slugsOf(b) {{
       var v = (b.getAttribute('data-arcs') || '').trim();
       return v ? v.split(/\\s+/) : [];
     }}
-    bubbles.forEach(function (b) {{
-      var slugs = slugsOf(b);
-      if (!slugs.length) return;
-      b.addEventListener('mouseenter', function () {{
-        var color = b.getAttribute('data-arc-color');
-        var svg = b.closest('svg'); if (svg) svg.classList.add('xref-dim');
-        bubbles.forEach(function (o) {{
-          var os = slugsOf(o);
-          for (var i = 0; i < slugs.length; i++) {{
-            if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); if (color) o.style.fill = color; break; }}
-          }}
+    function paint(b) {{
+      var slugs = slugsOf(b); if (!slugs.length) return;
+      var color = b.getAttribute('data-arc-color');
+      svg.classList.add('xref-dim');
+      svg.querySelectorAll('.commit-bubble').forEach(function (o) {{
+        var os = slugsOf(o);
+        for (var i = 0; i < slugs.length; i++) {{
+          if (os.indexOf(slugs[i]) !== -1) {{ o.classList.add('commit-xref'); if (color) o.style.fill = color; break; }}
+        }}
+      }});
+    }}
+    function unpaint() {{
+      svg.classList.remove('xref-dim');
+      svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (o) {{ o.classList.remove('commit-xref'); o.style.fill = ''; }});
+    }}
+
+    function svgX(evt) {{
+      var pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+      return pt.matrixTransform(svg.getScreenCTM().inverse()).x;
+    }}
+    function clearLens() {{
+      if (lensEl) {{ lensEl.remove(); lensEl = null; }}
+      pinned = null;
+      unpaint();
+    }}
+    function pick(bubbles, x) {{
+      return bubbles
+        .map(function (b) {{ return {{ b: b, d: Math.abs(parseFloat(b.getAttribute('cx')) - x) }}; }})
+        .sort(function (p, q) {{ return p.d - q.d; }})
+        .slice(0, LENS_N).map(function (p) {{ return p.b; }})
+        .sort(function (a, c) {{ return parseFloat(a.getAttribute('cx')) - parseFloat(c.getAttribute('cx')); }});
+    }}
+    /* DOM nodes, NOT innerHTML — detail text comes from untrusted third-party
+       commit/PR bodies; getAttribute decodes the escaped value, so innerHTML
+       would re-parse it as HTML (DOM-XSS). textContent is safe. */
+    function showDetail(panel, b) {{
+      panel.textContent = '';
+      var lbl = document.createElement('em');
+      lbl.textContent = (b.getAttribute('data-detail-source') === 'pr' ? 'PR' : 'commit') + ':';
+      panel.appendChild(lbl);
+      panel.appendChild(document.createTextNode(' ' + (b.getAttribute('data-detail') || '(no message)')));
+      panel.appendChild(document.createElement('br'));
+      [['data-pr-url', 'view PR →'], ['data-commit-url', 'view commit →']].forEach(function (pair) {{
+        var u = b.getAttribute(pair[0]);
+        if (!u) return;
+        var a = document.createElement('a');
+        a.href = u; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = pair[1];
+        panel.appendChild(a);
+      }});
+      var story = b.getAttribute('data-story-url');
+      if (story) {{
+        var sa = document.createElement('a');
+        sa.href = story; sa.textContent = "read the file's story →";
+        panel.appendChild(sa);
+      }}
+    }}
+    function openLens(lane, centerX, preselectSha) {{
+      var bubbles = Array.prototype.slice.call(svg.querySelectorAll('.commit-bubble[data-lane="' + lane + '"]'));
+      if (!bubbles.length) return;
+      var author = svg.querySelector('.lane-hit[data-lane="' + lane + '"]').getAttribute('data-author');
+      var chosen = pick(bubbles, centerX);
+      lensEl = document.createElement('div');
+      lensEl.className = 'commit-lens';
+      var head = document.createElement('div'); head.className = 'commit-lens-head';
+      var label = document.createElement('span');  // textContent — author is untrusted
+      label.textContent = (author || '') + ' · ' + chosen.length + ' commits';
+      head.appendChild(label);
+      var close = document.createElement('button'); close.className = 'commit-lens-close'; close.textContent = '×';
+      close.addEventListener('click', clearLens); head.appendChild(close);
+      var strip = document.createElement('div'); strip.className = 'commit-lens-strip';
+      var detail = document.createElement('div'); detail.className = 'commit-lens-detail';
+      detail.textContent = 'Select a commit to see its story.';
+      var dateCounts = {{}};
+      chosen.forEach(function (b) {{ var d = b.getAttribute('data-date') || ''; dateCounts[d] = (dateCounts[d] || 0) + 1; }});
+      chosen.forEach(function (b) {{
+        var dot = document.createElement('button'); dot.className = 'commit-lens-dot';
+        var date = b.getAttribute('data-date') || '';
+        var sha = b.getAttribute('data-sha') || '';
+        dot.textContent = (dateCounts[date] > 1) ? (date + ' · ' + sha.slice(0, 7)) : (date || sha);
+        dot.dataset.sha = sha;
+        dot.addEventListener('click', function () {{
+          strip.querySelectorAll('.sel').forEach(function (s) {{ s.classList.remove('sel'); }});
+          dot.classList.add('sel');
+          showDetail(detail, b);
+          pinned = b;
+          unpaint();
+          paint(b);
         }});
+        strip.appendChild(dot);
       }});
-      b.addEventListener('mouseleave', function () {{
-        var svg = b.closest('svg'); if (svg) svg.classList.remove('xref-dim');
-        bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); o.style.fill = ''; }});
+      lensEl.appendChild(head); lensEl.appendChild(strip); lensEl.appendChild(detail);
+      var atomEl = svg.closest('.atom') || svg.parentNode;
+      atomEl.appendChild(lensEl);
+      var laneHit = svg.querySelector('.lane-hit[data-lane="' + lane + '"]');
+      if (laneHit) {{
+        var aRect = atomEl.getBoundingClientRect();
+        var rRect = laneHit.getBoundingClientRect();
+        lensEl.style.top = (rRect.bottom - aRect.top) + 'px';
+      }}
+      if (preselectSha) {{
+        var presel = strip.querySelector('.commit-lens-dot[data-sha="' + preselectSha + '"]');
+        if (presel) presel.click();
+      }}
+    }}
+    hits.forEach(function (hit) {{
+      hit.addEventListener('click', function (evt) {{
+        clearLens();
+        openLens(hit.getAttribute('data-lane'), svgX(evt), null);
       }});
+    }});
+    var bubbleEls = svg.querySelectorAll('.commit-bubble');
+    bubbleEls.forEach(function (b) {{
+      b.addEventListener('click', function (evt) {{
+        evt.stopPropagation();
+        clearLens();
+        openLens(b.getAttribute('data-lane'), parseFloat(b.getAttribute('cx')), b.getAttribute('data-sha'));
+      }});
+      b.addEventListener('mouseenter', function () {{ if (!pinned) paint(b); }});
+      b.addEventListener('mouseleave', function () {{ if (!pinned) unpaint(); }});
     }});
   }})();
   </script>

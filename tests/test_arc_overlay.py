@@ -69,11 +69,12 @@ def test_decisive_bubble_names_arc_in_tooltip_when_lookup_given():
     assert "Transport API rework" in out
 
 
-def test_decisive_bubble_links_to_story_when_page_exists():
+def test_decisive_bubble_carries_story_url_not_link():
     lookup = {
         "transport-api": {
             "name": "Transport API rework",
             "story_href": "stories/httpx___client.py.html",
+            "color": "#ff2d95",
         }
     }
     out = render_swimlane(
@@ -82,8 +83,8 @@ def test_decisive_bubble_links_to_story_when_page_exists():
         [],
         arc_lookup=lookup,
     )
-    assert '<a href="stories/httpx___client.py.html">' in out
-    assert "</a>" in out
+    assert 'data-story-url="stories/httpx___client.py.html"' in out
+    assert "<a href=" not in out  # no navigate-away wrap on the bubble
 
 
 def test_no_lookup_keeps_data_arcs_but_no_link():
