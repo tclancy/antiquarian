@@ -506,7 +506,7 @@ class TestEmptyTodoSections:
         assert 'class="chapter-mark">i</div>' in html
         # But only as many as there are non-empty atoms
         chapter_count = html.count('class="chapter-mark"')
-        assert chapter_count == 2  # swimlane + arc_band, not 3
+        assert chapter_count == 2  # swimlane + arc_roster, not 3
 
     def test_strip_empty_todo_section_removes_canonical_placeholder(self):
         md = (

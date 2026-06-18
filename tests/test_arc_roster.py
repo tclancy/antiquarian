@@ -28,6 +28,7 @@ def _arc(number, file_path, *, datable=1, undatable=0):
         "name": f"Arc {number}",
         "file_path": file_path,
         "commits": commits,
+        "commit_count": datable + undatable,
     }
 
 

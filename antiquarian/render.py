@@ -755,7 +755,7 @@ def _render_arc_row(arc: dict, timeline: dict) -> str:
     label = (
         f'<span class="arc-num">Arc {arc["arc_number"]}</span> '
         f'<span class="arc-name">{name}</span> '
-        f'<span class="count">{arc.get("commit_count", len(arc["commits"]))} commit(s)</span>'
+        f'<span class="count">{arc["commit_count"]} commit(s)</span>'
     )
     if n_datable == 0:
         marker = (
