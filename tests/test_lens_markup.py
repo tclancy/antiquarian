@@ -1,7 +1,8 @@
 """Lens markup: per-bubble data-* + lane-hit click targets (#143)."""
 
 from __future__ import annotations
-from antiquarian.render import render_swimlane
+
+from antiquarian.render import render_broadsheet, render_swimlane
 
 _TL = {
     "full_span": {
@@ -63,3 +64,28 @@ def test_lane_hit_rect_present():
 def test_no_pr_url_attr_when_absent():
     out = render_swimlane({"lanes": [_lane([_commit(pr_url=None)])]}, _TL, [])
     assert "data-pr-url=" not in out
+
+
+def _page():
+    return render_broadsheet(
+        {
+            "project": "p",
+            "timeline": _TL,
+            "todos": [],
+            "swimlane": {"lanes": [_lane([_commit()])]},
+            "arc_band": {"arc_count": 0, "arcs": []},
+            "file_lifespans": [],
+            "files": [],
+            "generated_at": "2026-06-18",
+        }
+    )
+
+
+def test_lens_css_and_script_present():
+    html = _page()
+    assert ".commit-lens" in html
+    assert "lane-hit" in html
+    assert "commit-lens" in html  # script references the container class
+    # print hides the lens
+    print_block = html[html.index("@media print") :]
+    assert "commit-lens" in print_block

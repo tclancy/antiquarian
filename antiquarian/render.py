@@ -1306,6 +1306,22 @@ def render_page(
       transform-box: fill-box;
       transform-origin: center;
     }}
+    .lane-hit {{ cursor: zoom-in; }}
+    .commit-lens {{
+      font-family: var(--serif); border: 1px solid var(--rule); background: var(--paper-alt);
+      margin: 0.5rem 0 1.5rem; padding: 0.6rem 0.9rem;
+    }}
+    .commit-lens-head {{ display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; }}
+    .commit-lens-close {{ cursor: pointer; color: var(--accent); border: none; background: none; font-size: 1rem; }}
+    .commit-lens-strip {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0; }}
+    .commit-lens-dot {{
+      cursor: pointer; border: 1px solid var(--rule); background: var(--paper);
+      border-radius: 4px; padding: 0.15rem 0.4rem; font-size: 0.75rem; font-variant-numeric: tabular-nums;
+    }}
+    .commit-lens-dot.sel {{ background: var(--accent); color: var(--paper); }}
+    .commit-lens-detail {{ font-size: 0.85rem; min-height: 2.5em; border-top: 1px solid var(--rule); padding-top: 0.4rem; }}
+    .commit-lens-detail a {{ color: var(--accent); margin-right: 0.8rem; }}
+    @media print {{ .commit-lens, .lane-hit {{ display: none !important; }} }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1423,6 +1439,94 @@ def render_page(
       b.addEventListener('mouseleave', function () {{
         var svg = b.closest('svg'); if (svg) svg.classList.remove('xref-dim');
         bubbles.forEach(function (o) {{ o.classList.remove('commit-xref'); o.style.fill = ''; }});
+      }});
+    }});
+  }})();
+  </script>
+  <script>
+  /* Commit lens (#143): click a contributor's row region -> pinned zoom inset
+     of that contributor's nearby commits; pick one -> detail panel (PR body or
+     commit message, +links) and light its arc footprint above. Pure screen
+     enhancement; print/no-JS show only the static swimlane. */
+  (function () {{
+    var LENS_N = 12;
+    var first = document.querySelector('.commit-bubble');
+    if (!first) return;
+    var svg = first.closest('svg');
+    var hits = svg.querySelectorAll('.lane-hit');
+    if (!hits.length) return;
+    var lensEl = null;
+
+    function svgX(evt) {{
+      var pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+      return pt.matrixTransform(svg.getScreenCTM().inverse()).x;
+    }}
+    function clearLens() {{
+      if (lensEl) {{ lensEl.remove(); lensEl = null; }}
+      svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (b) {{
+        b.classList.remove('commit-xref'); b.style.fill = '';
+      }});
+      svg.classList.remove('xref-dim');
+    }}
+    function pick(bubbles, x) {{
+      return bubbles
+        .map(function (b) {{ return {{ b: b, d: Math.abs(parseFloat(b.getAttribute('cx')) - x) }}; }})
+        .sort(function (p, q) {{ return p.d - q.d; }})
+        .slice(0, LENS_N).map(function (p) {{ return p.b; }})
+        .sort(function (a, c) {{ return parseFloat(a.getAttribute('cx')) - parseFloat(c.getAttribute('cx')); }});
+    }}
+    /* DOM nodes, NOT innerHTML — detail text comes from untrusted third-party
+       commit/PR bodies; getAttribute decodes the escaped value, so innerHTML
+       would re-parse it as HTML (DOM-XSS). textContent is safe. */
+    function showDetail(panel, b) {{
+      panel.textContent = '';
+      var lbl = document.createElement('em');
+      lbl.textContent = (b.getAttribute('data-detail-source') === 'pr' ? 'PR' : 'commit') + ':';
+      panel.appendChild(lbl);
+      panel.appendChild(document.createTextNode(' ' + (b.getAttribute('data-detail') || '(no message)')));
+      panel.appendChild(document.createElement('br'));
+      [['data-pr-url', 'view PR →'], ['data-commit-url', 'view commit →']].forEach(function (pair) {{
+        var u = b.getAttribute(pair[0]);
+        if (!u) return;
+        var a = document.createElement('a');
+        a.href = u; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = pair[1];
+        panel.appendChild(a);
+      }});
+    }}
+    hits.forEach(function (hit) {{
+      hit.addEventListener('click', function (evt) {{
+        clearLens();
+        var lane = hit.getAttribute('data-lane');
+        var bubbles = Array.prototype.slice.call(svg.querySelectorAll('.commit-bubble[data-lane="' + lane + '"]'));
+        if (!bubbles.length) return;
+        var chosen = pick(bubbles, svgX(evt));
+        lensEl = document.createElement('div');
+        lensEl.className = 'commit-lens';
+        var head = document.createElement('div'); head.className = 'commit-lens-head';
+        var label = document.createElement('span');  // textContent — author is untrusted
+        label.textContent = (hit.getAttribute('data-author') || '') + ' · ' + chosen.length + ' commits';
+        head.appendChild(label);
+        var close = document.createElement('button'); close.className = 'commit-lens-close'; close.textContent = '×';
+        close.addEventListener('click', clearLens); head.appendChild(close);
+        var strip = document.createElement('div'); strip.className = 'commit-lens-strip';
+        var detail = document.createElement('div'); detail.className = 'commit-lens-detail';
+        detail.textContent = 'Select a commit to see its story.';
+        chosen.forEach(function (b) {{
+          var dot = document.createElement('button'); dot.className = 'commit-lens-dot';
+          dot.textContent = b.getAttribute('data-date') || b.getAttribute('data-sha');
+          dot.addEventListener('click', function () {{
+            strip.querySelectorAll('.sel').forEach(function (s) {{ s.classList.remove('sel'); }});
+            dot.classList.add('sel');
+            showDetail(detail, b);
+            svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (x) {{ x.classList.remove('commit-xref'); x.style.fill=''; }});
+            b.dispatchEvent(new MouseEvent('mouseenter'));
+          }});
+          strip.appendChild(dot);
+        }});
+        lensEl.appendChild(head); lensEl.appendChild(strip); lensEl.appendChild(detail);
+        var atom = svg.closest('.atom') || svg.parentNode;
+        atom.parentNode.insertBefore(lensEl, atom.nextSibling);
       }});
     }});
   }})();
