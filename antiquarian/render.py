@@ -1503,6 +1503,7 @@ def render_page(
     }}
     function openLens(lane, centerX, preselectSha) {{
       var bubbles = Array.prototype.slice.call(svg.querySelectorAll('.commit-bubble[data-lane="' + lane + '"]'));
+      console.log('[lens] openLens lane=' + lane + ' center=' + Math.round(centerX) + ' preselect=' + preselectSha + ' bubbles=' + bubbles.length);
       if (!bubbles.length) return;
       var author = svg.querySelector('.lane-hit[data-lane="' + lane + '"]').getAttribute('data-author');
       var chosen = pick(bubbles, centerX);
@@ -1540,17 +1541,21 @@ def render_page(
     }}
     hits.forEach(function (hit) {{
       hit.addEventListener('click', function (evt) {{
+        console.log('[lens] lane-hit click lane=' + hit.getAttribute('data-lane'));
         clearLens();
         openLens(hit.getAttribute('data-lane'), svgX(evt), null);
       }});
     }});
-    svg.querySelectorAll('.commit-bubble').forEach(function (b) {{
+    var bubbleEls = svg.querySelectorAll('.commit-bubble');
+    bubbleEls.forEach(function (b) {{
       b.addEventListener('click', function (evt) {{
+        console.log('[lens] bubble click sha=' + b.getAttribute('data-sha') + ' lane=' + b.getAttribute('data-lane'));
         evt.stopPropagation();
         clearLens();
         openLens(b.getAttribute('data-lane'), parseFloat(b.getAttribute('cx')), b.getAttribute('data-sha'));
       }});
     }});
+    console.log('[lens] wired: ' + bubbleEls.length + ' bubbles, ' + hits.length + ' lane-hits');
   }})();
   </script>
 </body>
