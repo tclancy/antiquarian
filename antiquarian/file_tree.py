@@ -8,6 +8,7 @@ renderer (``render.py``) walks the structure this module computes and emits
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
 #: Default information budget: rows a reader takes in at a glance (principle 1).
@@ -117,3 +118,51 @@ def _node_depths(nodes: list[Node], depth: int):
         yield depth
         if isinstance(node, FolderNode):
             yield from _node_depths(node.children, depth + 1)
+
+
+def siblings_for_file(file_path: str, all_files: list[str]) -> list[str]:
+    """Return the files that share the same directory as ``file_path``.
+
+    "Same directory" means the parent path component(s) match exactly:
+    ``src/a.py`` and ``src/b.py`` are siblings; ``src/api/views.py`` is not.
+    Root-level files (no ``/`` in the path) are siblings of each other.
+
+    ``file_path`` does not need to appear in ``all_files`` — callers that
+    exclude the current file from their survey list still get the correct
+    sibling set.  Returns a sorted list.
+    """
+    parts = file_path.split("/")
+    parent_dir = "/".join(parts[:-1])  # "" for root-level files
+
+    result = []
+    for fp in all_files:
+        fp_parts = fp.split("/")
+        fp_parent = "/".join(fp_parts[:-1])
+        if fp_parent == parent_dir:
+            result.append(fp)
+    return sorted(result)
+
+
+def window_siblings(siblings: list[str], current: str, window: int = 5) -> list[str]:
+    """Return at most ``2 * window + 1`` siblings centered on ``current``.
+
+    ``siblings`` is a sorted list (as returned by :func:`siblings_for_file`).
+    A directory with 80+ files makes a full-list sidebar unusable; this trims
+    to the ``window`` files alphabetically directly above and below
+    ``current``, keeping the local neighborhood without overwhelming the page.
+
+    When ``current`` is in ``siblings``, the window centers on its index.
+    When ``current`` is *not* in ``siblings`` (e.g. it was excluded from the
+    survey but its directory has other surveyed files), the window centers
+    on the alphabetical insertion point — the same set of files a reader
+    expects to see "near" the current one.
+    """
+    if not siblings:
+        return []
+    if current in siblings:
+        center = siblings.index(current)
+    else:
+        center = bisect_left(siblings, current)
+    start = max(0, center - window)
+    end = min(len(siblings), center + window + 1)
+    return siblings[start:end]

@@ -43,7 +43,14 @@ from antiquarian.file_tree import (
     FolderNode,
     build_file_tree,
     choose_open_depth,
+    siblings_for_file,
+    window_siblings,
 )
+
+#: Per-side cap on the sidebar's sibling list (#138). At most this many files
+#: above the current and this many below — a directory with 80+ files would
+#: otherwise produce an unusable sidebar.
+STORY_SIDEBAR_WINDOW = 5
 
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
@@ -1666,6 +1673,95 @@ _EMPTY_TODO_SECTION_RE = re.compile(
 )
 
 
+def _story_html_filename_for(file_path: str) -> str:
+    """Relative HTML filename for a story page, as used in sibling links.
+
+    Story pages are all written flat into the same ``stories/`` directory,
+    so a sibling link is just ``<safe_stem>.html`` with no path prefix.
+    ``src/a.py`` → ``src__a.py.html``.
+    """
+    return file_path.replace("/", "__") + ".html"
+
+
+def _render_story_sidebar(
+    file_path: str,
+    all_files: list[str],
+    files_with_stories: set[str],
+) -> str:
+    """Render the directory-navigation sidebar for a story page (#138).
+
+    Shows a single parent-nav link above a list of sibling files in the same
+    directory.  The parent-nav reads ``../`` when the current file is in a
+    subdirectory and ``← broadsheet`` when it is at the project root — both
+    target the broadsheet's ``index.html``, the only navigation surface a
+    story page can return to.
+
+    Siblings with a rendered story page are linked; the rest appear as grey
+    ``nav-unlinked`` text. The current file carries ``nav-current``. The
+    list is capped at :data:`STORY_SIDEBAR_WINDOW` siblings either side of
+    the current file (default ±5) so a directory of 80+ files still produces
+    a glanceable sidebar.
+
+    Returns ``""`` when there is nothing useful to navigate — specifically
+    when ``all_files`` is empty or the current file has no siblings in the
+    surveyed set (a sidebar with only its own entry would be redundant).
+    """
+    siblings = siblings_for_file(file_path, all_files)
+    # No siblings at all — or file not even surveyed and no other files in its dir.
+    if not siblings:
+        return ""
+    # A sidebar whose only entry is the current file adds nothing.
+    others = [s for s in siblings if s != file_path]
+    if not others:
+        return ""
+
+    # --- Parent-nav header ---
+    # The broadsheet sits one level above the stories/ directory regardless
+    # of the file's depth, so the target URL is always ../index.html — the
+    # label changes to fit the file's context (#138).
+    in_subdir = "/" in file_path
+    parent_label = "../" if in_subdir else "← broadsheet"
+    parent_class = "nav-parent" + (
+        " nav-parent--subdir" if in_subdir else " nav-parent--root"
+    )
+    parent_nav = (
+        f'<div class="{parent_class}"><a href="../index.html">{parent_label}</a></div>'
+    )
+
+    # --- Windowed sibling list — at most ±5 around the current file (#138) ---
+    visible = window_siblings(siblings, file_path, window=STORY_SIDEBAR_WINDOW)
+    items: list[str] = []
+    for sibling_path in visible:
+        basename = sibling_path.split("/")[-1]
+        md_name = sibling_path.replace("/", "__") + ".md"
+        html_file = _story_html_filename_for(sibling_path)
+        if sibling_path == file_path:
+            items.append(
+                f'<li class="nav-file nav-current">'
+                f"<code>{_xml_escape(basename)}</code></li>"
+            )
+        elif md_name in files_with_stories:
+            items.append(
+                f'<li class="nav-file">'
+                f'<a href="{_xml_escape(html_file)}">'
+                f"<code>{_xml_escape(basename)}</code></a></li>"
+            )
+        else:
+            items.append(
+                f'<li class="nav-file nav-unlinked">'
+                f"<code>{_xml_escape(basename)}</code></li>"
+            )
+
+    sibling_list = f'<ul class="nav-siblings">{"".join(items)}</ul>'
+
+    return (
+        f'    <nav class="story-nav" aria-label="Directory navigation">\n'
+        f"      {parent_nav}\n"
+        f"      {sibling_list}\n"
+        f"    </nav>"
+    )
+
+
 def _strip_empty_todo_section(story_md: str) -> str:
     """Drop the canonical 'no admissions' TODO section from a cached story.
 
@@ -1681,6 +1777,9 @@ def render_story_page(
     file_path: str,
     story_md: str,
     project: str,
+    *,
+    all_files: list[str] | None = None,
+    files_with_stories: set[str] | None = None,
 ) -> str:
     """Render a single per-file story.md as a styled HTML page (#46).
 
@@ -1694,6 +1793,12 @@ def render_story_page(
     about, but the conversion still escapes special characters in plain
     text. Removes the antiquarian cache-digest comment that ``pipeline.py``
     prepends to persisted stories before rendering.
+
+    Pass ``all_files`` (the full surveyed file list) and
+    ``files_with_stories`` (the set of story ``.md`` filenames that have
+    been rendered) to enable the directory-navigation sidebar (#138).
+    When either is absent or the current file has no siblings, the sidebar
+    is omitted and the page falls back to its original single-column layout.
 
     The CSS and HTML scaffolding live as separate files under
     ``antiquarian/templates/`` so editing them gets IDE syntax highlighting
@@ -1718,12 +1823,18 @@ def render_story_page(
     )
     project_escaped = _xml_escape(project)
     file_path_escaped = _xml_escape(file_path)
+    sidebar = _render_story_sidebar(
+        file_path,
+        all_files or [],
+        files_with_stories or set(),
+    )
     return _STORY_PAGE_HTML.substitute(
         title=f"{project_escaped} — {file_path_escaped}",
         css=_STORY_PAGE_CSS,
         project=project_escaped,
         file_path=file_path_escaped,
         body_html=body_html,
+        sidebar=sidebar,
     )
 
 
