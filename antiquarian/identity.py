@@ -1,4 +1,4 @@
-"""``.mailmap`` identity canonicalization (#118).
+"""``.mailmap`` identity canonicalization (#118) + same-email coalescing (#147).
 
 Contributors commit under several emails over a project's life (personal ↔
 work, GitHub's ``noreply`` privacy address, employer changes — see #120), and
@@ -6,10 +6,18 @@ the swimlane groups lanes by email, so one person fragments into several
 lanes. Git's canonical answer is the repository ``.mailmap`` file; when a repo
 ships one we honour it before building the atoms.
 
-This is deliberately conservative and non-destructive: it only rewrites
-identities the maintainers themselves declared equivalent in ``.mailmap``. It
-never guesses (display-name equality is unsafe — see #120's ``Joe`` ×3); softer
-heuristics are the separate, display-only concern of #127.
+When a repo ships no ``.mailmap`` (the common case), one signal still survives
+as a "hard" identity merge: two distinct display names committing under the
+same email almost always means one human whose IDE / spouse / laptop slipped a
+different ``user.name`` on a few commits. ``coalesce_by_email`` collapses those
+to the most-frequent name. Same-email equality was Tom's #120 design call as a
+hard signal; softer heuristics (likely-duplicates across different emails)
+stay the separate, display-only concern of #127.
+
+This is deliberately conservative and non-destructive: ``.mailmap`` only
+rewrites identities the maintainers themselves declared equivalent, and
+``coalesce_by_email`` only collapses names within an already-shared email.
+Neither guesses across distinct emails.
 
 Format reference: gitmailmap(5). Four line forms are supported::
 
@@ -22,6 +30,8 @@ Format reference: gitmailmap(5). Four line forms are supported::
 from __future__ import annotations
 
 import re
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 # `[name] <email>` twice; the second pair (the commit-side match) is optional.
@@ -61,6 +71,31 @@ class Mailmap:
         if chosen is None:
             return name, email
         return (chosen.proper_name or name, chosen.proper_email)
+
+
+def coalesce_by_email(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Map each lower-cased email to the canonical display name for that email (#147).
+
+    For every email under which more than one distinct display name committed,
+    pick the most-frequent name as canonical; lexicographically smallest name
+    for a deterministic tie-break. Emails with only one observed name don't
+    appear in the mapping — callers treat a missing key as "pass through".
+
+    Same-email equality is the only hard signal we use here (see #120). The
+    canonical can be applied alongside ``.mailmap`` resolution, or on its own
+    when a repo ships no mailmap.
+    """
+    names_for_email: dict[str, Counter[str]] = defaultdict(Counter)
+    for name, email in pairs:
+        names_for_email[email.lower()][name] += 1
+    # Highest count wins; ties go to the lexicographically smallest name so the
+    # result is independent of input order. `min` with (negated-count, name)
+    # gives both at once.
+    return {
+        email: min(counter.items(), key=lambda nc: (-nc[1], nc[0]))[0]
+        for email, counter in names_for_email.items()
+        if len(counter) > 1
+    }
 
 
 def parse_mailmap(text: str) -> Mailmap:

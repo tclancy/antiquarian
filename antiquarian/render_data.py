@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from antiquarian.cache import cache_path_for_repo
-from antiquarian.identity import parse_mailmap
+from antiquarian.identity import coalesce_by_email, parse_mailmap
 from antiquarian.prs import detect_github_repo
 from antiquarian.todos import extract_todos
 
@@ -228,6 +228,22 @@ def _apply_mailmap(commits: list[_Commit], repo_path: Path) -> None:
     mailmap = parse_mailmap(mailmap_path.read_text(encoding="utf-8", errors="replace"))
     for c in commits:
         c.author, c.author_email = mailmap.resolve(c.author, c.author_email)
+
+
+def _apply_email_coalesce(commits: list[_Commit]) -> None:
+    """Collapse multiple display names sharing the same email to a canonical name (#147).
+
+    Runs after ``.mailmap`` so any maintainer-declared rewrites land first, then
+    same-email coalescing handles what mailmap didn't (the common case — Tom's
+    laptop committing under his spouse's ``user.name`` for a stretch).
+    """
+    mapping = coalesce_by_email((c.author, c.author_email) for c in commits)
+    if not mapping:
+        return
+    for c in commits:
+        canonical = mapping.get(c.author_email.lower())
+        if canonical is not None:
+            c.author = canonical
 
 
 def _load_todos(repo_path: Path, files: list[str]) -> list[_Todo]:
@@ -637,6 +653,7 @@ def extract_render_data(repo_path: Path) -> dict:
 
     commits = _load_commits(cache_db, file_filter=files or None)
     _apply_mailmap(commits, repo_path)
+    _apply_email_coalesce(commits)
     arcs: list[_Arc] = []
     for story_path in stories:
         arcs.extend(_parse_arcs(story_path))

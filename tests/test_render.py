@@ -34,6 +34,7 @@ from antiquarian.render import (
     render_todo_strip,
 )
 from antiquarian.render_data import (
+    _apply_email_coalesce,
     _build_swimlane,
     _Commit,
     _extract_story_descriptions,
@@ -989,6 +990,56 @@ class TestSwimlaneRanking:
         ]
         lanes = _build_swimlane(commits)["lanes"]
         assert [lane["email"] for lane in lanes] == ["high@x", "low@x"]
+
+
+class TestSwimlaneEmailCoalesce:
+    """Same-email shows one canonical name in the lane (#147 — Tom / Kim Christie).
+
+    Without the coalescer, ``_build_swimlane`` keys by email (correctly merges)
+    but ``bucket["author"]`` overwrites on every commit — so whichever name
+    arrives last wins, non-deterministically. The httpx repo has 50 Tom + 1
+    Kim on the same email; users see the 51-commit lane labelled "Kim" when
+    cache order happens that way. Coalescer pins it to the most-frequent name.
+    """
+
+    def test_majority_name_wins_after_coalesce(self):
+        # 3 Tom + 1 Kim on the same email. Whichever order they enter,
+        # the lane label must be "Tom Christie".
+        commits = [
+            _commit("tom@x", "2026-01-01T00:00:00+00:00", author="Tom Christie"),
+            _commit("tom@x", "2026-01-02T00:00:00+00:00", author="Kim Christie"),
+            _commit("tom@x", "2026-01-03T00:00:00+00:00", author="Tom Christie"),
+            _commit("tom@x", "2026-01-04T00:00:00+00:00", author="Tom Christie"),
+        ]
+        _apply_email_coalesce(commits)
+        lanes = _build_swimlane(commits)["lanes"]
+        assert len(lanes) == 1
+        assert lanes[0]["author"] == "Tom Christie"
+        assert lanes[0]["commit_count"] == 4
+
+    def test_distinct_emails_untouched(self):
+        # No false-merge across different emails.
+        commits = [
+            _commit("ada@x", "2026-01-01T00:00:00+00:00", author="Ada"),
+            _commit("bea@x", "2026-01-02T00:00:00+00:00", author="Bea"),
+        ]
+        _apply_email_coalesce(commits)
+        lanes = sorted(_build_swimlane(commits)["lanes"], key=lambda ln: ln["email"])
+        assert [(lane["email"], lane["author"]) for lane in lanes] == [
+            ("ada@x", "Ada"),
+            ("bea@x", "Bea"),
+        ]
+
+    def test_email_case_difference_collapses_to_one_name(self):
+        # GitHub-style noreply uppercasing shouldn't fragment the lane name.
+        commits = [
+            _commit("Tom@X", "2026-01-01T00:00:00+00:00", author="Tom"),
+            _commit("Tom@X", "2026-01-02T00:00:00+00:00", author="Tom"),
+            _commit("tom@x", "2026-01-03T00:00:00+00:00", author="Kim"),
+        ]
+        _apply_email_coalesce(commits)
+        # Each commit's author is now the canonical "Tom".
+        assert {c.author for c in commits} == {"Tom"}
 
 
 class TestSwimlaneLongTailCollapse:
