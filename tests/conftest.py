@@ -37,6 +37,26 @@ hypothesis_settings.register_profile(
 hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
+@pytest.fixture(autouse=True)
+def _scrub_git_env(monkeypatch):
+    """Scrub ``GIT_*`` env vars before every test.
+
+    When pytest runs under a git hook (the ``pre-push`` pre-commit stage),
+    git exports ``GIT_DIR`` / ``GIT_INDEX_FILE`` / etc. into the hook's
+    environment. Tests that ``subprocess.run(["git", ...])`` inside an
+    isolated tmp-repo fixture would otherwise see those vars and operate
+    against the *host* repo (or fail outright with "fatal: not a git
+    repository" once the hook's worktree is gone).
+
+    Scrubbing every variable starting with ``GIT_`` keeps both `git` and
+    `jj` (which respects the same envs) honest to the per-test working
+    directory. Pure-Python tests are unaffected.
+    """
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key, raising=False)
+
+
 def _seed_cache_db(repo: Path) -> None:
     """Seed a minimal .antiquarian/cache.db with two commits over two files.
 
