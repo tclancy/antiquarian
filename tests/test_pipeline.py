@@ -17,10 +17,26 @@ import pytest
 from antiquarian.cache import open_cache
 from antiquarian.models import CommitFeatures
 from antiquarian.pipeline import (
+    _MiningResult,
     _stub_narrative_for_skipped,
     generate_codebase_survey,
     generate_file_story,
 )
+
+
+def _make_mining(repo_path: Path, file_path: str) -> _MiningResult:
+    """Stand-in mining output for tests that mock the narrative phase only."""
+    return _MiningResult(
+        file_path=file_path,
+        repo_name=repo_path.name,
+        commits=[],
+        todos=[],
+        story_file=repo_path
+        / ".antiquarian"
+        / "stories"
+        / (file_path.replace("/", "__") + ".md"),
+        digest="deadbeef",
+    )
 
 
 def _fake_commit(sha: str, file_path: str = "src/thing.py") -> CommitFeatures:
@@ -262,12 +278,14 @@ class TestGenerateSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_happy_path(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
@@ -276,7 +294,8 @@ class TestGenerateSurvey:
         story_path = tmp_repo / ".antiquarian" / "stories" / "a.md"
         story_path.parent.mkdir(parents=True, exist_ok=True)
         story_path.write_text("Story A")
-        mock_story.return_value = ("Story A", story_path)
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("Story A", story_path)
 
         (tmp_repo / "a.py").write_text("x = 1\n")
         (tmp_repo / "b.py").write_text("y = 2\n")
@@ -286,7 +305,9 @@ class TestGenerateSurvey:
         assert "Synthesis" in survey
         assert survey_path.exists()
         assert survey_path.parent.name == "surveys"
-        assert mock_story.call_count == 2
+        # Mining runs once per file, serially, BEFORE any narrative call (#104).
+        assert mock_mine_phase.call_count == 2
+        assert mock_synth_phase.call_count == 2
         mock_survey.assert_called_once()
         stories_arg = mock_survey.call_args.kwargs["file_stories"]
         assert len(stories_arg) == 2
@@ -299,12 +320,14 @@ class TestGenerateSurvey:
     @patch("antiquarian.pipeline.build_regions", return_value=[])
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_pass_3_signals_passed_to_synthesizer(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_regions: MagicMock,
@@ -314,7 +337,8 @@ class TestGenerateSurvey:
     ):
         """#54 — survey synth receives regions and co_changes from pipeline."""
         story_path = tmp_repo / "x.md"
-        mock_story.return_value = ("story", story_path)
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("story", story_path)
         (tmp_repo / "a.py").write_text("")
 
         generate_codebase_survey(tmp_repo, ["a.py"])
@@ -332,24 +356,78 @@ class TestGenerateSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_log_callback_invoked(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
-        mock_story.return_value = ("s", tmp_repo / "x.md")
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("s", tmp_repo / "x.md")
         (tmp_repo / "a.py").write_text("")
 
         messages: list[str] = []
         generate_codebase_survey(tmp_repo, ["a.py"], log=messages.append)
 
         assert any("[survey]" in m for m in messages)
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch("antiquarian.pipeline.build_author_baselines", return_value={})
+    @patch("antiquarian.pipeline.historical_shas", return_value=[])
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_mining_runs_before_any_narrative_call(
+        self,
+        mock_gh: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
+        mock_shas: MagicMock,
+        mock_baselines: MagicMock,
+        mock_survey: MagicMock,
+        tmp_repo: Path,
+    ):
+        """#104 — every PyDriller mine must complete before any narrative starts.
+
+        Otherwise concurrent PyDriller opens on the same clone race on
+        ``.git/config.lock``. This is the core invariant of the fix.
+        """
+        events: list[tuple[str, str]] = []
+        events_lock = threading.Lock()
+
+        def record_mine(repo: Path, fp: str, **_: object) -> _MiningResult:
+            with events_lock:
+                events.append(("mine", fp))
+            return _make_mining(repo, fp)
+
+        def record_synth(mining: _MiningResult, **_: object) -> tuple[str, Path]:
+            with events_lock:
+                events.append(("synth", mining.file_path))
+            return "story", mining.story_file
+
+        mock_mine_phase.side_effect = record_mine
+        mock_synth_phase.side_effect = record_synth
+        for name in ("a.py", "b.py", "c.py"):
+            (tmp_repo / name).write_text("")
+
+        generate_codebase_survey(tmp_repo, ["a.py", "b.py", "c.py"], max_workers=4)
+
+        # All mines come before any synth.
+        last_mine_idx = max(i for i, e in enumerate(events) if e[0] == "mine")
+        first_synth_idx = min(i for i, e in enumerate(events) if e[0] == "synth")
+        assert last_mine_idx < first_synth_idx, (
+            f"narrative phase started before mining finished: {events}"
+        )
 
 
 class TestSurveySkipAndStub:
@@ -361,12 +439,14 @@ class TestSurveySkipAndStub:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_timeout_is_stubbed_not_raised(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
@@ -376,10 +456,14 @@ class TestSurveySkipAndStub:
         ok_path = tmp_repo / ".antiquarian" / "stories" / "ok.md"
         ok_path.parent.mkdir(parents=True, exist_ok=True)
         ok_path.write_text("Story OK")
-        mock_story.side_effect = [
-            ("## Origin\nReal story.", ok_path),
-            subprocess.TimeoutExpired(cmd=["claude"], timeout=300),
-        ]
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+
+        def synth_per_file(mining: _MiningResult, **_: object) -> tuple[str, Path]:
+            if mining.file_path == "b.py":
+                raise subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+            return "## Origin\nReal story.", ok_path
+
+        mock_synth_phase.side_effect = synth_per_file
         (tmp_repo / "a.py").write_text("")
         (tmp_repo / "b.py").write_text("")
 
@@ -400,19 +484,22 @@ class TestSurveySkipAndStub:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_called_process_error_is_stubbed(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
         err = subprocess.CalledProcessError(returncode=2, cmd=["claude"], stderr="bad")
-        mock_story.side_effect = err
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.side_effect = err
         (tmp_repo / "a.py").write_text("")
 
         survey, _ = generate_codebase_survey(tmp_repo, ["a.py"])
@@ -430,18 +517,23 @@ class TestSurveySkipAndStub:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_skip_is_logged_for_visibility(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
-        mock_story.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.side_effect = subprocess.TimeoutExpired(
+            cmd=["claude"], timeout=300
+        )
         (tmp_repo / "stuck.py").write_text("")
 
         messages: list[str] = []
@@ -458,25 +550,30 @@ class TestSurveySkipAndStub:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_stub_not_persisted_to_disk(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
         """A subsequent run should retry — don't cache the failure to disk."""
-        mock_story.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.side_effect = subprocess.TimeoutExpired(
+            cmd=["claude"], timeout=300
+        )
         (tmp_repo / "stuck.py").write_text("")
 
         generate_codebase_survey(tmp_repo, ["stuck.py"])
 
         stories_dir = tmp_repo / ".antiquarian" / "stories"
-        # The mocked generate_file_story never wrote a story; nothing should
+        # The mocked synthesis never wrote a story; nothing should
         # have been persisted on its behalf by the survey path either.
         if stories_dir.exists():
             for child in stories_dir.iterdir():
@@ -523,7 +620,7 @@ class TestCacheWALMode:
 
 
 class TestParallelSurvey:
-    """Issue #80 — parallel per-file story generation with ThreadPoolExecutor."""
+    """Issue #80 + #104 — narrative phase runs in parallel; mining stays serial."""
 
     @patch(
         "antiquarian.pipeline.synthesize_survey",
@@ -531,12 +628,14 @@ class TestParallelSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_parallel_produces_same_result_as_sequential(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
@@ -545,14 +644,15 @@ class TestParallelSurvey:
         story_path = tmp_repo / ".antiquarian" / "stories" / "a.md"
         story_path.parent.mkdir(parents=True, exist_ok=True)
         story_path.write_text("Story")
-        mock_story.return_value = ("Story", story_path)
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("Story", story_path)
         (tmp_repo / "a.py").write_text("")
         (tmp_repo / "b.py").write_text("")
 
         survey, _ = generate_codebase_survey(tmp_repo, ["a.py", "b.py"], max_workers=2)
 
         assert "Parallel done." in survey
-        assert mock_story.call_count == 2
+        assert mock_synth_phase.call_count == 2
         stories_arg = mock_survey.call_args.kwargs["file_stories"]
         assert len(stories_arg) == 2
 
@@ -562,12 +662,14 @@ class TestParallelSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_parallel_preserves_file_ordering(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
@@ -576,10 +678,12 @@ class TestParallelSurvey:
         """File stories must appear in the original file_paths order for deterministic synthesis."""
         stories = {"a.py": "Story A", "b.py": "Story B", "c.py": "Story C"}
 
-        def mock_gen(repo_path, fp, **kwargs):
-            return stories[fp], tmp_repo / f"{fp}.md"
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
 
-        mock_story.side_effect = mock_gen
+        def synth_per_file(mining: _MiningResult, **_: object) -> tuple[str, Path]:
+            return stories[mining.file_path], tmp_repo / f"{mining.file_path}.md"
+
+        mock_synth_phase.side_effect = synth_per_file
         for f in stories:
             (tmp_repo / f).write_text("")
 
@@ -595,12 +699,14 @@ class TestParallelSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_parallel_timeout_stubbed_like_sequential(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
@@ -610,12 +716,14 @@ class TestParallelSurvey:
         ok_path.parent.mkdir(parents=True, exist_ok=True)
         ok_path.write_text("OK")
 
-        def mock_gen(repo_path, fp, **kwargs):
-            if fp == "b.py":
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+
+        def synth_per_file(mining: _MiningResult, **_: object) -> tuple[str, Path]:
+            if mining.file_path == "b.py":
                 raise subprocess.TimeoutExpired(cmd=["claude"], timeout=300)
             return "## Origin\nReal.", ok_path
 
-        mock_story.side_effect = mock_gen
+        mock_synth_phase.side_effect = synth_per_file
         (tmp_repo / "a.py").write_text("")
         (tmp_repo / "b.py").write_text("")
 
@@ -632,19 +740,22 @@ class TestParallelSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_parallel_log_is_threadsafe(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
         """No interleaved log lines — each message is a complete string."""
-        mock_story.return_value = ("s", tmp_repo / "x.md")
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("s", tmp_repo / "x.md")
         for name in ("a.py", "b.py", "c.py", "d.py"):
             (tmp_repo / name).write_text("")
 
@@ -673,19 +784,22 @@ class TestParallelSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
     def test_workers_capped_at_file_count(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
         """max_workers=8 with 2 files should only use 2 threads."""
-        mock_story.return_value = ("s", tmp_repo / "x.md")
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("s", tmp_repo / "x.md")
         (tmp_repo / "a.py").write_text("")
         (tmp_repo / "b.py").write_text("")
 
@@ -704,19 +818,22 @@ class TestParallelSurvey:
     )
     @patch("antiquarian.pipeline.build_author_baselines", return_value={})
     @patch("antiquarian.pipeline.historical_shas", return_value=[])
-    @patch("antiquarian.pipeline.generate_file_story")
+    @patch("antiquarian.pipeline._synthesize_story_from_mining")
+    @patch("antiquarian.pipeline._mine_file_for_story")
     @patch("antiquarian.pipeline.detect_github_repo", return_value=("x", "y"))
     def test_max_workers_1_uses_sequential_path(
         self,
         mock_gh: MagicMock,
-        mock_story: MagicMock,
+        mock_mine_phase: MagicMock,
+        mock_synth_phase: MagicMock,
         mock_shas: MagicMock,
         mock_baselines: MagicMock,
         mock_survey: MagicMock,
         tmp_repo: Path,
     ):
         """max_workers=1 (default) falls back to sequential loop — no worker count in header."""
-        mock_story.return_value = ("s", tmp_repo / "x.md")
+        mock_mine_phase.side_effect = lambda r, fp, **_: _make_mining(r, fp)
+        mock_synth_phase.return_value = ("s", tmp_repo / "x.md")
         (tmp_repo / "a.py").write_text("")
 
         messages: list[str] = []
@@ -726,3 +843,73 @@ class TestParallelSurvey:
         assert len(header) >= 1
         assert "x/y: 1 file(s)" in header[0]
         assert "worker" not in header[0]
+
+
+class TestPyDrillerRaceRegression:
+    """Issue #104 — workers > 1 must not race on .git/config.lock.
+
+    PyDriller's ``Repository`` open writes ``.git/config`` (sets the
+    ``blame.markUnblamableLines`` option) on every instantiation. Two
+    concurrent opens on the same clone collide on ``.git/config.lock``.
+    The fix runs all PyDriller mining serially up front; this test reaches
+    into the real mining path (no ``mine_file_history`` / ``historical_shas``
+    mock) and would fail under the pre-fix concurrent-mining schedule.
+
+    ``synthesize_narrative`` is still mocked so the test stays fast and
+    network-free.
+    """
+
+    @pytest.fixture()
+    def real_git_repo(self, tmp_path: Path) -> Path:
+        """A small real git repo with 4 committed files and history per file."""
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=tmp_path,
+            check=True,
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+        # Two commits per file gives PyDriller real history to walk.
+        names = ("a.py", "b.py", "c.py", "d.py")
+        for n in names:
+            (tmp_path / n).write_text("x = 1\n")
+        subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+        for n in names:
+            (tmp_path / n).write_text("x = 1\ny = 2\n")
+            subprocess.run(["git", "add", n], cwd=tmp_path, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", f"update {n}"],
+                cwd=tmp_path,
+                check=True,
+            )
+        return tmp_path
+
+    @patch(
+        "antiquarian.pipeline.synthesize_survey",
+        return_value="## Files surveyed\nDone.",
+    )
+    @patch(
+        "antiquarian.pipeline.synthesize_narrative",
+        return_value="## Origin\nMocked narrative.",
+    )
+    @patch("antiquarian.pipeline.detect_github_repo", return_value=None)
+    def test_workers_4_against_real_repo_no_lockerror(
+        self,
+        mock_gh: MagicMock,
+        mock_narr: MagicMock,
+        mock_survey: MagicMock,
+        real_git_repo: Path,
+    ):
+        """The exact case from #104 — workers=4 against a real repo, no LockError."""
+        survey, _ = generate_codebase_survey(
+            real_git_repo,
+            ["a.py", "b.py", "c.py", "d.py"],
+            max_workers=4,
+            fetch_prs=False,
+        )
+        assert "Done." in survey
+        # All four narratives synthesized — none stubbed (no claude failure).
+        assert mock_narr.call_count == 4
+        stories_arg = mock_survey.call_args.kwargs["file_stories"]
+        assert {fp for fp, _ in stories_arg} == {"a.py", "b.py", "c.py", "d.py"}
