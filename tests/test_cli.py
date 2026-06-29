@@ -115,7 +115,10 @@ class TestGhpublish:
         """
 
         def side_effect(args: list[str], **kwargs):
-            if args[:3] == ["remote", "get-url", "origin"]:
+            # Serve `remote get-url <any-name>` so tests with `--remote upstream`
+            # (or any other name) get the same URL stub. The ghpublish path
+            # derives owner/repo from this URL directly (#114).
+            if args[:2] == ["remote", "get-url"]:
                 return subprocess.CompletedProcess(
                     args=["git", *args],
                     returncode=0,
@@ -128,11 +131,8 @@ class TestGhpublish:
 
         return side_effect
 
-    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
     @patch("antiquarian.cli._run_git")
-    def test_happy_path_pushes_to_gh_pages(
-        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
-    ):
+    def test_happy_path_pushes_to_gh_pages(self, mock_git: MagicMock, tmp_path: Path):
         self._seed_render(tmp_path)
         mock_git.side_effect = self._fake_git_runner()
 
@@ -151,10 +151,9 @@ class TestGhpublish:
         assert "--force" in push
         assert "HEAD:gh-pages" in push
 
-    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
     @patch("antiquarian.cli._run_git")
     def test_prints_settings_url_and_pages_url(
-        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+        self, mock_git: MagicMock, tmp_path: Path
     ):
         """Tom's ask: 'just provide the info every time with the command.'"""
         self._seed_render(tmp_path)
@@ -165,11 +164,8 @@ class TestGhpublish:
         assert "https://github.com/owner/repo/settings/pages" in result.output
         assert "https://owner.github.io/repo/" in result.output
 
-    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
     @patch("antiquarian.cli._run_git")
-    def test_remote_flag_overrides_origin(
-        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
-    ):
+    def test_remote_flag_overrides_origin(self, mock_git: MagicMock, tmp_path: Path):
         self._seed_render(tmp_path)
         mock_git.side_effect = self._fake_git_runner()
 
@@ -187,6 +183,37 @@ class TestGhpublish:
             None,
         )
         assert first_remote_call == ["remote", "get-url", "upstream"]
+
+    @patch("antiquarian.cli._run_git")
+    def test_remote_to_fork_prints_target_pages_url_not_origin(
+        self, mock_git: MagicMock, tmp_path: Path
+    ):
+        """Issue #114: `--remote <X>` must print X's Pages URL, not origin's.
+
+        When publishing the httpx POC (#95) to `tclancy/httpx` via
+        `--remote httpx`, the push landed on the right repo but the
+        printed hint referenced the working repo's origin
+        (`tclancy/antiquarian`). The hint must follow the push target.
+        """
+        self._seed_render(tmp_path)
+        # The user's --remote points at a fork, not the working repo's origin.
+        mock_git.side_effect = self._fake_git_runner(
+            remote_url="git@github.com:tclancy/httpx.git"
+        )
+
+        result = runner.invoke(
+            app, ["ghpublish", "--repo", str(tmp_path), "--remote", "httpx"]
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        # Hint must reference the push target (httpx), not the working repo.
+        assert "https://tclancy.github.io/httpx/" in result.output
+        assert "https://github.com/tclancy/httpx/settings/pages" in result.output
+        # The old (buggy) behavior printed `tclancy/antiquarian` URLs because
+        # owner/repo was re-detected from origin. Guard against the regression
+        # without false-positiving on the "antiquarian-ghpublish-" tempdir
+        # prefix or the "✓ Pushed broadsheet" success line.
+        assert "tclancy.github.io/antiquarian" not in result.output
+        assert "github.com/tclancy/antiquarian" not in result.output
 
     def _seed_gallery(self, tmp_path: Path) -> Path:
         """Assemble a minimal multi-page gallery tree; return its root."""
@@ -208,14 +235,12 @@ class TestGhpublish:
         assert result.exit_code == 1
         assert "index.html" in result.stderr
 
-    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
     @patch("antiquarian.cli.shutil.copytree")
     @patch("antiquarian.cli._run_git")
     def test_source_publishes_gallery_tree(
         self,
         mock_git: MagicMock,
         mock_copytree: MagicMock,
-        mock_gh: MagicMock,
         tmp_path: Path,
     ):
         """`--source gallery/` publishes the multi-page tree, not the render dir."""
@@ -237,14 +262,12 @@ class TestGhpublish:
         assert "--force" in push and "HEAD:gh-pages" in push
         assert "https://owner.github.io/repo/" in result.output
 
-    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
     @patch("antiquarian.cli.shutil.copytree")
     @patch("antiquarian.cli._run_git")
     def test_source_works_without_render_dir(
         self,
         mock_git: MagicMock,
         mock_copytree: MagicMock,
-        mock_gh: MagicMock,
         tmp_path: Path,
     ):
         """`--source` does not require a `.antiquarian/render/` to exist."""
@@ -258,10 +281,9 @@ class TestGhpublish:
         )
         assert result.exit_code == 0, result.output + result.stderr
 
-    @patch("antiquarian.cli.detect_github_repo", return_value=("owner", "repo"))
     @patch("antiquarian.cli._run_git")
     def test_source_payload_contains_multipage_tree(
-        self, mock_git: MagicMock, mock_gh: MagicMock, tmp_path: Path
+        self, mock_git: MagicMock, tmp_path: Path
     ):
         """Real copytree: the staged payload has the full subtree + `.nojekyll`.
 

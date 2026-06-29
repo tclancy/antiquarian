@@ -1213,10 +1213,15 @@ def render_page(
       padding: 0.5rem 1rem;
       background: var(--paper);
     }}
+    /* Separate the full-width rule from the text measure so the
+       `border-top` spans the page even when the italic fine-print
+       below is held to a readable measure (#131). */
     .colophon {{
       margin-top: 3rem;
       padding-top: 1rem;
       border-top: 1px solid var(--ink);
+    }}
+    .colophon-text {{
       font-family: var(--serif);
       font-style: italic;
       font-size: 0.85rem;
@@ -1370,12 +1375,14 @@ def render_page(
     {_render_atom_sequence(atoms)}
 
     <div class="colophon">
+      <div class="colophon-text">
       Set in the antiquarian broadsheet idiom — data-ink discipline laid out
       in 19th-century print furniture, with woodblock-style hatching for the
       moments when the record went dark. The bracketed window frames, the
       arc bands in their own pigments, the small-caps chapter marks, the
       diagonal hatch of an absent year — every mark accounts for either
       what survived or what didn't.
+      </div>
     </div>
   </div>
   <script>

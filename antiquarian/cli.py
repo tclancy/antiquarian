@@ -27,7 +27,7 @@ from antiquarian.pipeline import (
     generate_file_story,
     render_broadsheet_site,
 )
-from antiquarian.prs import detect_github_repo
+from antiquarian.prs import parse_github_repo_url
 from antiquarian.selection import select_files
 
 app = typer.Typer(
@@ -400,7 +400,12 @@ def _publish_dir_to_gh_pages(
         )
         raise typer.Exit(code=1)
 
-    gh = detect_github_repo(repo_path)
+    # Derive owner/repo from the resolved push target's URL — not from
+    # the repo's origin. When `--remote` points anywhere other than
+    # `origin` (e.g. publishing the httpx POC to `tclancy/httpx`), the
+    # push lands on the right repo but the printed Pages URL hint must
+    # match that target, not the working repo's origin (#114).
+    gh = parse_github_repo_url(remote_url)
     if not gh:
         typer.echo(
             "Warning: couldn't detect GitHub owner/repo — Pages URL hint "
