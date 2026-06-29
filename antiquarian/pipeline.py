@@ -109,12 +109,15 @@ class _MiningResult:
     survey pipeline mine all files serially (PyDriller is not safe for
     concurrent ``Repository`` opens on the same clone — see issue #104) and
     then parallelize the expensive, repo-free ``claude -p`` calls.
+
+    Sequence fields are tuples (not lists) so the dataclass is genuinely
+    immutable — each instance is handed to exactly one synthesis thread.
     """
 
     file_path: str
     repo_name: str
-    commits: list[CommitFeatures]
-    todos: list[TodoAnnotation]
+    commits: tuple[CommitFeatures, ...]
+    todos: tuple[TodoAnnotation, ...]
     story_file: Path
     digest: str
 
@@ -184,8 +187,8 @@ def _mine_file_for_story(
     return _MiningResult(
         file_path=file_path,
         repo_name=repo_name,
-        commits=commits,
-        todos=todos,
+        commits=tuple(commits),
+        todos=tuple(todos),
         story_file=story_file,
         digest=_story_digest(commits, todos),
     )
@@ -375,7 +378,10 @@ def generate_codebase_survey(
 
     # Phase 1: serial git mining for every file. PyDriller's `Repository` open
     # writes `.git/config`, so concurrent opens on the same clone race on
-    # `.git/config.lock` — keep this loop single-threaded (#104).
+    # `.git/config.lock` — keep this loop single-threaded (#104). The plain
+    # `log` (not `safe_log`) is fine here precisely because this loop is
+    # serial; if anyone parallelizes mining later, switch both call sites to
+    # `safe_log`.
     mining_results: list[_MiningResult] = []
     for i, fp in enumerate(file_paths, start=1):
         log(f"[survey] ({i}/{len(file_paths)}) mining {fp}")

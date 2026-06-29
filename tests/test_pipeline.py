@@ -399,34 +399,51 @@ class TestGenerateSurvey:
     ):
         """#104 — every PyDriller mine must complete before any narrative starts.
 
-        Otherwise concurrent PyDriller opens on the same clone race on
-        ``.git/config.lock``. This is the core invariant of the fix.
+        Each synth-side call snapshots the mining-completion count at the
+        instant it starts, then blocks until an "all mines complete" event
+        fires. A hypothetical implementation that submitted to the pool
+        inside the mining loop would either (a) see a partial mine count, or
+        (b) deadlock the pool — both fail the test, not on schedule luck.
         """
-        events: list[tuple[str, str]] = []
-        events_lock = threading.Lock()
+        n_files = 3
+        files = [f"f{i}.py" for i in range(n_files)]
+        mine_completed_count = 0
+        mine_lock = threading.Lock()
+        mine_done = threading.Event()
+        observed_completed_at_synth: list[int] = []
+        observed_lock = threading.Lock()
 
         def record_mine(repo: Path, fp: str, **_: object) -> _MiningResult:
-            with events_lock:
-                events.append(("mine", fp))
+            nonlocal mine_completed_count
+            with mine_lock:
+                mine_completed_count += 1
+                if mine_completed_count == n_files:
+                    mine_done.set()
             return _make_mining(repo, fp)
 
         def record_synth(mining: _MiningResult, **_: object) -> tuple[str, Path]:
-            with events_lock:
-                events.append(("synth", mining.file_path))
+            with mine_lock:
+                snapshot = mine_completed_count
+            with observed_lock:
+                observed_completed_at_synth.append(snapshot)
+            # If anyone submitted to the pool mid-mine, this blocks the
+            # synth thread; the mining loop then can't make progress (it's
+            # the one feeding the pool) → bounded-wait failure.
+            assert mine_done.wait(timeout=5.0), (
+                "synth started before mining finished — pool was fed mid-mine"
+            )
             return "story", mining.story_file
 
         mock_mine_phase.side_effect = record_mine
         mock_synth_phase.side_effect = record_synth
-        for name in ("a.py", "b.py", "c.py"):
+        for name in files:
             (tmp_repo / name).write_text("")
 
-        generate_codebase_survey(tmp_repo, ["a.py", "b.py", "c.py"], max_workers=4)
+        generate_codebase_survey(tmp_repo, files, max_workers=4)
 
-        # All mines come before any synth.
-        last_mine_idx = max(i for i, e in enumerate(events) if e[0] == "mine")
-        first_synth_idx = min(i for i, e in enumerate(events) if e[0] == "synth")
-        assert last_mine_idx < first_synth_idx, (
-            f"narrative phase started before mining finished: {events}"
+        # Every synth observed all mines already complete.
+        assert observed_completed_at_synth == [n_files] * n_files, (
+            f"synth ran before all mines completed: {observed_completed_at_synth}"
         )
 
 
