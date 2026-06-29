@@ -44,7 +44,13 @@ from antiquarian.file_tree import (
     build_file_tree,
     choose_open_depth,
     siblings_for_file,
+    window_siblings,
 )
+
+#: Per-side cap on the sidebar's sibling list (#138). At most this many files
+#: above the current and this many below — a directory with 80+ files would
+#: otherwise produce an unusable sidebar.
+STORY_SIDEBAR_WINDOW = 5
 
 # ----------------------------------------------------------------------------
 # Visual vocabulary — antiquarian broadsheet.
@@ -1684,10 +1690,17 @@ def _render_story_sidebar(
 ) -> str:
     """Render the directory-navigation sidebar for a story page (#138).
 
-    Shows the current directory path as a breadcrumb (broadsheet link at the
-    root), then lists sibling files in the same directory.  Siblings that
-    have a rendered story page are linked; others appear as plain text.
-    The current file is marked with ``nav-current``.
+    Shows a single parent-nav link above a list of sibling files in the same
+    directory.  The parent-nav reads ``../`` when the current file is in a
+    subdirectory and ``← broadsheet`` when it is at the project root — both
+    target the broadsheet's ``index.html``, the only navigation surface a
+    story page can return to.
+
+    Siblings with a rendered story page are linked; the rest appear as grey
+    ``nav-unlinked`` text. The current file carries ``nav-current``. The
+    list is capped at :data:`STORY_SIDEBAR_WINDOW` siblings either side of
+    the current file (default ±5) so a directory of 80+ files still produces
+    a glanceable sidebar.
 
     Returns ``""`` when there is nothing useful to navigate — specifically
     when ``all_files`` is empty or the current file has no siblings in the
@@ -1702,19 +1715,23 @@ def _render_story_sidebar(
     if not others:
         return ""
 
-    # --- Breadcrumb ---
-    parts = file_path.split("/")
-    crumb_parts: list[str] = ['<a href="../index.html">broadsheet</a>']
-    for seg in parts[:-1]:
-        crumb_parts.append(
-            f'<span class="nav-sep">/</span>'
-            f'<span class="nav-dir">{_xml_escape(seg)}</span>'
-        )
-    breadcrumb = f'<div class="nav-breadcrumb">{"".join(crumb_parts)}</div>'
+    # --- Parent-nav header ---
+    # The broadsheet sits one level above the stories/ directory regardless
+    # of the file's depth, so the target URL is always ../index.html — the
+    # label changes to fit the file's context (#138).
+    in_subdir = "/" in file_path
+    parent_label = "../" if in_subdir else "← broadsheet"
+    parent_class = "nav-parent" + (
+        " nav-parent--subdir" if in_subdir else " nav-parent--root"
+    )
+    parent_nav = (
+        f'<div class="{parent_class}"><a href="../index.html">{parent_label}</a></div>'
+    )
 
-    # --- Sibling list (includes current file in context) ---
+    # --- Windowed sibling list — at most ±5 around the current file (#138) ---
+    visible = window_siblings(siblings, file_path, window=STORY_SIDEBAR_WINDOW)
     items: list[str] = []
-    for sibling_path in siblings:
+    for sibling_path in visible:
         basename = sibling_path.split("/")[-1]
         md_name = sibling_path.replace("/", "__") + ".md"
         html_file = _story_html_filename_for(sibling_path)
@@ -1739,7 +1756,7 @@ def _render_story_sidebar(
 
     return (
         f'    <nav class="story-nav" aria-label="Directory navigation">\n'
-        f"      {breadcrumb}\n"
+        f"      {parent_nav}\n"
         f"      {sibling_list}\n"
         f"    </nav>"
     )

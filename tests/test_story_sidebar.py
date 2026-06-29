@@ -13,8 +13,12 @@ issue/PR links are explicitly out of scope and have no tests here.
 from __future__ import annotations
 
 
-from antiquarian.file_tree import siblings_for_file
-from antiquarian.render import _render_story_sidebar, render_story_page
+from antiquarian.file_tree import siblings_for_file, window_siblings
+from antiquarian.render import (
+    STORY_SIDEBAR_WINDOW,
+    _render_story_sidebar,
+    render_story_page,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +69,58 @@ class TestSiblingsForFile:
 
 
 # ---------------------------------------------------------------------------
+# Pure logic: window_siblings — ±N cap centered on current file (#138 item 5)
+# ---------------------------------------------------------------------------
+
+
+class TestWindowSiblings:
+    def test_short_list_returned_unchanged(self):
+        # Fewer items than 2*window+1 — no slicing happens.
+        sibs = ["a.py", "b.py", "c.py"]
+        assert window_siblings(sibs, "b.py", window=5) == sibs
+
+    def test_default_window_is_five_each_side(self):
+        # Build 21 files with current in the dead center at index 10.
+        sibs = [f"f{i:02d}.py" for i in range(21)]
+        result = window_siblings(sibs, "f10.py")
+        # 5 above + current + 5 below = 11 items.
+        assert len(result) == 11
+        assert result[0] == "f05.py"
+        assert result[-1] == "f15.py"
+        assert "f10.py" in result
+
+    def test_current_at_start_clamps_left(self):
+        sibs = [f"f{i:02d}.py" for i in range(21)]
+        result = window_siblings(sibs, "f00.py", window=5)
+        # current + 5 below = 6 items, no items above.
+        assert result == [f"f{i:02d}.py" for i in range(0, 6)]
+
+    def test_current_at_end_clamps_right(self):
+        sibs = [f"f{i:02d}.py" for i in range(21)]
+        result = window_siblings(sibs, "f20.py", window=5)
+        # 5 above + current = 6 items, no items below.
+        assert result == [f"f{i:02d}.py" for i in range(15, 21)]
+
+    def test_current_not_in_list_centers_on_insertion_point(self):
+        # Current was excluded from survey but other siblings exist.
+        # Alphabetical insertion point of "ccc" between "bbb" and "ddd"
+        # is index 2; the window centers there.
+        sibs = ["aaa", "bbb", "ddd", "eee", "fff"]
+        result = window_siblings(sibs, "ccc", window=1)
+        # window=1 → 1 item below the insertion point, plus the next one
+        # alphabetically; with insertion at index 2, window covers [1..3].
+        assert "bbb" in result
+        assert "ddd" in result
+
+    def test_window_zero_returns_only_current(self):
+        sibs = ["a", "b", "c", "d", "e"]
+        assert window_siblings(sibs, "c", window=0) == ["c"]
+
+    def test_empty_siblings_returns_empty(self):
+        assert window_siblings([], "a.py") == []
+
+
+# ---------------------------------------------------------------------------
 # Rendering: _render_story_sidebar
 # ---------------------------------------------------------------------------
 
@@ -93,16 +149,73 @@ class TestRenderStorySidebar:
         assert "b.py" in html
         assert 'href="src__b.py.html"' not in html
 
-    def test_breadcrumb_contains_broadsheet_link(self):
+    def test_unlinked_sibling_marked_grey(self):
+        # Item 4 of the #138 spec: unlinked siblings render in grey via
+        # the .nav-unlinked class — kept (not omitted) so the reader can
+        # see "this file exists but has no story page yet."
+        files = ["src/a.py", "src/b.py"]
+        html = _render_story_sidebar("src/a.py", files, {"src__a.py.md"})
+        assert "nav-unlinked" in html
+
+    def test_parent_nav_links_to_broadsheet(self):
+        # The parent-nav link always targets the broadsheet's index.html —
+        # the only navigation surface a story page can return to.
         files = ["src/a.py", "src/b.py"]
         html = _render_story_sidebar("src/a.py", files, set())
         assert 'href="../index.html"' in html
 
-    def test_breadcrumb_contains_dir_segments(self):
+    def test_subdir_uses_parent_arrow_label(self):
+        # In a subdir, the parent-nav reads "../" — short, unambiguous,
+        # mirrors the shell idiom for "up one". Check the visible label
+        # text rather than the URL (which also contains "../").
         files = ["src/api/views.py", "src/api/urls.py"]
         html = _render_story_sidebar("src/api/views.py", files, set())
-        assert "src" in html
-        assert "api" in html
+        assert ">../</a>" in html
+        # The full folder path must NOT appear as a breadcrumb anymore (#138 item 2).
+        assert "nav-breadcrumb" not in html
+        assert "nav-sep" not in html
+
+    def test_root_uses_back_arrow_label(self):
+        # At the project root, "../" is meaningless — use a back-arrow.
+        # (The string "../" still appears inside the href="../index.html"
+        # URL — that's a path, not the rendered label — so check the
+        # visible link text directly.)
+        files = ["foo.py", "bar.py"]
+        html = _render_story_sidebar("foo.py", files, set())
+        assert ">← broadsheet</a>" in html
+        assert ">../</a>" not in html
+
+    def test_subdir_marker_class_on_parent_nav(self):
+        # CSS hook so we can typeset "../" as code without affecting
+        # the "← broadsheet" form at the root.
+        files = ["src/a.py", "src/b.py"]
+        html = _render_story_sidebar("src/a.py", files, set())
+        assert "nav-parent--subdir" in html
+        files = ["a.py", "b.py"]
+        html = _render_story_sidebar("a.py", files, set())
+        assert "nav-parent--root" in html
+
+    def test_long_sibling_list_is_windowed(self):
+        # 21 siblings, current in the middle → at most ±5 around it (#138 item 5).
+        files = [f"src/f{i:02d}.py" for i in range(21)]
+        html = _render_story_sidebar("src/f10.py", files, set())
+        # Within-window basenames appear; far-out ones do not.
+        assert "f10.py" in html
+        assert "f05.py" in html
+        assert "f15.py" in html
+        # Beyond the ±5 window — must be omitted from the sidebar.
+        assert "f00.py" not in html
+        assert "f20.py" not in html
+
+    def test_windowing_cap_matches_module_constant(self):
+        # If someone bumps STORY_SIDEBAR_WINDOW, the rendered output should
+        # follow without test churn.
+        n = STORY_SIDEBAR_WINDOW * 2 + 5  # comfortably more than the window
+        files = [f"src/f{i:02d}.py" for i in range(n)]
+        html = _render_story_sidebar(f"src/f{n // 2:02d}.py", files, set())
+        # Count rendered <li class="nav-file …"> entries.
+        rendered = html.count('<li class="nav-file')
+        assert rendered == 2 * STORY_SIDEBAR_WINDOW + 1
 
     def test_no_siblings_other_than_self_returns_empty(self):
         # Only the current file in its directory — sidebar adds no navigation value.

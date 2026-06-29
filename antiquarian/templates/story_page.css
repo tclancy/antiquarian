@@ -45,38 +45,42 @@ html, body {
 
 /* -----------------------------------------------------------------------
  * Directory-navigation sidebar (#138)
+ *
+ * Drops below the article's masthead band (dateline + title + sub +
+ * double-rule) so the sidebar's parent-nav doesn't sit beside the
+ * article's "← back to broadsheet" affordance — two nav links in one
+ * corner read as a single muddled cluster (Tom's design Q1).
  * ----------------------------------------------------------------------- */
 .story-nav {
   width: 180px;
   flex-shrink: 0;
-  padding: 2rem 0 4rem 1.5rem;
+  padding: 7rem 0 4rem 1.5rem;
   font-size: 0.78rem;
   line-height: 1.5;
   color: var(--ink-dim);
   border-right: 1px solid var(--rule);
 }
-.nav-breadcrumb {
+.nav-parent {
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.25em;
   font-weight: 500;
   color: var(--ink-dim);
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--rule);
 }
-.nav-breadcrumb a {
+.nav-parent a {
   color: var(--accent);
   text-decoration: none;
   border-bottom: 1px dotted var(--accent);
 }
-.nav-breadcrumb a:hover { border-bottom-style: solid; }
-.nav-sep {
-  margin: 0 0.2em;
-  color: var(--rule);
-}
-.nav-dir {
-  color: var(--ink-dim);
+.nav-parent a:hover { border-bottom-style: solid; }
+.nav-parent--subdir a {
+  /* ../ reads better as code than as small-caps lettering. */
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  letter-spacing: normal;
+  text-transform: none;
 }
 .nav-siblings {
   list-style: none;
@@ -218,6 +222,8 @@ h1.story-title code {
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--rule);
+    /* No "drop lower" alignment when stacked — the article isn't beside
+       it anymore, so flush-top is the right starting position. */
     padding: 1rem 1.5rem;
   }
 }

@@ -3,7 +3,9 @@
 - **Date:** 2026-06-18
 - **Issue:** #138 (sidebar part only — PR4 of the index-as-map sequence)
 - **Branch:** `claude/story-sidebar-138`
-- **Status:** first-cut implementation, awaiting review
+- **Status:** spec answered 2026-06-18 (Tom); implementation flipped from
+  draft to ready 2026-06-28 with all 5 spec items resolved (see "Resolutions"
+  at the bottom of this doc)
 
 ## What was built
 
@@ -17,8 +19,8 @@ index first.
 ```
 <div class="story-layout">          ← new flex wrapper (block fallback without nav)
   <nav class="story-nav">           ← injected only when siblings exist
-    <div class="nav-breadcrumb">    ← broadsheet link + path segments
-    <ul class="nav-siblings">       ← siblings; current file marked nav-current
+    <div class="nav-parent">        ← single parent link: "../" or "← broadsheet"
+    <ul class="nav-siblings">       ← ±5 window centered on current; current is nav-current
   </nav>
   <article class="story">           ← unchanged article
 ```
@@ -98,3 +100,23 @@ because the article's dateline already shows the file path and project name.
    sidebar is on the left — they should not conflict. But if the gutter ever moves
    to the left, the sidebar will need to relocate or merge with it. Worth flagging
    now so the gutter's layout decision is made with the sidebar in view.
+
+## Resolutions (Tom, 2026-06-18 13:32 ET)
+
+1. **Placement** — keep left; **drop it lower** so it stops bleeding over the
+   article body. Implemented as a top padding-band on `.story-nav` so the
+   sidebar's first content lines up below the article's dateline + title +
+   double-rule, separating it from the article's own `← back to broadsheet`
+   affordance.
+2. **Full folder path → drop it.** Replaced with a single parent-nav line:
+   `../` in a subdir, `← broadsheet` at the root. Both target `../index.html`;
+   the label differs by context. The previous `.nav-breadcrumb` /
+   `.nav-sep` / `.nav-dir` classes are gone.
+3. **Sibling scope** — immediate siblings only. No change; `siblings_for_file`
+   already enforces this.
+4. **Unlinked siblings** — grey text. No change; `.nav-unlinked` already does this.
+5. **Long lists → window of ±5.** New pure helper `file_tree.window_siblings`
+   trims to at most 5 siblings above and below the current file (controllable
+   via `render.STORY_SIDEBAR_WINDOW`). `numpy/core/` (~80 files) now renders
+   11 entries max instead of 80.
+6. **Gutter timeline (phase 2)** — acknowledged; no conflict with left placement.

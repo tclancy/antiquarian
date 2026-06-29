@@ -8,6 +8,7 @@ renderer (``render.py``) walks the structure this module computes and emits
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
 #: Default information budget: rows a reader takes in at a glance (principle 1).
@@ -140,3 +141,28 @@ def siblings_for_file(file_path: str, all_files: list[str]) -> list[str]:
         if fp_parent == parent_dir:
             result.append(fp)
     return sorted(result)
+
+
+def window_siblings(siblings: list[str], current: str, window: int = 5) -> list[str]:
+    """Return at most ``2 * window + 1`` siblings centered on ``current``.
+
+    ``siblings`` is a sorted list (as returned by :func:`siblings_for_file`).
+    A directory with 80+ files makes a full-list sidebar unusable; this trims
+    to the ``window`` files alphabetically directly above and below
+    ``current``, keeping the local neighborhood without overwhelming the page.
+
+    When ``current`` is in ``siblings``, the window centers on its index.
+    When ``current`` is *not* in ``siblings`` (e.g. it was excluded from the
+    survey but its directory has other surveyed files), the window centers
+    on the alphabetical insertion point — the same set of files a reader
+    expects to see "near" the current one.
+    """
+    if not siblings:
+        return []
+    if current in siblings:
+        center = siblings.index(current)
+    else:
+        center = bisect_left(siblings, current)
+    start = max(0, center - window)
+    end = min(len(siblings), center + window + 1)
+    return siblings[start:end]
