@@ -547,6 +547,13 @@ def _render_story_pages(
     all_files: list[str] = data.get("files", [])
     all_candidates: set[str] = set(candidates)
 
+    # Detect the link backend once per render — pure config, no per-file
+    # cost. A non-GitHub remote degrades to NoopLinkBackend, leaving refs
+    # as plain text (#113).
+    from antiquarian.link_backend import detect_link_backend
+
+    link_backend = detect_link_backend(repo_path)
+
     def _render_one(story_md_name: str) -> str:
         file_path = story_md_name.replace("__", "/").removesuffix(".md")
         story_md = (stories_dir / story_md_name).read_text(encoding="utf-8")
@@ -556,6 +563,7 @@ def _render_story_pages(
             data["project"],
             all_files=all_files,
             files_with_stories=all_candidates,
+            link_backend=link_backend,
         )
         (pages_dir / _story_md_to_html_name(story_md_name)).write_text(
             story_html, encoding="utf-8"
