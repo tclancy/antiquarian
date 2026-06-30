@@ -11,6 +11,7 @@ import hashlib
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -99,20 +100,41 @@ def _format_story_with_marker(narrative: str, digest: str) -> str:
     return f"{_DIGEST_MARKER_PREFIX}{digest}{_DIGEST_MARKER_SUFFIX}\n{narrative}\n"
 
 
-def generate_file_story(
+@dataclass(frozen=True)
+class _MiningResult:
+    """Output of the git-mining phase for one file.
+
+    Carries everything ``_synthesize_story_from_mining`` needs to produce a
+    narrative without re-touching the git repo. Separating the phases lets the
+    survey pipeline mine all files serially (PyDriller is not safe for
+    concurrent ``Repository`` opens on the same clone — see issue #104) and
+    then parallelize the expensive, repo-free ``claude -p`` calls.
+
+    Sequence fields are tuples (not lists) so the dataclass is genuinely
+    immutable — each instance is handed to exactly one synthesis thread.
+    """
+
+    file_path: str
+    repo_name: str
+    commits: tuple[CommitFeatures, ...]
+    todos: tuple[TodoAnnotation, ...]
+    story_file: Path
+    digest: str
+
+
+def _mine_file_for_story(
     repo_path: Path,
     file_path: str,
     *,
     use_cache: bool = True,
     fetch_prs: bool = True,
     log: Callable[[str], None] = _noop,
-    backend: NarrativeBackend | None = None,
-) -> tuple[str, Path]:
-    """Mine + cache + extract TODOs + synthesize a per-file narrative.
+) -> _MiningResult:
+    """Phase 1: git mining + TODO extraction + cache I/O for one file.
 
-    Returns ``(narrative_markdown, path_to_persisted_story)``. The story is
-    persisted under ``<repo>/.antiquarian/stories/`` so re-runs and downstream
-    commands (e.g. ``survey``) can re-use it.
+    Touches PyDriller and the SQLite cache; **must run single-threaded per
+    repo** (issue #104). Cheap enough to run inline before the parallel
+    narrative phase.
     """
     full_file_path = repo_path / file_path
     if not full_file_path.exists():
@@ -124,7 +146,7 @@ def generate_file_story(
     log(f"[mining] {file_path} in {repo_name}")
 
     db_path = cache_path_for_repo(repo_path)
-    commits = []
+    commits: list[CommitFeatures] = []
 
     with open_cache(db_path) as conn:
         shas = historical_shas(repo_path, file_path)
@@ -162,30 +184,77 @@ def generate_file_story(
     safe_name = file_path.replace("/", "__") + ".md"
     story_file = stories_dir / safe_name
 
-    current_digest = _story_digest(commits, todos)
+    return _MiningResult(
+        file_path=file_path,
+        repo_name=repo_name,
+        commits=tuple(commits),
+        todos=tuple(todos),
+        story_file=story_file,
+        digest=_story_digest(commits, todos),
+    )
 
+
+def _synthesize_story_from_mining(
+    mining: _MiningResult,
+    *,
+    use_cache: bool = True,
+    log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
+) -> tuple[str, Path]:
+    """Phase 2: read cached story or run ``synthesize_narrative``; persist.
+
+    Pure repo-free work (the ``claude -p`` call dominates). Safe to call from
+    multiple threads — each invocation touches a distinct ``story_file``.
+    """
     if use_cache:
-        cached = _read_cached_story(story_file)
-        if cached is not None and cached[0] == current_digest:
-            log(f"[narrative] reusing cached story at {story_file}")
-            return cached[1], story_file
+        cached = _read_cached_story(mining.story_file)
+        if cached is not None and cached[0] == mining.digest:
+            log(f"[narrative] reusing cached story at {mining.story_file}")
+            return cached[1], mining.story_file
 
     log("[narrative] sending to claude -p (this may take a minute)...")
     narrative = synthesize_narrative(
-        file_path=file_path,
-        repo_name=repo_name,
-        commits=commits,
-        todos=todos,
+        file_path=mining.file_path,
+        repo_name=mining.repo_name,
+        commits=mining.commits,
+        todos=mining.todos,
         log=log,
         backend=backend,
     )
 
-    story_file.write_text(
-        _format_story_with_marker(narrative, current_digest), encoding="utf-8"
+    mining.story_file.write_text(
+        _format_story_with_marker(narrative, mining.digest), encoding="utf-8"
     )
-    log(f"[wrote] {story_file}")
+    log(f"[wrote] {mining.story_file}")
 
-    return narrative, story_file
+    return narrative, mining.story_file
+
+
+def generate_file_story(
+    repo_path: Path,
+    file_path: str,
+    *,
+    use_cache: bool = True,
+    fetch_prs: bool = True,
+    log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
+) -> tuple[str, Path]:
+    """Mine + cache + extract TODOs + synthesize a per-file narrative.
+
+    Returns ``(narrative_markdown, path_to_persisted_story)``. The story is
+    persisted under ``<repo>/.antiquarian/stories/`` so re-runs and downstream
+    commands (e.g. ``survey``) can re-use it.
+    """
+    mining = _mine_file_for_story(
+        repo_path,
+        file_path,
+        use_cache=use_cache,
+        fetch_prs=fetch_prs,
+        log=log,
+    )
+    return _synthesize_story_from_mining(
+        mining, use_cache=use_cache, log=log, backend=backend
+    )
 
 
 def _stub_narrative_for_skipped(file_path: str, reason: str) -> str:
@@ -224,25 +293,22 @@ def _threadsafe_log(
     return _locked
 
 
-def _generate_story_for_survey(
-    repo_path: Path,
-    fp: str,
+def _synthesize_for_survey(
+    mining: _MiningResult,
     *,
     use_cache: bool,
-    fetch_prs: bool,
     log: Callable[[str], None],
     backend: NarrativeBackend | None,
-) -> tuple[str, str | None, str | None]:
-    """Run ``generate_file_story`` with survey-level error handling.
+) -> tuple[str, str, str | None]:
+    """Run the narrative phase with survey-level error handling.
 
     Returns ``(file_path, narrative_or_stub, skip_reason_or_none)``.
     """
+    fp = mining.file_path
     try:
-        narrative, _ = generate_file_story(
-            repo_path,
-            fp,
+        narrative, _ = _synthesize_story_from_mining(
+            mining,
             use_cache=use_cache,
-            fetch_prs=fetch_prs,
             log=lambda m: log(f"  {m}"),
             backend=backend,
         )
@@ -273,10 +339,15 @@ def generate_codebase_survey(
     is the per-file markdown stories — prose-intermediate composition per the
     issue #7 design.
 
-    When *max_workers* > 1, per-file story generation runs in parallel using a
-    thread pool. Each thread opens its own SQLite connection (WAL mode handles
-    concurrent access). File ordering in the synthesis input is preserved
-    regardless of completion order.
+    Per issue #104, the parallelism boundary is drawn around the
+    ``claude -p`` narrative call only — git mining (PyDriller's ``Repository``
+    open writes ``.git/config`` on every instantiation) runs serially for every
+    file first. Concurrent PyDriller opens on the same clone race on
+    ``.git/config.lock``; the narrative call is the expensive, I/O-bound part
+    that benefits from a pool. When *max_workers* > 1, mining still proceeds
+    serially; only the per-file ``synthesize_narrative`` calls run in the pool.
+    File ordering in the synthesis input is preserved regardless of completion
+    order.
 
     Per #34, if a single file's narrative synthesis hangs or errors past the
     retry budget, the survey does NOT tank — it substitutes a "channel went
@@ -305,17 +376,37 @@ def generate_codebase_survey(
     log_lock = threading.Lock()
     safe_log = _threadsafe_log(log_lock, log) if effective_workers > 1 else log
 
-    file_stories: list[tuple[str, str]] = []
-    skipped: list[tuple[str, str]] = []
-
-    if effective_workers <= 1:
-        for i, fp in enumerate(file_paths, start=1):
-            safe_log(f"[survey] ({i}/{len(file_paths)}) {fp}")
-            fp, narrative, skip_reason = _generate_story_for_survey(
+    # Phase 1: serial git mining for every file. PyDriller's `Repository` open
+    # writes `.git/config`, so concurrent opens on the same clone race on
+    # `.git/config.lock` — keep this loop single-threaded (#104). The plain
+    # `log` (not `safe_log`) is fine here precisely because this loop is
+    # serial; if anyone parallelizes mining later, switch both call sites to
+    # `safe_log`.
+    mining_results: list[_MiningResult] = []
+    for i, fp in enumerate(file_paths, start=1):
+        log(f"[survey] ({i}/{len(file_paths)}) mining {fp}")
+        mining_results.append(
+            _mine_file_for_story(
                 repo_path,
                 fp,
                 use_cache=use_cache,
                 fetch_prs=fetch_prs,
+                log=lambda m: log(f"  {m}"),
+            )
+        )
+
+    file_stories: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
+
+    # Phase 2: synthesize narratives. Parallel when workers > 1 — these calls
+    # are repo-free; the only shared mutable state is `log`, which we wrap in
+    # `safe_log`.
+    if effective_workers <= 1:
+        for i, mining in enumerate(mining_results, start=1):
+            safe_log(f"[survey] ({i}/{len(file_paths)}) {mining.file_path}")
+            fp, narrative, skip_reason = _synthesize_for_survey(
+                mining,
+                use_cache=use_cache,
                 log=safe_log,
                 backend=backend,
             )
@@ -328,15 +419,13 @@ def generate_codebase_survey(
         with ThreadPoolExecutor(max_workers=effective_workers) as pool:
             futures = {
                 pool.submit(
-                    _generate_story_for_survey,
-                    repo_path,
-                    fp,
+                    _synthesize_for_survey,
+                    mining,
                     use_cache=use_cache,
-                    fetch_prs=fetch_prs,
                     log=safe_log,
                     backend=backend,
-                ): fp
-                for fp in file_paths
+                ): mining.file_path
+                for mining in mining_results
             }
             for future in as_completed(futures):
                 fp, narrative, skip_reason = future.result()
