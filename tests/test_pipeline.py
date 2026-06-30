@@ -18,6 +18,7 @@ from antiquarian.cache import open_cache
 from antiquarian.models import CommitFeatures
 from antiquarian.pipeline import (
     _MiningResult,
+    _coalesce_authors_by_email,
     _stub_narrative_for_skipped,
     generate_codebase_survey,
     generate_file_story,
@@ -930,3 +931,61 @@ class TestPyDrillerRaceRegression:
         assert mock_narr.call_count == 4
         stories_arg = mock_survey.call_args.kwargs["file_stories"]
         assert {fp for fp, _ in stories_arg} == {"a.py", "b.py", "c.py", "d.py"}
+
+
+class TestCoalesceAuthorsByEmail:
+    """Pipeline-level coalescing: per-author baselines see one row per human (#147).
+
+    Without this, ``build_author_baselines`` keys by raw ``c.author`` so the
+    httpx Tom-Christie / Kim-Christie case produces two baselines, and the
+    Dramatis Personae prompt lists both — same email, same human, two rows.
+    """
+
+    def _commit(
+        self, author: str, email: str = "tom@tomchristie.com"
+    ) -> CommitFeatures:
+        return CommitFeatures(
+            id=f"id-{author}",
+            git_sha=f"sha-{author}",
+            jj_change_id=None,
+            jj_commit_id=None,
+            author=author,
+            author_email=email,
+            timestamp=datetime(2026, 3, 10, 14, 0, tzinfo=timezone.utc),
+            hour_of_day=14,
+            day_of_week=1,
+            message="m",
+            files_changed=["a.py"],
+            additions=1,
+            deletions=0,
+            pr_number=None,
+            pr_body=None,
+        )
+
+    def test_majority_name_rewrites_minority(self):
+        # 3 Tom + 1 Kim on the same email → all four CommitFeatures emerge as Tom.
+        commits = [
+            self._commit("Tom Christie"),
+            self._commit("Tom Christie"),
+            self._commit("Tom Christie"),
+            self._commit("Kim Christie"),
+        ]
+        out = _coalesce_authors_by_email(commits)
+        assert {c.author for c in out} == {"Tom Christie"}
+        # Email is left untouched — we're picking a display name, not changing identity.
+        assert {c.author_email for c in out} == {"tom@tomchristie.com"}
+
+    def test_distinct_emails_pass_through_unchanged(self):
+        # No false-merge across different emails: returns the same list object semantically.
+        commits = [
+            self._commit("Ada", "ada@x"),
+            self._commit("Bea", "bea@x"),
+        ]
+        out = _coalesce_authors_by_email(commits)
+        assert [(c.author, c.author_email) for c in out] == [
+            ("Ada", "ada@x"),
+            ("Bea", "bea@x"),
+        ]
+
+    def test_empty_input_returns_empty(self):
+        assert _coalesce_authors_by_email([]) == []

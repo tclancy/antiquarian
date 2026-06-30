@@ -11,7 +11,7 @@ import hashlib
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -21,6 +21,7 @@ from antiquarian.cache import (
     open_cache,
     put_commit,
 )
+from antiquarian.identity import coalesce_by_email
 from antiquarian.mining import historical_shas, mine_file_history
 from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import synthesize_narrative, synthesize_survey
@@ -43,6 +44,28 @@ if TYPE_CHECKING:
 # Markdown renderers ignore it.
 _DIGEST_MARKER_PREFIX = "<!-- antiquarian-cache-digest: "
 _DIGEST_MARKER_SUFFIX = " -->"
+
+
+def _coalesce_authors_by_email(commits: list[CommitFeatures]) -> list[CommitFeatures]:
+    """Rewrite ``author`` to the canonical name per shared email (#147).
+
+    Same-email is treated as a hard identity signal (see #120) — without this,
+    one human committing under two names (e.g. spouse's IDE config slipped on
+    a handful of commits) fragments into separate per-author baselines and
+    duplicated entries in the Dramatis Personae. Leaves the email untouched —
+    we're picking a display name, not changing identity. Repos with a
+    ``.mailmap`` already get the maintainer-declared canonical via
+    ``render_data._apply_mailmap``; this is the no-mailmap safety net.
+    """
+    mapping = coalesce_by_email((c.author, c.author_email) for c in commits)
+    if not mapping:
+        return commits
+    return [
+        replace(c, author=mapping[c.author_email.lower()])
+        if c.author_email.lower() in mapping
+        else c
+        for c in commits
+    ]
 
 
 def _noop(_msg: str) -> None:
@@ -464,6 +487,7 @@ def generate_codebase_survey(
                 if cached is not None:
                     all_commits.append(cached)
                     seen_shas.add(sha)
+    all_commits = _coalesce_authors_by_email(all_commits)
     author_baselines = build_author_baselines(all_commits)
     regions = build_regions(all_commits)
     co_changes = build_co_changes(all_commits)
