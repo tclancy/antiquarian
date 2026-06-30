@@ -1656,6 +1656,7 @@ _STORY_PAGE_CSS = Template(
     paper=PALETTE["paper"],
     paper_alt=PALETTE["paper_alt"],
     accent=PALETTE["accent"],
+    lossy=PALETTE["lossy"],
 )
 
 _STORY_PAGE_HTML = Template(
@@ -1780,6 +1781,46 @@ def _strip_empty_todo_section(story_md: str) -> str:
     return _EMPTY_TODO_SECTION_RE.sub("", story_md)
 
 
+def _render_metric_pips(metrics: list[dict] | None) -> str:
+    """Compact pip strip for the head of a story page (#148).
+
+    Each pip pairs a glyph with a coloured swatch and the raw number, so
+    print and screen both carry the information. ``level=="na"`` swatches
+    use the muted broadsheet tone — they're "no signal here," not "alarm."
+    Empty ``metrics`` (e.g. for a file with no attributed commits) skips
+    the strip entirely.
+    """
+    if not metrics:
+        return ""
+    pips = []
+    for m in metrics:
+        level = m.get("level", "na")
+        glyph = _xml_escape(m.get("glyph", ""))
+        display = _xml_escape(m.get("display", ""))
+        name = _xml_escape(m.get("name", ""))
+        detail = _xml_escape(m.get("detail", ""))
+        # The swatch is a tiny SVG circle so colour is rendered as content
+        # rather than CSS background — print stylesheets that strip
+        # background colours still show the dot. Aria-label gives screen
+        # readers the human reading instead of the emoji + colour cue.
+        pips.append(
+            f'<span class="metric-pip metric-pip--{level}" '
+            f'title="{name}: {detail}" '
+            f'aria-label="{name}: {display}, {level}">'
+            f'<span class="metric-pip__glyph" aria-hidden="true">{glyph}</span>'
+            f'<svg class="metric-pip__swatch" width="10" height="10" '
+            f'viewBox="0 0 10 10" aria-hidden="true">'
+            f'<circle cx="5" cy="5" r="4"/></svg>'
+            f'<span class="metric-pip__value">{display}</span>'
+            f"</span>"
+        )
+    return (
+        '<div class="metric-pips" role="group" aria-label="file health pips">'
+        + "".join(pips)
+        + "</div>"
+    )
+
+
 def render_story_page(
     file_path: str,
     story_md: str,
@@ -1787,6 +1828,7 @@ def render_story_page(
     *,
     all_files: list[str] | None = None,
     files_with_stories: set[str] | None = None,
+    metrics: list[dict] | None = None,
 ) -> str:
     """Render a single per-file story.md as a styled HTML page (#46).
 
@@ -1835,6 +1877,7 @@ def render_story_page(
         all_files or [],
         files_with_stories or set(),
     )
+    metric_pips = _render_metric_pips(metrics)
     return _STORY_PAGE_HTML.substitute(
         title=f"{project_escaped} — {file_path_escaped}",
         css=_STORY_PAGE_CSS,
@@ -1842,6 +1885,7 @@ def render_story_page(
         file_path=file_path_escaped,
         body_html=body_html,
         sidebar=sidebar,
+        metric_pips=metric_pips,
     )
 
 
