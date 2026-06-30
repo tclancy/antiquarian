@@ -15,6 +15,7 @@
   --paper: $paper;
   --paper-alt: $paper_alt;
   --accent: $accent;
+  --lossy: $lossy;
   --serif: "EB Garamond", "Iowan Old Style", Palatino, Georgia, serif;
 }
 * { box-sizing: border-box; }
@@ -161,6 +162,72 @@ h1.story-title code {
   color: var(--ink-dim);
   margin: 0 0 1.5rem;
 }
+
+/* -----------------------------------------------------------------------
+ * File-health pip strip (#148)
+ *
+ * Compact flex row of glyph + colour swatch + raw number. The swatch is a
+ * tiny SVG circle so the colour rides on rendered content rather than CSS
+ * background, which print stylesheets strip. Each pip carries its full
+ * detail in a title attribute for hover and aria-label for assistive tech.
+ *
+ * Colour vocabulary borrows the existing broadsheet palette: ``ink`` for
+ * "solid / established" (green), ``lossy`` for "fading" (yellow), and
+ * ``accent`` (oxide red) for the danger reading. No new hues introduced,
+ * so the page still feels like one publication.
+ *
+ * Negative margin-top pulls the strip up under the italic sub-line so the
+ * existing .story-sub spacing carries through when the strip is absent —
+ * pages without metrics keep their pre-#148 rhythm.
+ * ----------------------------------------------------------------------- */
+.metric-pips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: -0.75rem 0 1rem;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+.metric-pip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border: 0.5px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-alt);
+  cursor: help;
+}
+.metric-pip__glyph {
+  font-size: 0.95em;
+  line-height: 1;
+}
+.metric-pip__swatch {
+  flex-shrink: 0;
+}
+.metric-pip__value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--ink);
+}
+.metric-pip--green .metric-pip__swatch circle { fill: var(--ink); }
+.metric-pip--yellow .metric-pip__swatch circle { fill: var(--lossy); }
+.metric-pip--red .metric-pip__swatch circle { fill: var(--accent); }
+.metric-pip--na .metric-pip__swatch circle {
+  fill: var(--paper);
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+.metric-pip--na .metric-pip__value { color: var(--ink-dim); }
+
+@media print {
+  .metric-pip { cursor: default; }
+  /* Force colours to print — Tom's broadsheet aesthetic depends on the
+     oxide-red accent surviving the page. Browsers honour this on most
+     printers; PDF export honours it universally. */
+  .metric-pip__swatch circle { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+
 .double-rule {
   border-top: 2px solid var(--ink);
   border-bottom: 0.5px solid var(--ink);

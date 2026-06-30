@@ -22,6 +22,7 @@ from pathlib import Path
 
 from antiquarian.cache import cache_path_for_repo
 from antiquarian.identity import coalesce_by_email, parse_mailmap
+from antiquarian.metrics import build_file_metrics, reference_timestamp
 from antiquarian.prs import detect_github_repo
 from antiquarian.todos import extract_todos
 
@@ -663,20 +664,49 @@ def extract_render_data(repo_path: Path) -> dict:
     gh = detect_github_repo(repo_path)
     base_url = f"https://github.com/{gh[0]}/{gh[1]}" if gh else None
 
+    commit_dicts = [asdict(c) for c in commits]
+    file_metrics = _build_file_metrics_index(files, commit_dicts)
+
     return {
         "project": repo_path.name,
         "repo_path": str(repo_path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "files": files,
         "stories": [s.name for s in stories],
-        "commits": [asdict(c) for c in commits],
+        "commits": commit_dicts,
         "todos": [asdict(t) for t in todos],
         "arcs": [asdict(a) for a in arcs],
         "swimlane": _build_swimlane(commits, base_url),
         "arc_band": _build_arc_band(arcs, commits),
         "timeline": _build_timeline(commits),
         "file_lifespans": _build_per_file_lifespans(cache_db, files, commits),
+        "file_metrics": file_metrics,
         "survey_excerpt": _pull_survey_excerpt(repo_path),
         "dramatis_personae": _pull_dramatis_personae(repo_path),
         "story_descriptions": _extract_story_descriptions(stories),
     }
+
+
+def _build_file_metrics_index(
+    files: list[str], commits: list[dict]
+) -> dict[str, list[dict]]:
+    """Per-file traffic-light pip strip, serialized for the render dict (#148).
+
+    Inverts the deduplicated commit list onto each file via ``files_changed``,
+    then runs the metric rubric. Files surveyed but absent from the cache
+    (no attributed commits) get an empty list — the renderer omits the strip
+    rather than printing dashes.
+    """
+    surveyed = set(files)
+    commits_per_file: dict[str, list[dict]] = {f: [] for f in files}
+    for c in commits:
+        for f in c.get("files_changed") or ():
+            if f in surveyed:
+                commits_per_file[f].append(c)
+    ref_dt = reference_timestamp(commits_per_file)
+    if ref_dt is None:
+        return {f: [] for f in files}
+    metrics = build_file_metrics(commits_per_file, ref_dt)
+    # Match the surrounding render-data convention (todos/arcs are also
+    # asdict'd) — Metric gains a field, the serializer follows automatically.
+    return {f: [asdict(m) for m in metrics.get(f, [])] for f in files}
