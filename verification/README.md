@@ -70,6 +70,26 @@ These specs focus on the layers most prone to data loss or corruption: the filte
 
 ---
 
+### Survey Parallelization Concurrency (`spec_concurrency.py`)
+
+**5/5 properties proved:**
+
+1. **At most one git-config mutex holder** — Across every modelled execution of the Phase-1 (serial mining) + Phase-2 (parallel narrative) schedule, no two threads simultaneously hold the `.git/config` mutex. PyDriller's `Repository` open is the only path that touches the mutex, and that open lives in the serial mining loop.
+
+2. **Narrative phase never acquires the git mutex** — Once Phase 2 begins, no worker re-opens PyDriller. Workers consume `_MiningResult` instances that were fully materialized during Phase 1.
+
+3. **Mining precedes narrative per file** — For every file `f`, the worker that synthesizes `f`'s narrative cannot start before `f`'s mining completes. The pipeline materializes all `_MiningResult`s in a serial `for` loop before submitting any work to `ThreadPoolExecutor`.
+
+4. **Narrative inputs are disjoint across workers** — Two distinct files are never routed through a single worker's input slot; each worker reads exactly the `_MiningResult` for its assigned file. No worker reads another worker's mining data.
+
+5. **No shared mutable git state in narrative workers** — Workers read only their own immutable `_MiningResult` (a frozen dataclass with tuple fields, per PR #151). They share no mutable git state.
+
+**Caveat**: These are *schedule-level* invariants. They prove that the schedule never exercises a contended path, not that PyDriller's lock semantics are correct (taken as a property of the library). If a future refactor moves PyDriller calls into the worker pool, every one of these properties must be re-evaluated.
+
+**Implication**: The #104 fix (PR #151) is race-free by construction. The schedule is the proof obligation — adding parallelism downstream of mining cannot reintroduce the `.git/config.lock` race so long as no PyDriller call lives in a worker.
+
+---
+
 ### Narrative Sanitization (`spec_narrative.py`)
 
 **6/6 properties proved:**
@@ -134,6 +154,7 @@ Each spec is a standalone Python file:
 uv run python verification/spec_selection.py
 uv run python verification/spec_cache.py
 uv run python verification/spec_pipeline.py
+uv run python verification/spec_concurrency.py
 uv run python verification/spec_narrative.py
 ```
 
@@ -146,7 +167,7 @@ for spec in verification/spec_*.py; do
 done
 ```
 
-All four specs should exit with code 0 and print `PROVED` for each property.
+All five specs should exit with code 0 and print `PROVED` for each property.
 
 ---
 
