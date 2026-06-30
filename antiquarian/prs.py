@@ -11,8 +11,16 @@ from pathlib import Path
 from antiquarian.models import CommitFeatures
 
 
+def parse_github_repo_url(url: str) -> tuple[str, str] | None:
+    """Return ``(owner, name)`` parsed from a GitHub remote URL, or ``None``."""
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?/?$", url)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
 def detect_github_repo(repo_path: str | Path) -> tuple[str, str] | None:
-    """Return ``(owner, name)`` of the GitHub repo at ``repo_path``, or ``None``."""
+    """Return ``(owner, name)`` of the GitHub repo at ``repo_path``'s origin remote, or ``None``."""
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
@@ -22,12 +30,7 @@ def detect_github_repo(repo_path: str | Path) -> tuple[str, str] | None:
         )
     except subprocess.CalledProcessError:
         return None
-
-    url = result.stdout.strip()
-    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?/?$", url)
-    if not m:
-        return None
-    return m.group(1), m.group(2)
+    return parse_github_repo_url(result.stdout.strip())
 
 
 def pr_for_commit(owner: str, repo: str, commit_sha: str) -> tuple[int, str] | None:

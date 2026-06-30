@@ -158,6 +158,28 @@ class TestRenderBroadsheet:
         assert "lossy regions" in sub
         assert "marginalia" in sub
 
+    def test_colophon_rule_is_full_width_not_clipped(self, seeded_repo: Path):
+        """Issue #131 — `border-top` lives on a full-width container; the
+        italic text measure (`max-width: 56ch`) lives on an inner element.
+
+        The old CSS put both on the same `.colophon` div, so the separator
+        rule was clipped to ~40% of the page width.
+        """
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        # Inner wrapper exists and carries the measure
+        assert '<div class="colophon-text">' in html
+        # Find the .colophon CSS block and confirm the rule is there but the
+        # measure has moved off it
+        css_start = html.index(".colophon {")
+        css_block = html[css_start : css_start + 200]
+        assert "border-top: 1px solid" in css_block
+        assert "max-width" not in css_block
+        # The text-measure block carries the measure
+        text_css = html.index(".colophon-text {")
+        text_block = html[text_css : text_css + 250]
+        assert "max-width: 56ch" in text_block
+
     def test_base_font_scaled_up(self, seeded_repo: Path):
         """A single :root type-scale knob bumps all rem-based text 120% (#111)."""
         data = extract_render_data(seeded_repo)
