@@ -80,9 +80,9 @@ These specs focus on the layers most prone to data loss or corruption: the filte
 
 3. **Mining precedes narrative per file** — For every file `f`, the worker that synthesizes `f`'s narrative cannot start before `f`'s mining completes. The pipeline materializes all `_MiningResult`s in a serial `for` loop before submitting any work to `ThreadPoolExecutor`.
 
-4. **Narrative inputs are disjoint across workers** — Two distinct files are never routed through a single worker's input slot; each worker reads exactly the `_MiningResult` for its assigned file. No worker reads another worker's mining data.
+4. **Narrative inputs are disjoint across futures** — `generate_codebase_survey` submits one future per file, each bound to that file's `_MiningResult`. Two distinct futures are never bound to the same `_MiningResult`. (Not "one file per worker" — the pool reuses workers for sequential futures.)
 
-5. **No shared mutable git state in narrative workers** — Workers read only their own immutable `_MiningResult` (a frozen dataclass with tuple fields, per PR #151). They share no mutable git state.
+5. **No shared mutable git state in narrative workers** — Wired through the mutex matrix from property 1: a worker is said to "touch shared git state" iff it holds the `.git/config` mutex during a narrative step, which the matrix already forbids. The `_MiningResult` instances workers consume are frozen dataclasses with tuple fields (per PR #151) — there is no other mutable git state surface to share.
 
 **Caveat**: These are *schedule-level* invariants. They prove that the schedule never exercises a contended path, not that PyDriller's lock semantics are correct (taken as a property of the library). If a future refactor moves PyDriller calls into the worker pool, every one of these properties must be re-evaluated.
 

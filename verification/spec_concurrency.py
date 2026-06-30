@@ -20,12 +20,13 @@ Invariants proved:
    phase never opens PyDriller; the mutex stays untouched once Phase 2 begins.
 3. ``test_mining_precedes_narrative_per_file`` — for every file ``f``, the
    narrative worker for ``f`` starts strictly after ``f``'s mining completes.
-4. ``test_narrative_inputs_are_disjoint_across_workers`` — two distinct files
-   processed by two distinct workers have disjoint mining-result inputs; no
-   worker reads another worker's input.
-5. ``test_narrative_workers_share_no_mutable_git_state`` — the only state any
-   narrative worker reads is its own immutable ``_MiningResult`` (a frozen
-   dataclass with tuple fields, per PR #151); no shared mutable git state.
+4. ``test_narrative_inputs_are_disjoint_across_futures`` — two distinct
+   narrative futures are bound to distinct ``_MiningResult`` ids; no input
+   aliasing across pool submissions. (Not "one file per worker" — the pool
+   reuses workers for sequential futures.)
+5. ``test_narrative_workers_share_no_mutable_git_state`` — wired through
+   the mutex matrix: a worker "touches shared git state" iff it holds the
+   mutex during a narrative step, which the matrix already forbids.
 
 These are *schedule-level* invariants: they hold for any execution that
 respects the schedule, regardless of OS thread interleaving. They do not
@@ -33,13 +34,16 @@ re-prove PyDriller's lock semantics — they prove that the schedule never
 exercises the contended path.
 """
 
-from z3 import And, Bool, Implies, Int, Not, Or, Solver, unsat
+from z3 import And, Bool, Int, Not, Or, Solver, unsat
 
 # Modest sizes — Z3 proves the universal quantifier over these structures.
 # Larger N just costs solver time; the invariants are not size-dependent.
 NUM_FILES = 5
 NUM_WORKERS = 4
-NUM_STEPS = NUM_FILES + 2  # mining steps + a few narrative steps
+# Narrative phase length is arbitrary: constraints in `_mutex_holding_matrix`
+# apply uniformly across `range(NUM_FILES, NUM_STEPS)`, so any value > NUM_FILES
+# exercises the same proof. Two extra steps keeps the matrix compact.
+NUM_STEPS = NUM_FILES + 2
 
 
 def _mutex_holding_matrix(s: Solver) -> list[list]:
@@ -112,6 +116,14 @@ def test_narrative_phase_never_acquires_git_mutex():
     ``.git/config``. The narrative workers receive ``_MiningResult`` (already
     materialized) and call ``synthesize_narrative`` — no PyDriller. This
     invariant pins the boundary.
+
+    Overlap note: ``_mutex_holding_matrix`` already adds
+    ``Not(holds[w][t])`` for every narrative step (the matrix's
+    narrative-phase constraint), so the violation attempt here is unsat by
+    the same lines that prove P1. P2 is kept as standalone documentation —
+    if a future refactor weakens the matrix to allow mining-mutex acquisition
+    inside Phase 2 workers, this proof regresses with a name that says
+    exactly what broke.
     """
     s = Solver()
     holds = _mutex_holding_matrix(s)
@@ -170,84 +182,103 @@ def test_mining_precedes_narrative_per_file():
     return False
 
 
-def test_narrative_inputs_are_disjoint_across_workers():
-    """Prove: workers handling distinct files have disjoint input sets.
+def test_narrative_inputs_are_disjoint_across_futures():
+    """Prove: distinct narrative futures read distinct ``_MiningResult`` ids.
 
-    Model: ``worker_of[f]`` is the worker assigned to file f, and
-    ``input_of[w]`` is a tag identifying the ``_MiningResult`` the worker
-    reads. The pool's submission is keyed by mining result, so a worker
-    handling file f reads exactly ``mining_results[f]`` — a unique tag
-    distinct from every other file's tag.
+    Model: ``generate_codebase_survey`` submits exactly ``len(file_paths)``
+    futures into the pool (``pipeline.py:443-452``):
 
-    Invariant: if two workers handle different files, their input tags differ.
-    Equivalently, no worker reads another worker's input.
+    .. code-block:: python
+
+        futures = {
+            pool.submit(_synthesize_for_survey, mining, ...): mining.file_path
+            for mining in mining_results
+        }
+
+    Each future is constructed by binding a single ``mining`` value — the
+    list element for that file's index — and submitting it. The keying is
+    one future per file index.
+
+    The invariant to prove is *not* "each worker handles at most one file"
+    (the pool can reuse a worker for multiple sequential futures — with
+    NUM_FILES=5 and NUM_WORKERS=4 at least one worker handles two files).
+    The invariant is that the future-to-input identity is 1:1 — no two
+    futures share a ``_MiningResult`` reference.
+
+    We model each future ``f`` as having an ``input_id[f]`` tagged with the
+    file index it was constructed from. The constraint encodes the actual
+    submission loop. The violation attempt asks Z3 to find two distinct
+    futures with the same input id; this is unsat because the constraint
+    forces ``input_id[f] == f`` and distinct files have distinct indices.
     """
     s = Solver()
 
-    # worker_of[f] ∈ [0, NUM_WORKERS) — which pool worker handles file f.
-    worker_of = [Int(f"worker_of_f{f}") for f in range(NUM_FILES)]
-    # input_tag_of[w] — tag of the mining result worker w reads (Int unique
-    # per file). We use the file index as the tag.
-    input_tag_of = [Int(f"input_tag_of_w{w}") for w in range(NUM_WORKERS)]
+    # input_id[f] — identity of the _MiningResult bound to the future for
+    # file index f. Using the file index as the identity mirrors the actual
+    # submission keying.
+    input_id = [Int(f"input_id_f{f}") for f in range(NUM_FILES)]
 
+    # Schedule constraint: future f is submitted with mining_results[f].
     for f in range(NUM_FILES):
-        s.add(worker_of[f] >= 0, worker_of[f] < NUM_WORKERS)
+        s.add(input_id[f] == f)
 
-    # Schedule constraint: if worker w handles file f, then its input tag is f.
-    # We model this by requiring: ∀ f, w : worker_of[f] == w → input_tag_of[w] == f.
-    # (A worker handles at most one file at a time; serialization across files
-    # within a single worker is handled by the pool's queue.)
-    for f in range(NUM_FILES):
-        for w in range(NUM_WORKERS):
-            s.add(Implies(worker_of[f] == w, input_tag_of[w] == f))
-
-    # Try to violate: two distinct files routed to the same worker (which
-    # would imply that worker reads two distinct mining results
-    # "simultaneously" — not just sequentially in its queue). The constraint
-    # above forces input_tag_of[w] to two different values, which is
-    # impossible — so any such routing is unsat.
-    same_worker_diff_files = []
+    # Try to violate: two distinct futures share an input identity.
+    collisions = []
     for f1 in range(NUM_FILES):
         for f2 in range(f1 + 1, NUM_FILES):
-            same_worker_diff_files.append(worker_of[f1] == worker_of[f2])
-    s.add(Or(*same_worker_diff_files))
+            collisions.append(input_id[f1] == input_id[f2])
+    s.add(Or(*collisions))
 
     if s.check() == unsat:
         print(
-            "PROVED: two distinct files cannot share a worker's input slot — "
-            "narrative inputs are disjoint across workers"
+            "PROVED: every narrative future is bound to a distinct _MiningResult "
+            "— no input aliasing across the pool's submissions"
         )
         return True
-    print("FAILED: two distinct files can share a worker's input slot")
+    print("FAILED: two narrative futures can share a _MiningResult")
     print(f"  Counterexample: {s.model()}")
     return False
 
 
 def test_narrative_workers_share_no_mutable_git_state():
-    """Prove: no narrative worker reads or writes shared mutable git state.
+    """Prove: no narrative worker acquires the git-config mutex.
 
-    Model: a single Bool ``git_state_touched_in_narrative_by_w`` per worker.
-    The schedule constrains every such Bool to False (the narrative phase
-    only touches ``_MiningResult`` instances, which are frozen dataclasses
-    with tuple fields — see ``_MiningResult`` in ``pipeline.py``). Try to
-    violate: any worker touches git state in Phase 2. The constraints make
-    this unsat.
+    The schedule's stand-in for "shared mutable git state" is the
+    ``.git/config`` mutex — that is the actual write surface PyDriller
+    touches on every ``Repository`` open. The ``_MiningResult`` instances
+    fanned out to workers are frozen dataclasses with tuple fields (see
+    ``_MiningResult`` in ``pipeline.py`` — note the docstring "Sequence
+    fields are tuples ... so the dataclass is genuinely immutable"), so the
+    only way a worker could share mutable state with another is by acquiring
+    the mutex itself.
+
+    This proof ties "touches shared git state" directly to the mutex matrix
+    from ``_mutex_holding_matrix``: a worker "touches git state" iff it
+    holds the mutex at any narrative time step. The matrix already
+    constrains ``Not(holds[w][t])`` for every narrative step, so the
+    violation attempt below is unsat *because* the matrix says so — weaken
+    the matrix and this proof regresses (vs. the standalone version that
+    would silently keep printing PROVED).
     """
     s = Solver()
+    holds = _mutex_holding_matrix(s)
 
-    touched = [Bool(f"git_state_touched_by_w{w}") for w in range(NUM_WORKERS)]
+    # touched[w] is defined as: worker w holds the mutex at some narrative
+    # step. The matrix's narrative-phase constraints transitively force this
+    # to False for every w. Wiring through the matrix is the point — it
+    # makes the proof depend on the actual schedule, not on a tautology.
+    touched = [
+        Or(*[holds[w][t] for t in range(NUM_FILES, NUM_STEPS)])
+        for w in range(NUM_WORKERS)
+    ]
 
-    # Schedule constraint: no narrative worker touches git state.
-    for w in range(NUM_WORKERS):
-        s.add(Not(touched[w]))
-
-    # Try to violate: some worker touches git state.
+    # Try to violate: some narrative worker touches shared git state.
     s.add(Or(*touched))
 
     if s.check() == unsat:
         print(
             "PROVED: no narrative worker touches shared mutable git state "
-            "(each reads only its own _MiningResult)"
+            "(via the matrix: no worker holds the mutex in any narrative step)"
         )
         return True
     print("FAILED: a narrative worker can touch shared mutable git state")
@@ -265,7 +296,7 @@ if __name__ == "__main__":
         test_at_most_one_holder_of_git_config_mutex(),
         test_narrative_phase_never_acquires_git_mutex(),
         test_mining_precedes_narrative_per_file(),
-        test_narrative_inputs_are_disjoint_across_workers(),
+        test_narrative_inputs_are_disjoint_across_futures(),
         test_narrative_workers_share_no_mutable_git_state(),
     ]
 
