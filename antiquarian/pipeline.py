@@ -694,6 +694,16 @@ def generate_act_names(
         backend=backend,
     )
 
+    if not names:
+        # The model returned output that parsed to nothing. Do NOT overwrite a
+        # previously-good names file with {} — a re-run that hiccups must not
+        # destroy earlier work (silent-truncation class).
+        log(
+            f"[name-acts] the model named 0 of {len(acts)} act(s) — output did not "
+            f"parse; leaving any existing {out_path.name} untouched"
+        )
+        return {}, out_path
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(names, indent=2, ensure_ascii=False), encoding="utf-8"

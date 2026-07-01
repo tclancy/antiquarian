@@ -265,8 +265,10 @@ def name_acts(
 
     if not names:
         typer.echo(
-            "No acts to name yet — run `antiquarian story`/`survey` to populate "
-            "the cache first.",
+            "No Act names were written. Either there are no acts yet (run "
+            "`antiquarian story`/`survey` to populate the cache), or the model's "
+            "output didn't parse — see the log above. Any existing names were "
+            "left untouched.",
             err=True,
         )
         raise typer.Exit(code=1)

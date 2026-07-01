@@ -773,7 +773,12 @@ def build_act_naming_prompt(
     return "\n".join(lines)
 
 
-_ACT_NAME_LINE_RE = re.compile(r"^\s*(\d+)\s*[:.\-—]\s*(.+?)\s*$")
+# Tolerant of what models actually emit: an optional "Act " prefix (which the
+# prompt itself uses, so the model tends to echo it), ) / . / : / dash
+# separators, and surrounding markdown emphasis on the name.
+_ACT_NAME_LINE_RE = re.compile(
+    r"^\s*(?:act\s+)?(\d+)\s*[:.)\-—]\s*(.+?)\s*$", re.IGNORECASE
+)
 
 
 def synthesize_act_names(
@@ -810,7 +815,9 @@ def synthesize_act_names(
     for line in raw.splitlines():
         m = _ACT_NAME_LINE_RE.match(line)
         if m:
-            name_by_index[int(m.group(1))] = m.group(2).strip()
+            name = m.group(2).strip().strip("*").strip()  # drop **markdown** emphasis
+            if name:
+                name_by_index[int(m.group(1))] = name
 
     names: dict[str, str] = {}
     for a in acts:

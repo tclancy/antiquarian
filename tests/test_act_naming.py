@@ -74,6 +74,13 @@ class TestSynthesizeActNames:
         names = synthesize_act_names(_acts(), backend=fb)
         assert set(names.values()) == {"The First Cut", "The Long Climb"}
 
+    def test_parse_tolerates_act_prefix_and_markdown(self):
+        # The model tends to echo the "Act N" phrasing it was fed, and may bold
+        # names — both must still parse.
+        fb = FakeBackend("Act 1: **The First Cut**\n2) The Long Climb")
+        names = synthesize_act_names(_acts(), backend=fb)
+        assert set(names.values()) == {"The First Cut", "The Long Climb"}
+
     def test_unnamed_act_is_left_out(self):
         fb = FakeBackend("1: Only This One")  # model skipped act 2
         names = synthesize_act_names(_acts(), backend=fb)
@@ -108,6 +115,19 @@ class TestPersistenceAndRender:
         assert list(names.values()) == ["The Beginning"]
         on_disk = json.loads(path.read_text())
         assert on_disk == names  # persisted exactly what was returned
+
+    def test_parse_failure_does_not_clobber_existing_names(self, seeded_repo: Path):
+        # A good run writes names; a later run whose output doesn't parse must
+        # NOT overwrite them with {} (silent-truncation guard).
+        good, path = generate_act_names(
+            seeded_repo, backend=FakeBackend("1: The Beginning")
+        )
+        assert good
+        names, _ = generate_act_names(
+            seeded_repo, backend=FakeBackend("Sorry, I can't help with that.")
+        )
+        assert names == {}  # nothing parsed
+        assert json.loads(path.read_text()) == good  # prior names preserved
 
     def test_render_data_fills_persisted_name(self, seeded_repo: Path):
         data = extract_render_data(seeded_repo)
