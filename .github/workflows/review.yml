@@ -1,0 +1,75 @@
+name: Claude Code Review
+
+# Structural code-review gate (#164). Fires on every PR regardless of who opened
+# it, so review no longer depends on an agent remembering to run it by hand. An
+# independent reviewer (not the PR author) reads the diff and posts inline
+# findings — preserving the independence the retro found catches bug classes
+# that same-agent self-review misses.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    # Skip fork PRs (Actions can't post inline comments back to the base repo
+    # for forks — a GitHub security boundary; antiquarian PRs are branch-based).
+    if: ${{ github.event.pull_request.head.repo.fork == false }}
+    steps:
+      # Gate on the secret so this workflow is a clean green no-op until the
+      # CLAUDE_CODE_OAUTH_TOKEN secret is added — no red X on every PR meanwhile.
+      - name: Check reviewer token is configured
+        id: gate
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLAUDE_CODE_OAUTH_TOKEN not set — review skipped. Add the secret to enable the gate (#164)."
+          fi
+
+      - if: steps.gate.outputs.ready == 'yes'
+        uses: actions/checkout@v4
+
+      - if: steps.gate.outputs.ready == 'yes'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          classify_inline_comments: true
+          claude_args: "--max-turns 12"
+          prompt: |
+            You are an independent reviewer of this pull request — you did NOT
+            write the diff. Review it for real defects a careful reviewer would
+            catch in one sitting. Read the enclosing function of each hunk, not
+            just the changed lines.
+
+            Prioritise, in order:
+            1. Correctness bugs: inverted conditions, off-by-one, null/None on a
+               reachable path, missing await, wrong-variable copy-paste, errors
+               swallowed, unescaped user text reaching HTML/SVG (XSS).
+            2. Silent-drop / silent-truncation bugs — this codebase has been
+               bitten repeatedly: data assigned with `=` where it should append
+               (slug collisions), an item filtered out of a group without a
+               "shown vs total" count, an unconditional write that clobbers good
+               data. Treat any place where records can vanish without a log as
+               suspect.
+            3. Removed-behavior regressions: for deleted/replaced lines, name the
+               invariant they enforced and confirm it's re-established.
+            4. Convention violations from the repo's CLAUDE.md files: the voice
+               rules (no "blame/fault/should have" in narrative, commits, or PR
+               bodies), back-end-over-front-end (no hidden form fields), small
+               composable functions (~30-line split signal), cache keyed by
+               (commit_sha, file_path) needing migrations, and the arc-tier gate
+               (docs/arc-tier-and-density.md) for any arc/Act/density change.
+
+            Post each finding as an inline comment on the exact line, with a
+            concrete failure scenario (inputs/state -> wrong output). Do not
+            invent issues to have something to say; if the diff is clean, say so
+            briefly. Skip pure style nits with no observable effect.
