@@ -1062,6 +1062,7 @@ def render_page(
     story_descriptions: dict[str, str] | None = None,
     dramatis_personae: list[dict[str, str]] | None = None,
     arc_panel: str = "",
+    acts_atom: str = "",
 ) -> str:
     """Render the main broadsheet HTML.
 
@@ -1525,6 +1526,7 @@ def render_page(
     <div class="double-rule"></div>
 
     <div class="atom">{masthead}</div>
+    {f'<div class="atom acts-band">{acts_atom}</div>' if acts_atom else ""}
 
     <div class="meta-table">
       <span class="k">files surveyed</span><div>{file_index}</div>
@@ -1777,6 +1779,91 @@ def render_page(
 """
 
 
+# Subtle alternating fills for the Act band — Acts are structural frames, not
+# loud marks, so they sit quietly behind everything else on the page.
+_ACT_TINTS = (PALETTE["paper"], PALETTE["paper_alt"])
+# Below this start-boundary confidence the divider renders dashed — the evidence
+# couldn't place the movement cleanly (#149 decision 7).
+_ACT_DASHED_BELOW = 0.7
+
+
+def render_acts_atom(acts: list[dict], timeline: dict) -> str:
+    """The top-level 'Acts' band (#149) — the project's life in 1-5 movements.
+
+    Each Act is a labelled span on the shared absolute spine; a boundary the
+    evidence couldn't place cleanly renders dashed. Static SVG — reads fully
+    with JavaScript off (static-complete, #40). Names arrive with the naming
+    pass; until then each Act shows a roman numeral and its date span.
+    """
+    if not acts or not timeline.get("full_span"):
+        return ""
+    width, height = 1040, 84
+    margin_left = margin_right = 30
+    chart_w = width - margin_left - margin_right
+    scale = build_absolute_scale(timeline, chart_w)["scale"]
+
+    def sx(iso: str) -> float:
+        return margin_left + scale(_iso_to_dt(iso))
+
+    top, band_h = 30, 34
+    parts = [
+        f'<svg class="acts-atom" viewBox="0 0 {width} {height}" '
+        f'xmlns="http://www.w3.org/2000/svg" width="100%" style="display:block; max-width:100%;">',
+        _defs(),
+        f'<text x="{margin_left}" y="16" font-family="EB Garamond, Iowan Old Style, serif" '
+        f'font-size="13" font-style="italic" fill="{PALETTE["ink_dim"]}">'
+        f"The work in {len(acts)} act(s) — its structural movements</text>",
+    ]
+    for i, a in enumerate(acts):
+        x0, x1 = sx(a["start"]), sx(a["end"])
+        w = max(1.0, x1 - x0)
+        fill = _ACT_TINTS[i % len(_ACT_TINTS)]
+        roman = (
+            _ROMAN_NUMERALS[a["index"] - 1].upper()
+            if a["index"] <= len(_ROMAN_NUMERALS)
+            else str(a["index"])
+        )
+        label = a.get("name") or roman
+        span_lbl = (
+            f"{_iso_to_dt(a['start']).strftime('%b %Y')} – "
+            f"{_iso_to_dt(a['end']).strftime('%b %Y')}"
+        )
+        title = f"Act {a['index']}: {span_lbl} · {a['commit_count']} commits"
+        if a["signals"]:
+            title += " · " + ", ".join(a["signals"])
+        cx = x0 + w / 2
+        parts.append(
+            f'<rect x="{x0:.1f}" y="{top}" width="{w:.1f}" height="{band_h}" '
+            f'fill="{fill}" stroke="{PALETTE["rule"]}" stroke-width="0.6">'
+            f"<title>{_xml_escape(title)}</title></rect>"
+        )
+        parts.append(
+            f'<text x="{cx:.1f}" y="{top + 15}" text-anchor="middle" '
+            f'font-family="EB Garamond, serif" font-size="13" font-weight="600" '
+            f'fill="{PALETTE["ink"]}">{_xml_escape(label)}</text>'
+        )
+        parts.append(
+            f'<text x="{cx:.1f}" y="{top + 28}" text-anchor="middle" '
+            f'font-family="EB Garamond, serif" font-size="8.5" fill="{PALETTE["ink_dim"]}">'
+            f"{_xml_escape(span_lbl)}</text>"
+        )
+        if i > 0:  # a boundary — dashed when the evidence is uncertain
+            dash = (
+                ' stroke-dasharray="3 2"'
+                if a["boundary_confidence"] < _ACT_DASHED_BELOW
+                else ""
+            )
+            parts.append(
+                f'<line x1="{x0:.1f}" y1="{top - 4}" x2="{x0:.1f}" y2="{top + band_h + 4}" '
+                f'stroke="{PALETTE["ink"]}" stroke-width="1"{dash}/>'
+            )
+    parts.append(
+        _render_absolute_axis(timeline, margin_left, chart_w, top + band_h + 14)
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def render_broadsheet(
     data: dict, *, stories_with_pages: set[str] | None = None, has_survey: bool = False
 ) -> str:
@@ -1816,6 +1903,7 @@ def render_broadsheet(
         ),
     }
     arc_panel = render_arc_panel(data.get("arc_band"), arc_lookup, timeline)
+    acts_atom = render_acts_atom(data.get("acts", []), timeline)
     raw_excerpt = data.get("survey_excerpt")
     survey_excerpt = _xml_escape(raw_excerpt) if raw_excerpt else None
 
@@ -1835,6 +1923,7 @@ def render_broadsheet(
         story_descriptions=data.get("story_descriptions"),
         dramatis_personae=data.get("dramatis_personae"),
         arc_panel=arc_panel,
+        acts_atom=acts_atom,
     )
 
 

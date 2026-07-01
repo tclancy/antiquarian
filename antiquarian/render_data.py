@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +23,7 @@ from pathlib import Path
 from antiquarian.cache import cache_path_for_repo
 from antiquarian.identity import coalesce_by_email, parse_mailmap
 from antiquarian.metrics import build_file_metrics, reference_timestamp
+from antiquarian.profile import assign_arcs_to_acts, build_acts
 from antiquarian.prs import detect_github_repo
 from antiquarian.todos import extract_todos
 
@@ -505,6 +506,62 @@ def _build_arc_band(arcs: list[_Arc], commits: list[_Commit]) -> dict:
     return {"arc_count": len(bands), "arcs": bands}
 
 
+_ActCommit = namedtuple("_ActCommit", "timestamp author author_email")
+
+
+def _build_acts_data(commits: list[_Commit], arcs: list[_Arc]) -> list[dict]:
+    """Structural Acts (#149) plus each arc's Act, JSON-shaped for the bundle.
+
+    Acts are derived here at render time — ``profile.build_acts`` is pure and
+    deterministic over the commit record, so this needs no persistence. Names
+    arrive later with the naming pass; here each Act carries its index, span,
+    boundary confidence, the structural signals that fired, and the slugs of the
+    arcs that live beneath it (its scenes). Commit timestamps are parsed to real
+    datetimes for the segmentation, then re-serialised to ISO for the bundle.
+    """
+    if not commits:
+        return []
+    parsed: list[_ActCommit] = []
+    ts_by_ref: dict[str, datetime] = {}
+    for c in commits:
+        ts = datetime.fromisoformat(c.timestamp)
+        parsed.append(_ActCommit(ts, c.author, c.author_email))
+        ts_by_ref[c.sha] = ts
+        ts_by_ref[c.sha[:8]] = ts
+        ts_by_ref[c.sha[:7]] = ts
+
+    acts = build_acts(parsed)
+
+    arc_times: dict[str, list[datetime]] = {}
+    for arc in arcs:
+        times = [
+            ts_by_ref[ref]
+            if ref in ts_by_ref
+            else ts_by_ref.get(ref[:8]) or ts_by_ref.get(ref[:7])
+            for ref in arc.commit_shas
+        ]
+        arc_times[arc.slug] = [t for t in times if t is not None]
+    arc_to_act = assign_arcs_to_acts(acts, arc_times)
+    members: dict[str, list[str]] = defaultdict(list)
+    for slug, act_id in arc_to_act.items():
+        members[act_id].append(slug)
+
+    return [
+        {
+            "id": a.id,
+            "index": a.index,
+            "start": a.start.isoformat(),
+            "end": a.end.isoformat(),
+            "commit_count": a.commit_count,
+            "boundary_confidence": a.boundary_confidence,
+            "signals": list(a.signals),
+            "name": a.name,
+            "arc_slugs": members.get(a.id, []),
+        }
+        for a in acts
+    ]
+
+
 def _discover_stories(repo_path: Path) -> list[Path]:
     stories_dir = repo_path / ".antiquarian" / "stories"
     if not stories_dir.exists():
@@ -678,6 +735,7 @@ def extract_render_data(repo_path: Path) -> dict:
         "arcs": [asdict(a) for a in arcs],
         "swimlane": _build_swimlane(commits, base_url),
         "arc_band": _build_arc_band(arcs, commits),
+        "acts": _build_acts_data(commits, arcs),
         "timeline": _build_timeline(commits),
         "file_lifespans": _build_per_file_lifespans(cache_db, files, commits),
         "file_metrics": file_metrics,
