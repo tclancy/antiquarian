@@ -74,7 +74,7 @@ uv run pre-commit run --all-files         # ruff + standard hooks
 - Don't fork Repowise — see `06 - Repowise Evaluation.md`.
 - Don't precompute "divisiveness" or "tone of voice" metrics — let synthesis derive them from prose. Punted deliberately from #2.
 - Don't make Pass 2 depend on Pass 3 of the multi-pass design (#54) — they stand alone.
-- Don't add interactive features to the broadsheet SVG (#40) — print-first.
+- Don't let a broadsheet atom depend on JavaScript to convey its data — the static page must be complete (JS-off, assistive-readable); interactivity is additive (progressive enhancement). Literal print-to-paper is a nice-to-have, not a rule (#40 demoted 2026-07-01). SVG atoms stay static; interactive affordances live in the HTML wrapper.
 - Don't treat any single artifact as ground truth — that's the whole project thesis.
 - Don't strip `# TODO` / `# FIXME` from narrative input. They carry disproportionate signal weight.
 - Don't answer or implement an arc-tier / information-density ticket (#149, #112, #121, #127, #150, and consumers #136/#119) in isolation. Read [`docs/arc-tier-and-density.md`](docs/arc-tier-and-density.md) first and confirm the ticket's upstream dependency is resolved — several were scoped in a vacuum and their answers can contradict.

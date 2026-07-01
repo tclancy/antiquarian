@@ -20,9 +20,11 @@ The budget is a property of the *reader*, not the data — so it's a near-consta
 
 Concretely: pick the *most-revealed* state that still fits the budget. This degrades smoothly — small inputs render fully, large inputs collapse exactly as much as they must, and nothing snaps at an arbitrary boundary.
 
-### 3. Print-first; interactivity is additive (carries #40 forward)
+### 3. Static-complete; interactivity is additive (carries #40 forward — print demoted 2026-07-01)
 
-The broadsheet is a print artifact. Every interactive affordance must **degrade to a complete static view** — collapsing, filtering, and tabbing are conveniences layered on top of a page that already says everything when flattened. Practically: `@media print` forces every disclosure open and hides every control. If a feature can't survive being printed, it doesn't belong on the broadsheet.
+The broadsheet must say everything as a **complete static page** — readable with JavaScript off and to assistive tech. Every interactive affordance is progressive enhancement: collapsing, filtering, hover cards, and tabbing are conveniences layered on top of a page that is already whole without them. The static baseline carries the data (e.g. an SVG `<title>` where a JS card merely adds a link). If a feature can't degrade to that baseline, it doesn't belong on the broadsheet.
+
+Literal print-to-paper is now a **nice-to-have, not a requirement** (#40 demoted — nobody prints a 25,000px broadsheet). `@media print` rules stay welcome and are nearly free once a page is static-complete, but they no longer gate a feature. The discipline that survives is *static-completeness*, which was the part actually earning its keep — no-JS and screen-reader robustness, not paper.
 
 ### 4. Degrade gracefully without JavaScript; reach for native primitives first
 
@@ -100,7 +102,7 @@ The same six principles govern the other atoms. Each currently renders everythin
 - **Dramatis personae.** Same shape as the swimlane: top-N within budget, tail disclosed.
 - **TODO strip.** Budget = bars shown; adapt by age or severity, disclose the rest.
 
-The recurring move: **identify what the budget is measured in for that atom** (rows, lanes, labels, bars), **derive the cut from the realized data**, and **make every fold survive print**. When in doubt, the lossy-region ethos applies here too — if something is elided, *say so* (a visible "+N more"), never silently truncate.
+The recurring move: **identify what the budget is measured in for that atom** (rows, lanes, labels, bars), **derive the cut from the realized data**, and **make every fold survive as a complete static view**. When in doubt, the lossy-region ethos applies here too — if something is elided, *say so* (a visible "+N more"), never silently truncate.
 
 ---
 
