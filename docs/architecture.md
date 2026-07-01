@@ -108,7 +108,7 @@ Three viz stacks were prototyped in a now-deleted `viz-playground/` directory (O
 
 The visual commitments — antiquarian broadsheet idiom, hatched lossy regions, oxide-red printer's-stamp accent, no library defaults, no CDN fonts — are locked in [`docs/visual-vocabulary.md`](visual-vocabulary.md). Update that doc *before* the renderer when changing a committed atom.
 
-The broadsheet vibe is print-first by design; interactivity belongs in a different surface (e.g., an Obsidian plugin) if at all.
+The broadsheet is static-complete by design — it says everything with JavaScript off and reads cleanly to assistive tech. Interactivity is additive: search, disclosure, and hover cards are progressive enhancement layered in the HTML wrapper around the static SVG atoms. Literal print-to-paper is a nice-to-have, not a requirement (#40 demoted 2026-07-01).
 
 ### How to render
 
