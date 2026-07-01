@@ -1236,6 +1236,40 @@ def _render_scene_chip(e: dict) -> str:
     )
 
 
+# Past this many arcs a panel group folds its tail; the heaviest few stay in
+# view, the rest defer into a disclosure. Small repos never cross it, so their
+# groups render as a plain flat list (#112 phase 6).
+_ARC_GROUP_FOLD_THRESHOLD = 20
+_ARC_GROUP_FOLD_SHOWN = 12
+
+
+def _render_chip_list(entries: list[dict]) -> str:
+    """A chip roster that folds its tail once a group runs long (#112 phase 6).
+
+    At or under the threshold the group renders as a plain flat list. A larger
+    group shows the heaviest arcs (by commit weight) and folds the rest into a
+    print-expanded, Ctrl-F-able ``<details>`` — the same long-tail disclosure
+    the swimlane uses (#118/#126), so nothing is dropped, only deferred on
+    screen. The fold targets exactly the dominant Acts that concentrate arcs
+    (httpx's four-year middle, itguy's hot month); everywhere else is untouched.
+    """
+    if len(entries) <= _ARC_GROUP_FOLD_THRESHOLD:
+        chips = "".join(_render_scene_chip(e) for e in entries)
+        return f'<ul class="arc-index">{chips}</ul>'
+    ranked = sorted(entries, key=lambda e: (-e.get("weight", 0), e["name"]))
+    shown = "".join(_render_scene_chip(e) for e in ranked[:_ARC_GROUP_FOLD_SHOWN])
+    folded = ranked[_ARC_GROUP_FOLD_SHOWN:]
+    folded_chips = "".join(_render_scene_chip(e) for e in folded)
+    return (
+        f'<ul class="arc-index">{shown}</ul>'
+        '<details class="arc-fold">'
+        f"<summary>show all {len(entries)} arcs — {len(folded)} more, "
+        "lighter in the record</summary>"
+        f'<ul class="arc-index">{folded_chips}</ul>'
+        "</details>"
+    )
+
+
 def _render_act_scene_group(act: dict, entries: list[dict]) -> str:
     """An Act header plus the arcs that most-correlate with it (#149 phase 5).
 
@@ -1257,12 +1291,11 @@ def _render_act_scene_group(act: dict, entries: list[dict]) -> str:
         if act.get("name")
         else ""
     )
-    chips = "".join(_render_scene_chip(e) for e in entries)
     return (
         '<section class="arc-act-group">'
         f'<div class="arc-act-head"><span class="arc-act-numeral">{roman}</span>'
         f'{name}<span class="arc-act-span">{_xml_escape(span)}</span></div>'
-        f'<ul class="arc-index">{chips}</ul>'
+        f"{_render_chip_list(entries)}"
         "</section>"
     )
 
@@ -1288,12 +1321,11 @@ def _group_scenes_by_act(entries: list[dict], acts: list[dict]) -> str:
         return ""
     unplaced = [e for e in entries if e["slug"] not in claimed]
     if unplaced:
-        chips = "".join(_render_scene_chip(e) for e in unplaced)
         groups.append(
             '<section class="arc-act-group arc-unplaced">'
             '<div class="arc-act-head"><span class="arc-act-numeral">·</span>'
             '<span class="arc-act-name">arcs not placed in an act</span></div>'
-            f'<ul class="arc-index">{chips}</ul></section>'
+            f"{_render_chip_list(unplaced)}</section>"
         )
     return f'<div class="arc-acts-index">{"".join(groups)}</div>'
 
@@ -1352,6 +1384,9 @@ def render_arc_panel(
                 "color": meta.get("color") or PALETTE["ink"],
                 "x0": (margin_left + scale(stamps[0])) if stamps else None,
                 "x1": (margin_left + scale(stamps[-1])) if stamps else None,
+                # Commit weight ranks the fold: the heaviest arcs stay in view
+                # when a long group defers its tail (#112 phase 6).
+                "weight": len(arc.get("commits", [])),
             }
         )
 
@@ -1405,11 +1440,7 @@ def render_arc_panel(
         title = "The work in acts — the arcs within each"
     else:
         title = "The named arcs of the work"
-        index_html = (
-            '<ul class="arc-index">'
-            + "".join(_render_scene_chip(e) for e in entries)
-            + "</ul>"
-        )
+        index_html = _render_chip_list(entries)
 
     return (
         f'<aside class="arc-panel" aria-label="{title}">'
@@ -1881,6 +1912,11 @@ def render_page(
     .arc-act-numeral {{ font-weight: 700; color: var(--ink); font-variant: small-caps; }}
     .arc-act-name {{ font-weight: 600; color: var(--ink); }}
     .arc-act-span {{ font-style: italic; }}
+    /* Long-group tail fold (#112 phase 6) — heaviest arcs stay, the rest defer
+       into a disclosure. Print-expanded below so nothing is dropped on paper. */
+    .arc-fold {{ font-size: 0.82rem; margin: 0.15rem 0 0; }}
+    .arc-fold > summary {{ cursor: pointer; font-style: italic; color: var(--accent); }}
+    .arc-fold > ul {{ margin-top: 0.3rem; }}
     @media print {{
       /* Print-first (#40): drop the float; the panel prints once, inline, at top. */
       .arc-panel {{ position: static; max-height: none; overflow: visible; box-shadow: none; break-inside: avoid; }}
@@ -1900,6 +1936,9 @@ def render_page(
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
       .swimlane-tail > summary {{ list-style: none; color: var(--ink-dim); }}
+      /* Folded arc tails print in full — the deferred arcs are still record. */
+      .arc-fold > *:not(summary) {{ display: block !important; }}
+      .arc-fold > summary {{ display: none; }}
       /* The file tree prints fully expanded; the live-search box is dropped. */
       .file-tree details > *:not(summary) {{ display: block !important; }}
       .file-tree details > summary {{ list-style: none; color: var(--ink-dim); }}
