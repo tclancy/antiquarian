@@ -912,6 +912,144 @@ def _render_file_leaf(node: FileNode, linked: set[str], descs: dict[str, str]) -
     return f'<li class="file" data-path="{data_path}">{label}{desc_span}</li>'
 
 
+def _pack_arc_rows(entries: list[dict], gap: float) -> int:
+    """Greedily lane-pack spine-registered arcs into non-overlapping rows.
+
+    Mutates each entry that carries an ``x0``/``x1`` span, assigning a ``row``
+    index so overlapping arcs stack instead of colliding. Interval-partitioning
+    by left edge — the classic greedy placement. Returns the row count.
+
+    This is a deliberately small packer: it keeps the phase-1 reference panel
+    legible on the eyeball-test repos. The at-scale layout question (hundreds of
+    arcs) is #112's research, not this panel's job.
+    """
+    row_right: list[float] = []
+    for e in sorted(
+        (e for e in entries if e.get("x0") is not None), key=lambda e: e["x0"]
+    ):
+        placed = False
+        for r, right in enumerate(row_right):
+            if e["x0"] >= right + gap:
+                e["row"] = r
+                row_right[r] = e["x1"]
+                placed = True
+                break
+        if not placed:
+            e["row"] = len(row_right)
+            row_right.append(e["x1"])
+    return len(row_right)
+
+
+def render_arc_panel(
+    arc_band: dict | None, arc_lookup: dict | None, timeline: dict
+) -> str:
+    """Sticky named-arcs reference panel (#119, phase 1).
+
+    In the httpx POC the named-arcs strip sat ~20,000px below the contributor
+    scatter, so a reader could not hold both in view to cross-reference. This
+    panel floats at the top of the viewport while the page scrolls, registered
+    to the shared absolute time spine (#117) so each arc sits at the same x as
+    the commits it names in "Hands that touched the work". Hovering an arc
+    lights its commit bubbles, reusing the phase-2 cross-atom highlight.
+
+    Degrades for print (#40): the enclosing CSS drops the float so the panel
+    prints once, inline, at the top — no sticky, no hover. Returns ``""`` when
+    there are no arcs, so the panel simply doesn't appear.
+    """
+    arcs = (arc_band or {}).get("arcs", [])
+    if not arcs:
+        return ""
+    lookup = arc_lookup or {}
+
+    margin_left, chart_w, margin_right = 220, 760, 60
+    width = margin_left + chart_w + margin_right
+    scale = build_absolute_scale(timeline, chart_w)["scale"]
+
+    seg_min, seg_h, row_pitch, top_pad, axis_gap = 6.0, 7.0, 12.0, 8.0, 26.0
+
+    entries: list[dict] = []
+    for arc in arcs:
+        slug = arc["slug"]
+        meta = lookup.get(slug, {})
+        stamps = sorted(
+            _iso_to_dt(c["timestamp"])
+            for c in arc.get("commits", [])
+            if c.get("timestamp")
+        )
+        entries.append(
+            {
+                "slug": slug,
+                "name": arc["name"],
+                "date_range": arc.get("date_range"),
+                "story_href": meta.get("story_href"),
+                "color": meta.get("color") or PALETTE["ink"],
+                "x0": (margin_left + scale(stamps[0])) if stamps else None,
+                "x1": (margin_left + scale(stamps[-1])) if stamps else None,
+            }
+        )
+
+    n_rows = _pack_arc_rows(entries, gap=4.0)
+    svg = ""
+    if n_rows:
+        svg_h = top_pad + n_rows * row_pitch + axis_gap
+        axis_y = top_pad + n_rows * row_pitch + 6
+        segs = [
+            f'<svg class="arc-panel-svg" viewBox="0 0 {width} {svg_h}" '
+            f'xmlns="http://www.w3.org/2000/svg" width="100%" '
+            f'style="display:block; max-width:100%;" aria-hidden="true">'
+        ]
+        for e in entries:
+            if e.get("x0") is None:
+                continue
+            y = top_pad + e["row"] * row_pitch
+            seg_w = max(seg_min, e["x1"] - e["x0"])
+            segs.append(
+                f'<rect class="arc-seg" data-arc-slug="{_xml_escape(e["slug"])}" '
+                f'data-arc-color="{_xml_escape(e["color"])}" '
+                f'x="{e["x0"]:.1f}" y="{y:.1f}" width="{seg_w:.1f}" height="{seg_h}" '
+                f'rx="2" fill="{e["color"]}" opacity="0.85">'
+                f"<title>{_xml_escape(e['name'])}</title></rect>"
+            )
+        segs.append(_render_absolute_axis(timeline, margin_left, chart_w, axis_y))
+        segs.append("</svg>")
+        svg = "".join(segs)
+
+    chips = ['<ul class="arc-index">']
+    for e in entries:
+        name = _xml_escape(e["name"])
+        label = (
+            f'<a href="{_xml_escape(e["story_href"])}">{name}</a>'
+            if e["story_href"]
+            else name
+        )
+        when = (
+            f'<span class="arc-when">{_xml_escape(e["date_range"])}</span>'
+            if e["date_range"]
+            else ""
+        )
+        undated = (
+            ""
+            if e.get("x0") is not None
+            else ' <span class="arc-undated">(undated)</span>'
+        )
+        chips.append(
+            f'<li class="arc-chip" data-arc-slug="{_xml_escape(e["slug"])}" '
+            f'data-arc-color="{_xml_escape(e["color"])}">'
+            f'<span class="arc-dot" style="background:{e["color"]}"></span>'
+            f"{label}{when}{undated}</li>"
+        )
+    chips.append("</ul>")
+
+    return (
+        '<aside class="arc-panel" aria-label="The named arcs of the work">'
+        '<div class="arc-panel-title">The named arcs of the work'
+        '<span class="arc-panel-hint"> — hover an arc to light its commits below</span>'
+        "</div>"
+        f"{svg}{''.join(chips)}"
+        "</aside>"
+    )
+
+
 def render_page(
     project: str,
     manifest: dict,
@@ -923,6 +1061,7 @@ def render_page(
     has_survey: bool = False,
     story_descriptions: dict[str, str] | None = None,
     dramatis_personae: list[dict[str, str]] | None = None,
+    arc_panel: str = "",
 ) -> str:
     """Render the main broadsheet HTML.
 
@@ -1337,6 +1476,36 @@ def render_page(
     .commit-lens-detail {{ font-size: 0.85rem; min-height: 2.5em; border-top: 1px solid var(--rule); padding-top: 0.4rem; }}
     .commit-lens-detail a {{ color: var(--accent); margin-right: 0.8rem; }}
     @media print {{ .commit-lens, .lane-hit {{ display: none !important; }} }}
+
+    /* Named-arcs reference panel (#119): floats at the top of the viewport so
+       the arcs stay in view while the reader scrolls down to the scatter. */
+    .arc-panel {{
+      position: sticky; top: 0; z-index: 30;
+      background: var(--paper); border-bottom: 1px solid var(--ink);
+      box-shadow: 0 4px 10px rgba(31, 26, 20, 0.12);
+      margin: 1.4rem 0; padding: 0.5rem 0 0.4rem;
+      max-height: 42vh; overflow: auto;
+    }}
+    .arc-panel-title {{ font-family: var(--serif); font-weight: 600; font-size: 0.95rem; margin-bottom: 0.3rem; }}
+    .arc-panel-hint {{ font-style: italic; font-weight: 400; color: var(--ink-dim); font-size: 0.8rem; }}
+    .arc-panel-svg {{ margin-bottom: 0.3rem; }}
+    .arc-seg {{ cursor: pointer; }}
+    .arc-index {{ list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; }}
+    .arc-chip {{
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      font-family: var(--serif); font-size: 0.82rem; cursor: pointer;
+      padding: 0.1rem 0.2rem; border-radius: 3px;
+    }}
+    .arc-chip:hover {{ background: var(--paper-alt); }}
+    .arc-chip a {{ color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); }}
+    .arc-dot {{ width: 0.62rem; height: 0.62rem; border-radius: 2px; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15); }}
+    .arc-when {{ color: var(--ink-dim); font-style: italic; }}
+    .arc-undated {{ color: var(--ink-dim); font-size: 0.75rem; }}
+    @media print {{
+      /* Print-first (#40): drop the float; the panel prints once, inline, at top. */
+      .arc-panel {{ position: static; max-height: none; overflow: visible; box-shadow: none; break-inside: avoid; }}
+      .arc-panel-hint {{ display: none; }}
+    }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1371,7 +1540,7 @@ def render_page(
       page says so in marks rather than blank space — the absence is set as
       carefully as the presence.
     </p>{survey_html}
-
+    {arc_panel}
     {_render_atom_sequence(atoms)}
 
     <div class="colophon">
@@ -1570,6 +1739,38 @@ def render_page(
       b.addEventListener('mouseleave', function () {{ if (!pinned) unpaint(); }});
     }});
   }})();
+
+  /* Named-arcs panel (#119): hovering an arc in the floating reference lights
+     its commit bubbles in the scatter — the reference-panel side of the
+     phase-2 cross-atom highlight. Self-contained: reuses the same xref classes
+     but never touches the swimlane lens state. */
+  (function () {{
+    var panel = document.querySelector('.arc-panel');
+    var first = document.querySelector('.commit-bubble');
+    if (!panel || !first) return;
+    var svg = first.closest('svg');
+    function lightArc(slug, color) {{
+      svg.classList.add('xref-dim');
+      svg.querySelectorAll('.commit-bubble').forEach(function (o) {{
+        var v = (o.getAttribute('data-arcs') || '').trim();
+        if (v && v.split(/\\s+/).indexOf(slug) !== -1) {{
+          o.classList.add('commit-xref'); if (color) o.style.fill = color;
+        }}
+      }});
+    }}
+    function clearArc() {{
+      svg.classList.remove('xref-dim');
+      svg.querySelectorAll('.commit-bubble.commit-xref').forEach(function (o) {{
+        o.classList.remove('commit-xref'); o.style.fill = '';
+      }});
+    }}
+    panel.querySelectorAll('.arc-chip, .arc-seg').forEach(function (el) {{
+      var slug = el.getAttribute('data-arc-slug'); if (!slug) return;
+      var color = el.getAttribute('data-arc-color');
+      el.addEventListener('mouseenter', function () {{ lightArc(slug, color); }});
+      el.addEventListener('mouseleave', clearArc);
+    }});
+  }})();
   </script>
 </body>
 </html>
@@ -1614,6 +1815,7 @@ def render_broadsheet(
             data["swimlane"], timeline, data["file_lifespans"], arc_lookup=arc_lookup
         ),
     }
+    arc_panel = render_arc_panel(data.get("arc_band"), arc_lookup, timeline)
     raw_excerpt = data.get("survey_excerpt")
     survey_excerpt = _xml_escape(raw_excerpt) if raw_excerpt else None
 
@@ -1632,6 +1834,7 @@ def render_broadsheet(
         has_survey=has_survey,
         story_descriptions=data.get("story_descriptions"),
         dramatis_personae=data.get("dramatis_personae"),
+        arc_panel=arc_panel,
     )
 
 
