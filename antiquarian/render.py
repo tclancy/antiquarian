@@ -322,16 +322,204 @@ def _render_dramatis_personae(entries: list[dict[str, str]]) -> str:
 # ----------------------------------------------------------------------------
 
 
-def render_timeline_masthead(timeline: dict) -> str:
-    """The masthead-strip dual-axis ribbon. Wide, sits above the H1 dateline.
+# Above this commit count the masthead density strip bins rather than plotting
+# every commit, so a comictagger-scale history doesn't smear into a solid bar
+# (#136 Q1). A named constant so the eyeball-test repos can tune it — Tom's call.
+MASTHEAD_BIN_THRESHOLD = 400
+_MASTHEAD_BINS = 100
 
-    Full project lifespan on a single rule; active windows are filled with
-    accent; dormancy regions get the diagonal hatch. Year labels every
-    couple of years.
+
+def _masthead_significant(commits: list[dict]) -> set[str]:
+    """``short_sha`` of every commit significant enough to survive into print.
+
+    Union, per Tom's answer to #136 Q2: a commit is significant if it belongs to
+    a named arc **or** its diff size is a statistical outlier (one-sided
+    ``z > 2.0`` over ``additions + deletions``). The z-cutoff mirrors
+    ``profile._find_notable_evolutions``; the masthead is a project-wide strip,
+    so this uses **global** scope rather than that function's region-scoped
+    proration — regions aren't carried in the render bundle, and a project-level
+    strip wants project-level outliers anyway. Over-inclusion costs ink, not
+    honesty (the ethos preference the union encodes).
+    """
+    sig = {c["short_sha"] for c in commits if c.get("arcs")}
+    sizes = [c["additions"] + c["deletions"] for c in commits]
+    if len(sizes) >= 2:
+        mean = sum(sizes) / len(sizes)
+        variance = sum((s - mean) ** 2 for s in sizes) / (len(sizes) - 1)
+        sd = math.sqrt(variance) if variance > 0 else 0.0
+        if sd > 0:
+            for c, size in zip(commits, sizes):
+                if (size - mean) / sd > 2.0:
+                    sig.add(c["short_sha"])
+    return sig
+
+
+def _masthead_dot_attrs(
+    c: dict, arc_lookup: dict, significant: bool
+) -> tuple[str, str]:
+    """Data attributes + a print/keyboard ``<title>`` for one masthead commit dot.
+
+    ``<title>`` is the baseline that works keyboard-only and prints (#136 Q3);
+    the ``data-*`` attributes feed the optional JS lens card. Untrusted commit /
+    PR text stays in attributes (the renderer escapes it) and is only ever read
+    back via ``getAttribute`` + ``textContent`` on the JS side — never innerHTML.
+    """
+    arc_names = [arc_lookup[s]["name"] for s in c.get("arcs", []) if s in arc_lookup]
+    bits = [c["short_sha"], c.get("date") or "", c.get("subject") or ""]
+    if arc_names:
+        bits.append("arc: " + "; ".join(arc_names))
+    title = " · ".join(b for b in bits if b)
+    attrs = (
+        f' data-sha="{_xml_escape(c["short_sha"])}"'
+        f' data-date="{_xml_escape(c.get("date") or "")}"'
+        f' data-detail="{_xml_escape(c.get("detail") or c.get("subject") or "")}"'
+        f' data-arc-names="{_xml_escape("; ".join(arc_names))}"'
+    )
+    if c.get("pr_url"):
+        attrs += f' data-pr-url="{_xml_escape(c["pr_url"])}"'
+    if c.get("commit_url"):
+        attrs += f' data-commit-url="{_xml_escape(c["commit_url"])}"'
+    cls = "masthead-dot sig" if significant else "masthead-dot"
+    return f'class="{cls}"{attrs}', title
+
+
+def _render_masthead_density(
+    timeline: dict, commits: list[dict], arc_lookup: dict
+) -> str:
+    """Commit-density micro-timeline for the masthead (#136).
+
+    Each commit is a bubble on the absolute spine at its true date; bubble area
+    encodes diff size (sqrt-scaled). Significant commits (named-arc or diff
+    outlier) get a heavier stroke and survive print; the rest are faint and drop
+    out on paper. Above ``MASTHEAD_BIN_THRESHOLD`` commits the base layer bins to
+    a density histogram for legibility, but significant commits are still
+    plotted individually on top so the arc-hover surface survives. Dormancy
+    ``>= 365d`` gaps stay hatched — the silence is load-bearing.
+    """
+    width, height = 900, 118
+    full_start = _iso_to_dt(timeline["full_span"]["start"])
+    full_end = _iso_to_dt(timeline["full_span"]["end"])
+    full_span = max(1.0, (full_end - full_start).total_seconds())
+    margin_left = margin_right = 30
+    chart_w = width - margin_left - margin_right
+    baseline = 62
+
+    def sx(dt: datetime) -> float:
+        return margin_left + (dt - full_start).total_seconds() / full_span * chart_w
+
+    parts = [
+        f'<svg class="masthead-density" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" '
+        f'width="100%" style="display:block; max-width: 100%;">',
+        _defs(),
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="{PALETTE["paper"]}"/>',
+        f'<text x="{margin_left}" y="14" font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" '
+        f'font-size="11" font-style="italic" fill="{PALETTE["ink_dim"]}">'
+        f"A reconstructed lifespan, from {full_start.strftime('%B %Y')} to {full_end.strftime('%B %Y')}"
+        f" — {timeline['full_span']['days']} days, {len(commits)} commits of surviving record.</text>",
+    ]
+
+    # Dormancy first, behind the marks — the silence is context, not foreground.
+    for g in timeline.get("gaps", []):
+        if g["days"] < 365:
+            continue
+        gx1, gx2 = sx(_iso_to_dt(g["start"])), sx(_iso_to_dt(g["end"]))
+        parts.append(
+            f'<rect x="{gx1:.1f}" y="{baseline - 22}" width="{gx2 - gx1:.1f}" height="44" '
+            f'fill="url(#lossy-hatch)" opacity="0.85"/>'
+        )
+    parts.append(
+        f'<line x1="{margin_left}" y1="{baseline}" x2="{width - margin_right}" y2="{baseline}" '
+        f'stroke="{PALETTE["rule"]}" stroke-width="0.6"/>'
+    )
+
+    significant = _masthead_significant(commits)
+    datable = [c for c in commits if c.get("timestamp")]
+    max_diff = max((c["additions"] + c["deletions"] for c in datable), default=1) or 1
+    binned = len(datable) > MASTHEAD_BIN_THRESHOLD
+
+    if binned:
+        # Base layer: a density histogram so the strip stays legible at scale.
+        bin_w = chart_w / _MASTHEAD_BINS
+        counts = [0] * _MASTHEAD_BINS
+        for c in datable:
+            frac = (_iso_to_dt(c["timestamp"]) - full_start).total_seconds() / full_span
+            counts[min(_MASTHEAD_BINS - 1, max(0, int(frac * _MASTHEAD_BINS)))] += 1
+        max_count = max(counts) or 1
+        for i, n in enumerate(counts):
+            if not n:
+                continue
+            bh = 3 + (n / max_count) * 20
+            bx = margin_left + i * bin_w
+            parts.append(
+                f'<rect x="{bx:.1f}" y="{baseline - bh:.1f}" width="{max(1.0, bin_w - 0.6):.1f}" '
+                f'height="{bh:.1f}" fill="{PALETTE["ink_dim"]}" opacity="0.35">'
+                f"<title>{n} commit(s) in this window</title></rect>"
+            )
+        plot = [c for c in datable if c["short_sha"] in significant]
+    else:
+        plot = datable
+
+    for c in plot:
+        cx = sx(_iso_to_dt(c["timestamp"]))
+        diff = c["additions"] + c["deletions"]
+        r = 2.5 + math.sqrt(diff / max_diff) * 7
+        is_sig = c["short_sha"] in significant
+        cls_attrs, title = _masthead_dot_attrs(c, arc_lookup, is_sig)
+        if is_sig:
+            fill, stroke, sw, op = PALETTE["accent"], PALETTE["ink"], 0.8, 0.9
+        else:
+            fill, stroke, sw, op = PALETTE["ink_dim"], "none", 0, 0.32
+        parts.append(
+            f'<circle {cls_attrs} cx="{cx:.1f}" cy="{baseline}" r="{r:.1f}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}" opacity="{op}">'
+            f"<title>{_xml_escape(title)}</title></circle>"
+        )
+
+    for d, label in _axis_ticks(full_start, full_end):
+        x = sx(d)
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{baseline + 6}" x2="{x:.1f}" y2="{baseline + 10}" stroke="{PALETTE["rule"]}"/>'
+        )
+        parts.append(
+            f'<text x="{x:.1f}" y="{baseline + 22}" text-anchor="middle" font-size="10" '
+            f'font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" fill="{PALETTE["ink_dim"]}">{label}</text>'
+        )
+
+    parts.append(
+        f'<g transform="translate({margin_left}, {baseline + 30})">'
+        f'<circle cx="7" cy="5" r="5" fill="{PALETTE["accent"]}" stroke="{PALETTE["ink"]}" stroke-width="0.8" opacity="0.9"/>'
+        f'<text x="18" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">significant (named arc or diff outlier)</text>'
+        f'<rect x="250" y="0" width="14" height="10" fill="url(#lossy-hatch)" stroke="{PALETTE["rule"]}" stroke-width="0.5"/>'
+        f'<text x="270" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">dormancy (≥1y)</text>'
+        f"</g>"
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_timeline_masthead(
+    timeline: dict, commits: list[dict] | None = None, arc_lookup: dict | None = None
+) -> str:
+    """The masthead strip above the H1 dateline.
+
+    With per-commit data (the normal broadsheet path), renders a commit-density
+    micro-timeline (#136): commits as bubbles on the absolute spine, significant
+    ones surfaced for hover. Without commits — an empty repo, or a caller that
+    only has the timeline — falls back to the original dual-axis reference
+    ribbon so the page still has a masthead.
     """
     if not timeline or not timeline.get("full_span"):
         return ""
+    if commits:
+        return _render_masthead_density(timeline, commits, arc_lookup or {})
+    return _render_masthead_reference(timeline)
 
+
+def _render_masthead_reference(timeline: dict) -> str:
+    """The original dual-axis reference ribbon — full lifespan rule, active
+    windows filled in accent, dormancy hatched. Retained as the no-commits
+    fallback for ``render_timeline_masthead``.
+    """
     width = 900
     height = 90
     full_start = _iso_to_dt(timeline["full_span"]["start"])
@@ -1507,6 +1695,16 @@ def render_page(
       .arc-panel {{ position: static; max-height: none; overflow: visible; box-shadow: none; break-inside: avoid; }}
       .arc-panel-hint {{ display: none; }}
     }}
+
+    /* Masthead commit-density timeline (#136). */
+    .masthead-dot.sig {{ cursor: pointer; }}
+    .masthead-dot.sig:hover {{ opacity: 1 !important; }}
+    .masthead-lens {{ z-index: 25; }}
+    @media print {{
+      /* On paper the faint, non-significant dots drop out — significant ones
+         (named arc or diff outlier) survive as the printed density record. */
+      .masthead-dot:not(.sig) {{ display: none !important; }}
+    }}
     @media print {{
       /* Force every folded hand visible on paper; drop the toggle affordance. */
       .swimlane-tail > *:not(summary) {{ display: block !important; }}
@@ -1773,6 +1971,54 @@ def render_page(
       el.addEventListener('mouseleave', clearArc);
     }});
   }})();
+
+  /* Masthead density lens (#136): clicking a commit dot opens a small card with
+     the subject, arc names and clickable PR/commit links — the progressive
+     enhancement on top of the SVG <title> baseline. Self-contained; the card
+     reuses .commit-lens styling and is JS-created so print gets nothing dynamic.
+     DOM nodes + textContent only — commit/PR text is untrusted, never innerHTML. */
+  (function () {{
+    var strip = document.querySelector('.masthead-density');
+    if (!strip) return;
+    var atomEl = strip.closest('.atom') || strip.parentNode;
+    var card = null;
+    function closeCard() {{ if (card) {{ card.remove(); card = null; }} }}
+    function openCard(dot) {{
+      closeCard();
+      card = document.createElement('div');
+      card.className = 'commit-lens masthead-lens';
+      var head = document.createElement('div'); head.className = 'commit-lens-head';
+      var lbl = document.createElement('span');
+      lbl.textContent = (dot.getAttribute('data-sha') || '') + ' · ' + (dot.getAttribute('data-date') || '');
+      head.appendChild(lbl);
+      var x = document.createElement('button'); x.className = 'commit-lens-close'; x.textContent = '×';
+      x.addEventListener('click', closeCard); head.appendChild(x);
+      var body = document.createElement('div'); body.className = 'commit-lens-detail';
+      body.textContent = dot.getAttribute('data-detail') || '(no message)';
+      var arcs = dot.getAttribute('data-arc-names');
+      if (arcs) {{
+        body.appendChild(document.createElement('br'));
+        var em = document.createElement('em'); em.textContent = 'arcs: ' + arcs; body.appendChild(em);
+      }}
+      [['data-pr-url', 'view PR →'], ['data-commit-url', 'view commit →']].forEach(function (p) {{
+        var u = dot.getAttribute(p[0]); if (!u) return;
+        body.appendChild(document.createElement('br'));
+        var a = document.createElement('a'); a.href = u; a.target = '_blank'; a.rel = 'noopener'; a.textContent = p[1];
+        body.appendChild(a);
+      }});
+      card.appendChild(head); card.appendChild(body);
+      atomEl.appendChild(card);
+      card.style.top = (strip.getBoundingClientRect().height * 0.6) + 'px';
+    }}
+    strip.querySelectorAll('.masthead-dot').forEach(function (dot) {{
+      dot.style.cursor = 'pointer';
+      dot.addEventListener('click', function (e) {{ e.stopPropagation(); openCard(dot); }});
+    }});
+    // Dot clicks stopPropagation, so any click reaching here is outside a dot.
+    document.addEventListener('click', function (e) {{
+      if (card && !card.contains(e.target)) closeCard();
+    }});
+  }})();
   </script>
 </body>
 </html>
@@ -1885,7 +2131,6 @@ def render_broadsheet(
     gracefully when EB Garamond fails to load (the only external resource).
     """
     timeline = data["timeline"]
-    masthead_svg = render_timeline_masthead(timeline)
     linked = stories_with_pages or set()
     arc_lookup = {}
     for i, arc in enumerate(data.get("arc_band", {}).get("arcs", [])):
@@ -1898,6 +2143,15 @@ def render_broadsheet(
             "story_href": href,
             "color": NEON_ARC_COLORS[i % len(NEON_ARC_COLORS)],
         }
+    # Masthead density timeline (#136) needs per-commit data with the swimlane's
+    # derived fields (date/detail/pr_url/commit_url), so flatten the lanes rather
+    # than the bare top-level commits.
+    masthead_commits = [
+        c for lane in data.get("swimlane", {}).get("lanes", []) for c in lane["commits"]
+    ]
+    masthead_svg = render_timeline_masthead(
+        timeline, commits=masthead_commits, arc_lookup=arc_lookup
+    )
     atoms = {
         "todo_strip": render_todo_strip(data["todos"], timeline),
         "swimlane": render_swimlane(

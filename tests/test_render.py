@@ -28,9 +28,12 @@ from antiquarian.render import (
     _strip_empty_todo_section,
     _story_md_to_html_name,
     build_absolute_scale,
+    MASTHEAD_BIN_THRESHOLD,
+    _masthead_significant,
     render_acts_atom,
     render_arc_panel,
     render_broadsheet,
+    render_timeline_masthead,
     render_story_page,
     render_swimlane,
     render_survey_page,
@@ -408,6 +411,85 @@ class TestActsAtom:
         html = render_acts_atom([self._acts()[0]], self.TL)
         assert "The work in 1 act —" in html
         assert "act(s)" not in html
+
+
+class TestMastheadDensityTimeline:
+    """The masthead commit-density micro-timeline (#136)."""
+
+    TIMELINE = {
+        "full_span": {
+            "start": "2026-01-01T00:00:00+00:00",
+            "end": "2026-06-01T00:00:00+00:00",
+            "days": 152,
+        },
+        "active_windows": [],
+        "gaps": [],
+    }
+    LOOKUP = {
+        "s1": {"name": "Strategy proliferation", "story_href": None, "color": "#ff0"}
+    }
+
+    def _commit(self, sha, day, add, dele, arcs=(), pr=None):
+        return {
+            "short_sha": sha,
+            "timestamp": f"2026-0{day}-01T00:00:00+00:00",
+            "date": f"2026-0{day}-01",
+            "additions": add,
+            "deletions": dele,
+            "subject": f"commit {sha}",
+            "arcs": list(arcs),
+            "detail": f"detail for {sha}",
+            "pr_url": pr,
+            "commit_url": None,
+        }
+
+    def test_significance_is_union_of_arc_and_diff_outlier(self):
+        # A calm baseline of small commits so a single large one is a real
+        # outlier (too few baseline commits and the outlier masks its own z).
+        commits = [self._commit(f"n{i:05d}", (i % 5) + 1, 5, 5) for i in range(20)]
+        commits.append(self._commit("bbbbbbb", 2, 5, 5, arcs=["s1"]))  # arc → sig
+        commits.append(self._commit("eeeeeee", 5, 600, 600))  # diff outlier → sig
+        sig = _masthead_significant(commits)
+        assert "bbbbbbb" in sig  # arc membership
+        assert "eeeeeee" in sig  # diff outlier
+        assert "n00000" not in sig  # ordinary small commit stays faint
+
+    def test_per_commit_mode_plots_every_commit(self):
+        commits = [self._commit(f"sha{i:04d}", (i % 5) + 1, 10, 10) for i in range(6)]
+        html = render_timeline_masthead(self.TIMELINE, commits, self.LOOKUP)
+        assert 'class="masthead-density"' in html
+        assert html.count('class="masthead-dot') == 6  # one dot per commit
+        assert "<title>" in html  # keyboard/print baseline
+
+    def test_binned_mode_folds_nonsignificant_into_density(self):
+        # Over the threshold: base layer bins, only significant dots plotted.
+        n = MASTHEAD_BIN_THRESHOLD + 50
+        commits = [self._commit(f"s{i:05d}", (i % 5) + 1, 10, 10) for i in range(n)]
+        commits[0]["arcs"] = ["s1"]  # exactly one significant
+        html = render_timeline_masthead(self.TIMELINE, commits, self.LOOKUP)
+        assert "commit(s) in this window" in html  # density bins present
+        # only the one significant commit is individually plotted
+        assert html.count('class="masthead-dot') == 1
+        assert 'class="masthead-dot sig"' in html
+
+    def test_dot_carries_pr_link_and_arc_names(self):
+        commits = [self._commit("aaaaaaa", 1, 5, 5, arcs=["s1"], pr="https://x/pull/9")]
+        html = render_timeline_masthead(self.TIMELINE, commits, self.LOOKUP)
+        assert 'data-pr-url="https://x/pull/9"' in html
+        assert 'data-arc-names="Strategy proliferation"' in html
+
+    def test_falls_back_to_reference_strip_without_commits(self):
+        html = render_timeline_masthead(self.TIMELINE, commits=None)
+        assert 'class="masthead-density"' not in html
+        assert "active commit windows" in html  # the old reference legend
+
+    def test_significant_dots_survive_print_via_css(self, seeded_repo: Path):
+        _seed_arc_story(seeded_repo)
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert 'class="masthead-density"' in html
+        print_blocks = html.split("@media print")
+        assert any(".masthead-dot:not(.sig)" in blk for blk in print_blocks[1:])
 
 
 class TestRenderCli:
