@@ -189,6 +189,7 @@ h1.story-title code {
   color: var(--ink-dim);
 }
 .metric-pip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -197,6 +198,35 @@ h1.story-title code {
   border-radius: 999px;
   background: var(--paper-alt);
   cursor: help;
+}
+/* Instant, palette-styled tooltip (#148) — replaces the flaky native title.
+ * Reads from data-tip, appears below the pip on hover/focus; no JS. */
+.metric-pip::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  width: max-content;
+  max-width: 20rem;
+  padding: 0.35rem 0.55rem;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.metric-pip:hover::after,
+.metric-pip:focus::after {
+  opacity: 1;
+  visibility: visible;
 }
 .metric-pip__glyph {
   font-size: 0.95em;
@@ -222,6 +252,7 @@ h1.story-title code {
 
 @media print {
   .metric-pip { cursor: default; }
+  .metric-pip::after { display: none; }  /* no hover tooltip on paper */
   /* Force colours to print — Tom's broadsheet aesthetic depends on the
      oxide-red accent surviving the page. Browsers honour this on most
      printers; PDF export honours it universally. */
@@ -267,6 +298,21 @@ h1.story-title code {
 }
 .story-body strong { font-weight: 600; }
 .story-body em { font-style: italic; }
+/* Inline references linkified from the prose (#113) — PR #N and commit SHAs.
+ * Default browser blue reads as a foreign body against the paper; keep them in
+ * the palette instead: ink text under a quiet rule, firming to accent on hover.
+ * SHAs arrive wrapped in <code> (already accent) — inherit so a #N link and a
+ * SHA link read as the same kind of mark. */
+.story-body a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+.story-body a:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.story-body a code { color: inherit; }
 .story-body ul, .story-body ol { margin: 0 0 1rem 1.5rem; padding: 0; }
 .story-body li { margin-bottom: 0.3rem; }
 .colophon {

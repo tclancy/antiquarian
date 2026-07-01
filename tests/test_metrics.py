@@ -320,6 +320,25 @@ def test_render_metric_pips_emits_one_pip_per_metric():
     assert "🌪️" in html
 
 
+def test_render_metric_pips_uses_data_tip_not_native_title():
+    # The detail rides in data-tip (drives the CSS tooltip), not the flaky
+    # native title — the aria-label still carries the reading for a11y.
+    pips = [
+        {
+            "glyph": "🚌",
+            "name": "bus factor",
+            "level": "green",
+            "value": 3.0,
+            "display": "3",
+            "detail": "3 contributor(s) hold the file",
+        }
+    ]
+    html = _render_metric_pips(pips)
+    assert 'data-tip="bus factor: 3 contributor(s) hold the file"' in html
+    assert "title=" not in html  # no native title competing with the CSS tip
+    assert 'aria-label="bus factor: 3, green"' in html
+
+
 def test_render_metric_pips_escapes_user_text():
     pips = [
         {
