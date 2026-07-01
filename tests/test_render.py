@@ -14,6 +14,7 @@ markers ("<svg", "broadsheet", masthead title) and the data contract.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -27,6 +28,7 @@ from antiquarian.render import (
     _strip_empty_todo_section,
     _story_md_to_html_name,
     build_absolute_scale,
+    render_arc_panel,
     render_broadsheet,
     render_story_page,
     render_swimlane,
@@ -43,6 +45,25 @@ from antiquarian.render_data import (
 )
 
 runner = CliRunner()
+
+
+def _seed_arc_story(repo: Path) -> None:
+    """Write a per-file story with a Major-arcs section into a seeded repo.
+
+    The base ``seeded_repo`` fixture ships no arcs; the named-arcs panel only
+    renders when arcs exist, so tests that need the panel seed one here. The
+    referenced SHAs match ``conftest``'s seeded commits so the arcs are datable.
+    """
+    stories_dir = repo / ".antiquarian" / "stories"
+    stories_dir.mkdir(parents=True, exist_ok=True)
+    (stories_dir / "src__a.py.md").write_text(
+        "## Origin\nThe file was introduced.\n\n"
+        "## Major arcs\n"
+        "**Arc 1 — Initial sketch (January 2026).** A first cut at "
+        "the module landed in `aaa11111`.\n\n"
+        "**Arc 2 — Hardening (March 2026).** Coverage expanded in "
+        "`bbb22222`.\n"
+    )
 
 
 class TestExtractRenderData:
@@ -186,18 +207,115 @@ class TestRenderBroadsheet:
         html = render_broadsheet(data)
         assert "font-size: 120%" in html
 
-    def test_no_standalone_arc_roster_section(self, seeded_repo):
-        """The arc roster atom is retired — arcs live on story pages + swimlane overlay.
+    def test_named_arcs_live_in_floating_panel_not_static_roster(self, seeded_repo):
+        """The old static arc-roster atom stays retired; #119 reintroduces the
+        named-arcs reference as a *floating, spine-registered* panel instead.
 
-        The arc *data* still flows to the swimlane overlay (data-arcs= attribute),
-        but there is no standalone roster section rendered in the broadsheet.
+        The retirement (see git history) removed a static roster that couldn't
+        scale — arcs landing ~20,000px from their commits. #119's answer is the
+        sticky ``.arc-panel``, not a return of the old ``.arc-roster`` atom. Arc
+        data still flows to the swimlane overlay (``data-arcs=``) either way.
         """
+        _seed_arc_story(seeded_repo)
         data = extract_render_data(seeded_repo)
         html = render_broadsheet(data)
-        assert 'class="arc-roster"' not in html
-        assert "The named arcs of the work" not in html
-        # arc data still flows to the swimlane overlay
-        assert "data-arcs=" in html
+        assert 'class="arc-roster"' not in html  # old static atom stays gone
+        assert 'class="arc-panel"' in html  # #119 floating reference
+        assert "data-arcs=" in html  # swimlane overlay intact
+
+
+class TestArcPanel:
+    """The floating named-arcs reference panel (#119, phase 1)."""
+
+    TIMELINE = {
+        "full_span": {"start": "2026-01-01T00:00:00", "end": "2026-06-01T00:00:00"}
+    }
+
+    def _band(self):
+        return {
+            "arc_count": 2,
+            "arcs": [
+                {
+                    "slug": "s1",
+                    "name": "Arc 1 — Strategy proliferation",
+                    "date_range": "early 2026",
+                    "file_path": "src/a.py",
+                    "commits": [
+                        {"timestamp": "2026-02-01T00:00:00", "short_sha": "aaaaaaa"},
+                        {"timestamp": "2026-03-01T00:00:00", "short_sha": "bbbbbbb"},
+                    ],
+                },
+                {
+                    "slug": "s2",
+                    "name": "Arc 2 — The long quiet",
+                    "date_range": None,
+                    "file_path": "src/b.py",
+                    "commits": [],  # no datable commits — index-only
+                },
+            ],
+        }
+
+    def _lookup(self):
+        return {
+            "s1": {
+                "name": "Arc 1 — Strategy proliferation",
+                "story_href": "stories/src__a.py.html",
+                "color": "#ff2d55",
+            },
+            "s2": {
+                "name": "Arc 2 — The long quiet",
+                "story_href": None,
+                "color": "#00e5ff",
+            },
+        }
+
+    def test_empty_arcs_render_nothing(self):
+        assert render_arc_panel({"arcs": []}, {}, self.TIMELINE) == ""
+        assert render_arc_panel(None, None, self.TIMELINE) == ""
+
+    def test_lists_every_arc_name_and_carries_highlight_hooks(self):
+        html = render_arc_panel(self._band(), self._lookup(), self.TIMELINE)
+        assert 'class="arc-panel"' in html
+        assert "Arc 1 — Strategy proliferation" in html
+        assert "Arc 2 — The long quiet" in html
+        # highlight hooks the panel JS keys off
+        assert 'data-arc-slug="s1"' in html
+        assert 'data-arc-color="#ff2d55"' in html
+
+    def test_datable_arc_registers_to_spine_within_chart_bounds(self):
+        """A datable arc becomes an <rect class="arc-seg"> positioned at
+        margin_left(220)..margin_left+chart_w(980) — the swimlane's geometry."""
+        html = render_arc_panel(self._band(), self._lookup(), self.TIMELINE)
+        assert 'class="arc-seg"' in html
+        xs = [float(m) for m in re.findall(r'class="arc-seg"[^>]*\sx="([\d.]+)"', html)]
+        assert xs, "expected at least one spine-registered segment"
+        assert all(220.0 <= x <= 980.0 for x in xs)
+
+    def test_undated_arc_is_listed_but_not_plotted(self):
+        html = render_arc_panel(self._band(), self._lookup(), self.TIMELINE)
+        # s2 has no datable commits: appears in the index, flagged, no segment
+        assert 'data-arc-slug="s2"' in html
+        assert "(undated)" in html
+        assert 'data-arc-slug="s2"' not in re.sub(
+            r"<ul class=\"arc-index\".*", "", html, flags=re.DOTALL
+        )
+
+    def test_story_link_when_page_exists(self):
+        html = render_arc_panel(self._band(), self._lookup(), self.TIMELINE)
+        assert 'href="stories/src__a.py.html"' in html
+
+    def test_broadsheet_panel_is_sticky_and_print_degrades(self, seeded_repo: Path):
+        """The panel floats while scrolling but prints inline (print-first, #40)."""
+        _seed_arc_story(seeded_repo)
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert 'class="arc-panel"' in html
+        # sticky rule present in the page style, and a print override that
+        # drops the float so the panel prints once, inline, at the top.
+        assert "position: sticky" in html
+        assert ".arc-panel {{" not in html  # f-string braces must be resolved
+        print_block = html.split("@media print")
+        assert any("position: static" in blk for blk in print_block[1:])
 
 
 class TestRenderCli:
