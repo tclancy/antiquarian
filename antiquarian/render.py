@@ -1797,7 +1797,9 @@ def render_acts_atom(acts: list[dict], timeline: dict) -> str:
     """
     if not acts or not timeline.get("full_span"):
         return ""
-    width, height = 1040, 84
+    # Height leaves room for the absolute axis + its labels below the band; the
+    # labels sit at axis_y + 16, so a too-short viewBox clips the year ticks.
+    width, height = 1040, 100
     margin_left = margin_right = 30
     chart_w = width - margin_left - margin_right
     scale = build_absolute_scale(timeline, chart_w)["scale"]
@@ -1812,7 +1814,7 @@ def render_acts_atom(acts: list[dict], timeline: dict) -> str:
         _defs(),
         f'<text x="{margin_left}" y="16" font-family="EB Garamond, Iowan Old Style, serif" '
         f'font-size="13" font-style="italic" fill="{PALETTE["ink_dim"]}">'
-        f"The work in {len(acts)} act(s) — its structural movements</text>",
+        f"The work in {len(acts)} {'act' if len(acts) == 1 else 'acts'} — its structural movements</text>",
     ]
     for i, a in enumerate(acts):
         x0, x1 = sx(a["start"]), sx(a["end"])

@@ -512,9 +512,11 @@ _ActCommit = namedtuple("_ActCommit", "timestamp author author_email")
 def _build_acts_data(commits: list[_Commit], arcs: list[_Arc]) -> list[dict]:
     """Structural Acts (#149) plus each arc's Act, JSON-shaped for the bundle.
 
-    Acts are derived here at render time — ``profile.build_acts`` is pure and
-    deterministic over the commit record, so this needs no persistence. Names
-    arrive later with the naming pass; here each Act carries its index, span,
+    Acts are derived here at render time — the segmentation is deterministic
+    (``profile.build_acts`` reproduces the same boundaries run-to-run; only each
+    Act's freshly-minted id varies, and the render reads none of it), so this
+    needs no persistence yet. Names arrive later with the naming pass; the naming
+    pass *will* need stable ids. Here each Act carries its index, span,
     boundary confidence, the structural signals that fired, and the slugs of the
     arcs that live beneath it (its scenes). Commit timestamps are parsed to real
     datetimes for the segmentation, then re-serialised to ISO for the bundle.
@@ -540,7 +542,11 @@ def _build_acts_data(commits: list[_Commit], arcs: list[_Arc]) -> list[dict]:
             else ts_by_ref.get(ref[:8]) or ts_by_ref.get(ref[:7])
             for ref in arc.commit_shas
         ]
-        arc_times[arc.slug] = [t for t in times if t is not None]
+        # Same-slug arcs in different files accumulate rather than overwrite —
+        # slug is the arc's identity across the render, so their commits merge
+        # (mirrors _build_arc_band, which appends per arc). A plain `=` here
+        # would silently drop the earlier arc's times on a slug collision.
+        arc_times.setdefault(arc.slug, []).extend(t for t in times if t is not None)
     arc_to_act = assign_arcs_to_acts(acts, arc_times)
     members: dict[str, list[str]] = defaultdict(list)
     for slug, act_id in arc_to_act.items():

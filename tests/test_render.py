@@ -80,6 +80,7 @@ class TestExtractRenderData:
             "arcs",
             "swimlane",
             "arc_band",
+            "acts",
             "timeline",
             "file_lifespans",
             "survey_excerpt",
@@ -394,6 +395,19 @@ class TestActsAtom:
         acts = self._acts()
         acts[0]["name"] = "The First Light"
         assert "The First Light" in render_acts_atom(acts, self.TL)
+
+    def test_axis_labels_fit_within_viewbox(self):
+        # Regression: a too-short viewBox clipped the year-tick labels (they sit
+        # at axis_y + 16), hiding the temporal reference the atom exists to show.
+        html = render_acts_atom(self._acts(), self.TL)
+        vh = int(re.search(r'viewBox="0 0 \d+ (\d+)"', html).group(1))
+        ys = [float(m) for m in re.findall(r'<text[^>]*\sy="([\d.]+)"', html)]
+        assert ys and max(ys) <= vh  # nothing drawn below the viewBox → no clip
+
+    def test_single_act_uses_singular_grammar(self):
+        html = render_acts_atom([self._acts()[0]], self.TL)
+        assert "The work in 1 act —" in html
+        assert "act(s)" not in html
 
 
 class TestRenderCli:
