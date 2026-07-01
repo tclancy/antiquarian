@@ -6,10 +6,13 @@ import re
 from collections import defaultdict
 from collections.abc import Sequence
 from itertools import combinations
-from math import sqrt
+from math import log, sqrt
 from statistics import median
 
+from ulid import ULID
+
 from antiquarian.models import (
+    Act,
     AuthorBaseline,
     CoChange,
     CommitFeatures,
@@ -315,3 +318,225 @@ def related_files(
             matches.append((cc.file_a, cc.count))
     matches.sort(key=lambda pair: (-pair[1], pair[0]))
     return matches[:top_n]
+
+
+# --- Act segmentation (#149) ------------------------------------------------
+# The project lifespan is diced into proportional windows; structural inflections
+# — commit-cadence changepoints, human-contributor-count shifts, and the first
+# appearance of a second human contributor — become candidate Act boundaries.
+# The count is data-driven, capped to [1, 5]. Boundaries carry a confidence so an
+# uncertain one renders dashed (#149 decision 7). All thresholds are named so the
+# eyeball-test repos can tune them — the signals were Tom's educated guesses, so
+# this is built to be calibrated, not trusted blindly.
+_ACT_MAX_COUNT = 5
+_ACT_WINDOWS = 24  # proportional windows the lifespan is diced into
+_ACT_MIN_COMMITS = 8  # below this the record is too thin to claim a boundary
+_ACT_MIN_SPAN_DAYS = 14  # a history shorter than this is a single movement
+_ACT_MIN_SPAN_FRAC = (
+    0.08  # every Act spans >= this fraction of the timeline (scale-relative)
+)
+_ACT_CADENCE_RATIO = 2.0  # window-vs-trailing cadence factor that flags a shift
+_ACT_CONF_FLOOR = 0.35  # a lone weak signal lands here; agreement/magnitude lifts it
+
+_BOT_MARKERS = ("[bot]", "dependabot", "github-actions", "renovate", "mergify")
+_AGENT_MARKERS = ("dispatch-bot", "claude", "copilot", "cursor")
+
+
+def _is_human_author(author: str, email: str) -> bool:
+    """Best-effort "a person, not an AI/bot" test (#149 decision 3).
+
+    Deliberately simple — Tom signed off on "good enough for now". Excludes
+    ``[bot]`` suffixes, common CI bots, and known agent identities. The
+    contributor-count signal degrades gracefully if one slips through: a stray
+    bot shifts a count by one, it does not invent an Act on its own.
+    """
+    hay = f"{author} {email}".lower()
+    return not any(m in hay for m in _BOT_MARKERS + _AGENT_MARKERS)
+
+
+def _single_act(commits: list[CommitFeatures]) -> list[Act]:
+    """One Act spanning the whole record — the honest answer when there is not
+    enough signal (or enough commits) to claim a movement boundary."""
+    if not commits:
+        return []
+    return [
+        Act(
+            id=str(ULID()),
+            index=1,
+            start=commits[0].timestamp,
+            end=commits[-1].timestamp,
+            commit_count=len(commits),
+            boundary_confidence=1.0,  # the origin is not a guess
+            signals=("origin",),
+        )
+    ]
+
+
+def build_acts(commits: Sequence[CommitFeatures]) -> list[Act]:
+    """Segment the project lifespan into 1-5 structural Acts (#149).
+
+    Pure function — no I/O. Signals (Tom's #149 answers): commit-cadence
+    changepoints, human-contributor-count shifts (either direction), and the
+    first appearance of a second *human* contributor. The count is data-driven,
+    capped to ``[1, 5]``; each Act start carries a confidence in ``[0, 1]`` so an
+    uncertain boundary can render dashed. Naming is a later, separate pass — Acts
+    come back nameless here.
+    """
+    ordered = sorted(commits, key=lambda c: c.timestamp)
+    if len(ordered) < _ACT_MIN_COMMITS:
+        return _single_act(ordered)
+
+    start = ordered[0].timestamp
+    end = ordered[-1].timestamp
+    span = (end - start).total_seconds()
+    if span < _ACT_MIN_SPAN_DAYS * 86400:
+        return _single_act(ordered)  # too short a life to hold distinct movements
+
+    def window_of(ts) -> int:
+        frac = (ts - start).total_seconds() / span
+        return min(_ACT_WINDOWS - 1, max(0, int(frac * _ACT_WINDOWS)))
+
+    counts = [0] * _ACT_WINDOWS
+    humans_in: list[set[str]] = [set() for _ in range(_ACT_WINDOWS)]
+    seen_humans: set[str] = set()
+    second_human_window: int | None = None
+    for c in ordered:
+        w = window_of(c.timestamp)
+        counts[w] += 1
+        if _is_human_author(c.author, c.author_email):
+            email = c.author_email.lower()
+            humans_in[w].add(email)
+            if email not in seen_humans:
+                seen_humans.add(email)
+                if len(seen_humans) == 2 and second_human_window is None:
+                    second_human_window = w
+
+    # Candidate boundaries sit *before* a window (between w-1 and w). A window may
+    # be lit by more than one signal; agreement raises its confidence later.
+    candidates: dict[int, tuple[float, set[str]]] = {}
+
+    def add_candidate(w: int, magnitude: float, signal: str) -> None:
+        if w <= 0 or w >= _ACT_WINDOWS:
+            return
+        score, signals = candidates.get(w, (0.0, set()))
+        candidates[w] = (score + magnitude, signals | {signal})
+
+    for w in range(1, _ACT_WINDOWS):  # cadence changepoints
+        prior = [counts[i] for i in range(w) if counts[i] > 0]
+        if not prior or counts[w] == 0:
+            continue
+        base = sum(prior) / len(prior)
+        ratio = counts[w] / base
+        if ratio >= _ACT_CADENCE_RATIO or ratio <= 1 / _ACT_CADENCE_RATIO:
+            add_candidate(w, abs(log(ratio)), "cadence-shift")
+
+    # contributor-count shifts (either direction) — compare each active window's
+    # roster to the previous *active* one, so a quiet gap isn't read as a
+    # departure-and-return.
+    prev_roster: set[str] | None = None
+    for w in range(_ACT_WINDOWS):
+        if not humans_in[w]:
+            continue
+        if prev_roster is not None:
+            delta = len(humans_in[w]) - len(prev_roster)
+            if delta != 0:
+                add_candidate(w, float(abs(delta)), "contributor-shift")
+        prev_roster = humans_in[w]
+
+    if second_human_window and second_human_window > 0:  # discrete strong marker
+        add_candidate(second_human_window, 2.0, "second-human")
+
+    if not candidates:
+        return _single_act(ordered)
+
+    def first_commit_ts_at(w: int):
+        """An Act starts at a real commit, not an interpolated instant."""
+        for c in ordered:
+            if window_of(c.timestamp) >= w:
+                return c.timestamp
+        return end
+
+    # Strongest candidates first, but every boundary must sit at least a minimum
+    # span from both ends and from each boundary already taken — so no Act is a
+    # sliver. The floor is a fraction of the timeline, so it scales with the repo
+    # rather than being tuned to any one; the count lands in [1, 5].
+    min_gap = _ACT_MIN_SPAN_FRAC * span
+    chosen: list[tuple] = []  # (timestamp, score, signals)
+    for w in sorted(candidates, key=lambda k: candidates[k][0], reverse=True):
+        ts = first_commit_ts_at(w)
+        off = (ts - start).total_seconds()
+        if off < min_gap or (span - off) < min_gap:
+            continue
+        if any(abs((ts - c[0]).total_seconds()) < min_gap for c in chosen):
+            continue
+        score, signals = candidates[w]
+        chosen.append((ts, score, signals))
+        if len(chosen) >= _ACT_MAX_COUNT - 1:
+            break
+    if not chosen:
+        return _single_act(ordered)
+    boundaries = sorted(chosen, key=lambda c: c[0])
+    max_score = max((c[1] for c in boundaries), default=1.0) or 1.0
+    edges = [start] + [c[0] for c in boundaries] + [end]
+
+    acts: list[Act] = []
+    for i in range(len(edges) - 1):
+        a_start, a_end = edges[i], edges[i + 1]
+        last = i == len(edges) - 2
+        n = sum(
+            1
+            for c in ordered
+            if (
+                a_start <= c.timestamp <= a_end
+                if last
+                else a_start <= c.timestamp < a_end
+            )
+        )
+        if i == 0:
+            conf, signals = 1.0, ("origin",)
+        else:
+            _, score, sset = boundaries[i - 1]
+            conf = _ACT_CONF_FLOOR + (1 - _ACT_CONF_FLOOR) * min(
+                1.0, (score / max_score) * (0.5 + 0.25 * len(sset))
+            )
+            signals = tuple(sorted(sset))
+        acts.append(
+            Act(
+                id=str(ULID()),
+                index=i + 1,
+                start=a_start,
+                end=a_end,
+                commit_count=n,
+                boundary_confidence=round(min(1.0, conf), 3),
+                signals=signals,
+            )
+        )
+    return acts
+
+
+def assign_arcs_to_acts(
+    acts: Sequence[Act], arc_commit_times: dict[str, list]
+) -> dict[str, str]:
+    """Assign each arc to the single Act it most correlates with (#149 decision 5).
+
+    ``arc_commit_times`` maps an arc slug to its commits' timestamps. Correlation
+    is how many of the arc's commits fall inside an Act's ``[start, end]``.
+    Tiebreak: the Act with more commits overall, then the earlier Act. Arcs with
+    no datable commits are skipped. Returns ``{arc_slug: act_id}``.
+    """
+    out: dict[str, str] = {}
+    for slug, times in arc_commit_times.items():
+        if not times:
+            continue
+        best_key: tuple[int, int, int] | None = None
+        best_id: str | None = None
+        for a in acts:
+            overlap = sum(1 for t in times if a.start <= t <= a.end)
+            if overlap == 0:
+                continue
+            key = (overlap, a.commit_count, -a.index)
+            if best_key is None or key > best_key:
+                best_key, best_id = key, a.id
+        if best_id is not None:
+            out[slug] = best_id
+    return out
