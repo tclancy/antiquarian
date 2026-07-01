@@ -51,6 +51,33 @@ class RegionDefinition:
 
 
 @dataclass(frozen=True)
+class Act:
+    """A top-level movement in the project's life (#149).
+
+    Acts are the coarse narrative tier *above* arcs — the project's lifecycle
+    told in 1-5 movements, with arcs demoted to the "scenes" beneath. They are
+    derived structurally from the commit record (``build_acts``), named later by
+    the emergent naming pass (``name`` stays ``None`` until then), and rendered
+    as the top-level broadsheet atom.
+
+    ``boundary_confidence`` scores the *start* boundary in ``[0, 1]``; a low
+    value renders dashed/uncertain (#149 decision 7). The first Act's start is
+    the project's origin and carries full confidence. ``signals`` records which
+    structural inflections fired at the start boundary, for the naming pass and
+    for debugging the segmentation.
+    """
+
+    id: str
+    index: int
+    start: datetime
+    end: datetime
+    commit_count: int
+    boundary_confidence: float
+    signals: tuple[str, ...] = ()
+    name: str | None = None
+
+
+@dataclass(frozen=True)
 class RepoProfile:
     stage_marker: Literal["commit", "squash", "pr"]
     median_message_len: int
