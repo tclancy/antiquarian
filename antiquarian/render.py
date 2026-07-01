@@ -2587,8 +2587,12 @@ def _render_metric_pips(metrics: list[dict] | None) -> str:
         # background colours still show the dot. Aria-label gives screen
         # readers the human reading instead of the emoji + colour cue.
         pips.append(
+            # ``data-tip`` drives an instant, palette-styled CSS tooltip (see
+            # story_page.css); the native ``title`` was OS-rendered — a ~1s
+            # delay behind the help cursor, so the detail read as missing.
+            # ``aria-label`` still carries the reading for assistive tech.
             f'<span class="metric-pip metric-pip--{level}" '
-            f'title="{name}: {detail}" '
+            f'data-tip="{name}: {detail}" '
             f'aria-label="{name}: {display}, {level}">'
             f'<span class="metric-pip__glyph" aria-hidden="true">{glyph}</span>'
             f'<svg class="metric-pip__swatch" width="10" height="10" '
