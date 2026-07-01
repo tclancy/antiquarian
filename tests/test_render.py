@@ -28,6 +28,7 @@ from antiquarian.render import (
     _strip_empty_todo_section,
     _story_md_to_html_name,
     build_absolute_scale,
+    render_acts_atom,
     render_arc_panel,
     render_broadsheet,
     render_story_page,
@@ -79,6 +80,7 @@ class TestExtractRenderData:
             "arcs",
             "swimlane",
             "arc_band",
+            "acts",
             "timeline",
             "file_lifespans",
             "survey_excerpt",
@@ -125,6 +127,21 @@ class TestExtractRenderData:
         assert len(data["arcs"]) == 2
         names = {a["name"] for a in data["arcs"]}
         assert names == {"Initial sketch", "Hardening"}
+
+    def test_acts_in_bundle(self, seeded_repo):
+        _seed_arc_story(seeded_repo)
+        data = extract_render_data(seeded_repo)
+        assert "acts" in data and isinstance(data["acts"], list)
+        for a in data["acts"]:
+            assert {
+                "id",
+                "index",
+                "start",
+                "end",
+                "boundary_confidence",
+                "signals",
+                "arc_slugs",
+            } <= a.keys()
 
     def test_arc_band_includes_datable_count(self, seeded_repo):
         data = extract_render_data(seeded_repo)
@@ -316,6 +333,81 @@ class TestArcPanel:
         assert ".arc-panel {{" not in html  # f-string braces must be resolved
         print_block = html.split("@media print")
         assert any("position: static" in blk for blk in print_block[1:])
+
+
+class TestActsAtom:
+    """The top-level Acts band (#149, tangible-first render)."""
+
+    TL = {
+        "full_span": {
+            "start": "2020-01-01T00:00:00+00:00",
+            "end": "2022-01-01T00:00:00+00:00",
+            "days": 731,
+        }
+    }
+
+    def _acts(self, conf2: float = 0.9):
+        return [
+            {
+                "id": "a1",
+                "index": 1,
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2020-09-01T00:00:00+00:00",
+                "commit_count": 50,
+                "boundary_confidence": 1.0,
+                "signals": ["origin"],
+                "name": None,
+                "arc_slugs": [],
+            },
+            {
+                "id": "a2",
+                "index": 2,
+                "start": "2020-09-01T00:00:00+00:00",
+                "end": "2022-01-01T00:00:00+00:00",
+                "commit_count": 80,
+                "boundary_confidence": conf2,
+                "signals": ["cadence-shift"],
+                "name": None,
+                "arc_slugs": [],
+            },
+        ]
+
+    def test_empty_or_no_span_renders_nothing(self):
+        assert render_acts_atom([], self.TL) == ""
+        assert render_acts_atom(self._acts(), {"full_span": None}) == ""
+
+    def test_renders_roman_labels_and_band(self):
+        html = render_acts_atom(self._acts(), self.TL)
+        assert 'class="acts-atom"' in html
+        assert ">I</text>" in html and ">II</text>" in html
+        assert "Act 2:" in html  # the tooltip carries the detail
+
+    def test_uncertain_boundary_is_dashed(self):
+        # decision 7 — a boundary the evidence couldn't place cleanly renders dashed
+        assert "stroke-dasharray" in render_acts_atom(self._acts(conf2=0.5), self.TL)
+
+    def test_confident_boundary_is_solid(self):
+        assert "stroke-dasharray" not in render_acts_atom(
+            self._acts(conf2=0.95), self.TL
+        )
+
+    def test_name_overrides_roman_when_present(self):
+        acts = self._acts()
+        acts[0]["name"] = "The First Light"
+        assert "The First Light" in render_acts_atom(acts, self.TL)
+
+    def test_axis_labels_fit_within_viewbox(self):
+        # Regression: a too-short viewBox clipped the year-tick labels (they sit
+        # at axis_y + 16), hiding the temporal reference the atom exists to show.
+        html = render_acts_atom(self._acts(), self.TL)
+        vh = int(re.search(r'viewBox="0 0 \d+ (\d+)"', html).group(1))
+        ys = [float(m) for m in re.findall(r'<text[^>]*\sy="([\d.]+)"', html)]
+        assert ys and max(ys) <= vh  # nothing drawn below the viewBox → no clip
+
+    def test_single_act_uses_singular_grammar(self):
+        html = render_acts_atom([self._acts()[0]], self.TL)
+        assert "The work in 1 act —" in html
+        assert "act(s)" not in html
 
 
 class TestRenderCli:
