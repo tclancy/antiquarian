@@ -546,6 +546,7 @@ def _render_story_pages(
     # of candidates (all have story pages, by definition of this function).
     all_files: list[str] = data.get("files", [])
     all_candidates: set[str] = set(candidates)
+    file_metrics: dict[str, list[dict]] = data.get("file_metrics", {})
 
     # Detect the link backend once per render — pure config, no per-file
     # cost. A non-GitHub remote degrades to NoopLinkBackend, leaving refs
@@ -564,6 +565,7 @@ def _render_story_pages(
             all_files=all_files,
             files_with_stories=all_candidates,
             link_backend=link_backend,
+            metrics=file_metrics.get(file_path),
         )
         (pages_dir / _story_md_to_html_name(story_md_name)).write_text(
             story_html, encoding="utf-8"
