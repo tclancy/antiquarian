@@ -706,3 +706,122 @@ def synthesize_survey(
     return backend.synthesize(
         SURVEY_SYSTEM_PROMPT, user_prompt, timeout_seconds=timeout_seconds, log=log
     )
+
+
+# --- Act naming (#149 phase 2) ----------------------------------------------
+# The structural Acts (profile.build_acts) come back nameless. This pass gives
+# each an emergent name from the project's own evidence — the Act's span, size,
+# the signals that opened it, its member arcs, and the survey for context. One
+# claude -p call names the whole set so the names read as a coherent sequence.
+
+ACT_NAMING_SYSTEM_PROMPT = """\
+You are Antiquarian, a software historian.
+
+You are given the structural "acts" of a codebase's life — a short, ordered sequence of movements derived from its commit record. Each act carries its date span, its size, the structural signals that opened it, and the named arcs (smaller story threads) that live within it. You may also be given an excerpt from the codebase survey for context.
+
+Your task: name each act.
+
+# What a name is
+
+A SHORT phrase — 2 to 5 words — that captures what the movement WAS: its character, not a label. A name emerges from THIS project's own evidence.
+
+- Do NOT force a fixed lifecycle vocabulary. No rote "Inception / Growth / Maturity / Decline". Two different projects should not receive the same names unless they genuinely earned them.
+- Confidence is first-class. If an act's character is genuinely unclear from the evidence given, a plainer, quieter name is more honest than a dramatic invention. Do not confabulate a story the spans do not support.
+- Assume good intentions. BANNED: blame, fault, culprit, should have, mistake, failed to. Hemingway, not LinkedIn — no marketing gloss, no exclamation.
+
+# Output
+
+Output ONLY one line per act, in the given order, formatted EXACTLY:
+
+<index>: <name>
+
+No preamble, no commentary, no markdown, no trailing notes. Example:
+
+1: The First Cut
+2: The Long Quiet
+3: Coming Back to Life
+"""
+
+
+def build_act_naming_prompt(
+    acts: Sequence[dict],
+    arc_names_by_slug: dict[str, str] | None = None,
+    survey_excerpt: str | None = None,
+) -> str:
+    """Compose the user prompt for :func:`synthesize_act_names`.
+
+    Feeds the model each act's span, size, opening signals, and member-arc
+    names (its scenes) — plus the survey excerpt as context when available.
+    """
+    arc_names_by_slug = arc_names_by_slug or {}
+    lines = ["Here are the acts of this codebase's life, in order:\n"]
+    for a in acts:
+        start = a["start"][:10]
+        end = a["end"][:10]
+        signals = ", ".join(a.get("signals") or []) or "the opening of the record"
+        arcs = [arc_names_by_slug.get(s, s) for s in a.get("arc_slugs") or []]
+        arcs_str = "; ".join(arcs) if arcs else "no named arcs"
+        lines.append(
+            f"Act {a['index']} — {start} to {end} "
+            f"({a['commit_count']} commits; opened by {signals}). "
+            f"Arcs within: {arcs_str}."
+        )
+    if survey_excerpt:
+        lines.append("\nSurvey context (for character, do not quote):\n")
+        lines.append(survey_excerpt.strip())
+    lines.append(f"\nName all {len(acts)} act(s), one per line, as `<index>: <name>`.")
+    return "\n".join(lines)
+
+
+# Tolerant of what models actually emit: an optional "Act " prefix (which the
+# prompt itself uses, so the model tends to echo it), ) / . / : / dash
+# separators, and surrounding markdown emphasis on the name.
+_ACT_NAME_LINE_RE = re.compile(
+    r"^\s*(?:act\s+)?(\d+)\s*[:.)\-—]\s*(.+?)\s*$", re.IGNORECASE
+)
+
+
+def synthesize_act_names(
+    acts: Sequence[dict],
+    arc_names_by_slug: dict[str, str] | None = None,
+    survey_excerpt: str | None = None,
+    *,
+    timeout_seconds: int = 300,
+    log: Callable[[str], None] = _noop,
+    backend: NarrativeBackend | None = None,
+) -> dict[str, str]:
+    """Name each Act via ``backend``; return ``{act_signature: name}``.
+
+    Keys are the deterministic Act boundary signature (``profile.act_signature``)
+    so the names survive re-render even though Act ids do not. Acts the model
+    doesn't return a line for are simply left unnamed (the renderer falls back to
+    a roman numeral) — a missing name is honest, not an error.
+    """
+    from antiquarian.profile import act_signature
+
+    if not acts:
+        return {}
+    if backend is None:
+        from antiquarian.backends import DEFAULT_BACKEND
+
+        backend = DEFAULT_BACKEND
+
+    prompt = build_act_naming_prompt(acts, arc_names_by_slug, survey_excerpt)
+    raw = backend.synthesize(
+        ACT_NAMING_SYSTEM_PROMPT, prompt, timeout_seconds=timeout_seconds, log=log
+    )
+
+    name_by_index: dict[int, str] = {}
+    for line in raw.splitlines():
+        m = _ACT_NAME_LINE_RE.match(line)
+        if m:
+            name = m.group(2).strip().strip("*").strip()  # drop **markdown** emphasis
+            if name:
+                name_by_index[int(m.group(1))] = name
+
+    names: dict[str, str] = {}
+    for a in acts:
+        name = name_by_index.get(a["index"])
+        if name:
+            names[act_signature(a["start"], a["end"])] = name
+    return names

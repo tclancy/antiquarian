@@ -23,7 +23,7 @@ from pathlib import Path
 from antiquarian.cache import cache_path_for_repo
 from antiquarian.identity import coalesce_by_email, parse_mailmap
 from antiquarian.metrics import build_file_metrics, reference_timestamp
-from antiquarian.profile import assign_arcs_to_acts, build_acts
+from antiquarian.profile import act_signature, assign_arcs_to_acts, build_acts
 from antiquarian.prs import detect_github_repo
 from antiquarian.todos import extract_todos
 
@@ -509,7 +509,25 @@ def _build_arc_band(arcs: list[_Arc], commits: list[_Commit]) -> dict:
 _ActCommit = namedtuple("_ActCommit", "timestamp author author_email")
 
 
-def _build_acts_data(commits: list[_Commit], arcs: list[_Arc]) -> list[dict]:
+def _load_act_names(repo_path: Path) -> dict[str, str]:
+    """Load persisted emergent Act names (#149 phase 2), keyed by signature.
+
+    Written by ``pipeline.generate_act_names``. Absent file → empty dict, so the
+    renderer falls back to roman numerals until the naming pass has run.
+    """
+    path = repo_path / ".antiquarian" / "act_names.json"
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _build_acts_data(
+    commits: list[_Commit], arcs: list[_Arc], act_names: dict[str, str] | None = None
+) -> list[dict]:
     """Structural Acts (#149) plus each arc's Act, JSON-shaped for the bundle.
 
     Acts are derived here at render time — the segmentation is deterministic
@@ -552,20 +570,24 @@ def _build_acts_data(commits: list[_Commit], arcs: list[_Arc]) -> list[dict]:
     for slug, act_id in arc_to_act.items():
         members[act_id].append(slug)
 
-    return [
-        {
-            "id": a.id,
-            "index": a.index,
-            "start": a.start.isoformat(),
-            "end": a.end.isoformat(),
-            "commit_count": a.commit_count,
-            "boundary_confidence": a.boundary_confidence,
-            "signals": list(a.signals),
-            "name": a.name,
-            "arc_slugs": members.get(a.id, []),
-        }
-        for a in acts
-    ]
+    names = act_names or {}
+    out = []
+    for a in acts:
+        start, end = a.start.isoformat(), a.end.isoformat()
+        out.append(
+            {
+                "id": a.id,
+                "index": a.index,
+                "start": start,
+                "end": end,
+                "commit_count": a.commit_count,
+                "boundary_confidence": a.boundary_confidence,
+                "signals": list(a.signals),
+                "name": names.get(act_signature(start, end)) or a.name,
+                "arc_slugs": members.get(a.id, []),
+            }
+        )
+    return out
 
 
 def _discover_stories(repo_path: Path) -> list[Path]:
@@ -741,7 +763,7 @@ def extract_render_data(repo_path: Path) -> dict:
         "arcs": [asdict(a) for a in arcs],
         "swimlane": _build_swimlane(commits, base_url),
         "arc_band": _build_arc_band(arcs, commits),
-        "acts": _build_acts_data(commits, arcs),
+        "acts": _build_acts_data(commits, arcs, _load_act_names(repo_path)),
         "timeline": _build_timeline(commits),
         "file_lifespans": _build_per_file_lifespans(cache_db, files, commits),
         "file_metrics": file_metrics,

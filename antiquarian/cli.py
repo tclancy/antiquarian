@@ -23,6 +23,7 @@ from antiquarian.generate import (
     survey_repo,
 )
 from antiquarian.pipeline import (
+    generate_act_names,
     generate_codebase_survey,
     generate_file_story,
     render_broadsheet_site,
@@ -237,6 +238,44 @@ def survey(
 
     _archive_cache(repo_path)
     typer.echo(narrative)
+
+
+@app.command(name="name-acts")
+def name_acts(
+    repo: str = typer.Option(".", help="Path to the git repository."),
+    backend: str = typer.Option("", "--backend", help=_BACKEND_HELP),
+) -> None:
+    """Name the codebase's structural Acts (#149) via one claude -p call.
+
+    Reads the render bundle (Acts, arcs, survey) already on disk, names the whole
+    set at once, and writes ``.antiquarian/act_names.json``, which ``render``
+    picks up. Run ``survey`` first for richer context, though it is not required.
+    """
+    repo_path = Path(repo).resolve()
+    resolved_backend = _resolve_backend(backend or None)
+    try:
+        names, path = generate_act_names(
+            repo_path, backend=resolved_backend, log=_stderr
+        )
+    except BackendError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        _handle_claude_error(e)
+
+    if not names:
+        typer.echo(
+            "No Act names were written. Either there are no acts yet (run "
+            "`antiquarian story`/`survey` to populate the cache), or the model's "
+            "output didn't parse — see the log above. Any existing names were "
+            "left untouched.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    for sig, name in names.items():
+        start, end = sig.split("|")
+        typer.echo(f"{name}  ({start[:10]} → {end[:10]})")
+    typer.echo(f"\nWrote {len(names)} name(s) → {path}", err=True)
 
 
 @app.command()
