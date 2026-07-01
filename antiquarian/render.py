@@ -383,8 +383,66 @@ def _masthead_dot_attrs(
     return f'class="{cls}"{attrs}', title
 
 
+def _masthead_act_bands(acts: list[dict], sx, top: float, bottom: float) -> list[str]:
+    """Faint alternating tint behind the density strip, one wash per Act (#149).
+
+    The masthead already carries per-commit texture (#136); the Act tier adds a
+    quiet grouping over it so a cluster of dots reads as belonging to a movement.
+    Same subtle ``_ACT_TINTS`` as the top-level band, so the two atoms agree.
+    Drawn first (behind dormancy + marks) — structure is a frame, not a mark.
+    """
+    parts: list[str] = []
+    for i, a in enumerate(acts):
+        x0, x1 = sx(_iso_to_dt(a["start"])), sx(_iso_to_dt(a["end"]))
+        parts.append(
+            f'<rect x="{x0:.1f}" y="{top:.1f}" width="{max(0.0, x1 - x0):.1f}" '
+            f'height="{bottom - top:.1f}" fill="{_ACT_TINTS[i % len(_ACT_TINTS)]}"/>'
+        )
+    return parts
+
+
+def _masthead_act_boundaries(
+    acts: list[dict], sx, top: float, bottom: float, label_y: float
+) -> list[str]:
+    """Act divider lines + roman numerals over the density strip (#149).
+
+    Internal boundaries only (the first Act's start is the spine's own start);
+    a boundary the evidence couldn't place cleanly renders dashed, matching the
+    Acts atom's ``_ACT_DASHED_BELOW`` convention. A roman numeral labels each Act
+    when its span is wide enough to hold one without crowding the dots.
+    """
+    parts: list[str] = []
+    for i, a in enumerate(acts):
+        x0, x1 = sx(_iso_to_dt(a["start"])), sx(_iso_to_dt(a["end"]))
+        if i > 0:
+            dash = (
+                ' stroke-dasharray="3 2"'
+                if a["boundary_confidence"] < _ACT_DASHED_BELOW
+                else ""
+            )
+            parts.append(
+                f'<line x1="{x0:.1f}" y1="{top:.1f}" x2="{x0:.1f}" y2="{bottom:.1f}" '
+                f'stroke="{PALETTE["ink"]}" stroke-width="0.8" opacity="0.55"{dash}/>'
+            )
+        if x1 - x0 >= 24:
+            roman = (
+                _ROMAN_NUMERALS[a["index"] - 1].upper()
+                if a["index"] <= len(_ROMAN_NUMERALS)
+                else str(a["index"])
+            )
+            parts.append(
+                f'<text x="{(x0 + x1) / 2:.1f}" y="{label_y:.1f}" text-anchor="middle" '
+                f'font-family="EB Garamond, serif" font-size="9" fill="{PALETTE["ink_dim"]}" '
+                f'opacity="0.65">{roman}</text>'
+            )
+    return parts
+
+
 def _render_masthead_density(
-    timeline: dict, commits: list[dict], arc_lookup: dict
+    timeline: dict,
+    commits: list[dict],
+    arc_lookup: dict,
+    acts: list[dict] | None = None,
 ) -> str:
     """Commit-density micro-timeline for the masthead (#136).
 
@@ -417,6 +475,11 @@ def _render_masthead_density(
         f"A reconstructed lifespan, from {full_start.strftime('%B %Y')} to {full_end.strftime('%B %Y')}"
         f" — {timeline['full_span']['days']} days, {len(commits)} commits of surviving record.</text>",
     ]
+
+    # Act tint (#149) sits underneath everything — a structural frame, drawn
+    # before dormancy so the hatch still reads over it.
+    if acts:
+        parts.extend(_masthead_act_bands(acts, sx, 26, baseline + 22))
 
     # Dormancy first, behind the marks — the silence is context, not foreground.
     for g in timeline.get("gaps", []):
@@ -475,6 +538,11 @@ def _render_masthead_density(
             f"<title>{_xml_escape(title)}</title></circle>"
         )
 
+    # Act dividers + numerals ride over the marks so the top-tier structure is
+    # legible without stealing the density read (#149 follow-up on #136).
+    if acts:
+        parts.extend(_masthead_act_boundaries(acts, sx, 26, baseline + 22, 35))
+
     for d, label in _axis_ticks(full_start, full_end):
         x = sx(d)
         parts.append(
@@ -485,12 +553,19 @@ def _render_masthead_density(
             f'font-family="EB Garamond, Iowan Old Style, Palatino, Georgia, serif" fill="{PALETTE["ink_dim"]}">{label}</text>'
         )
 
+    act_legend = (
+        f'<line x1="430" y1="0" x2="430" y2="10" stroke="{PALETTE["ink"]}" stroke-width="0.8" opacity="0.55"/>'
+        f'<text x="440" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">act boundary</text>'
+        if acts
+        else ""
+    )
     parts.append(
         f'<g transform="translate({margin_left}, {baseline + 30})">'
         f'<circle cx="7" cy="5" r="5" fill="{PALETTE["accent"]}" stroke="{PALETTE["ink"]}" stroke-width="0.8" opacity="0.9"/>'
         f'<text x="18" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">significant (named arc or diff outlier)</text>'
         f'<rect x="250" y="0" width="14" height="10" fill="url(#lossy-hatch)" stroke="{PALETTE["rule"]}" stroke-width="0.5"/>'
         f'<text x="270" y="9" font-size="10" font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}">dormancy (≥1y)</text>'
+        f"{act_legend}"
         f"</g>"
     )
     parts.append("</svg>")
@@ -498,20 +573,25 @@ def _render_masthead_density(
 
 
 def render_timeline_masthead(
-    timeline: dict, commits: list[dict] | None = None, arc_lookup: dict | None = None
+    timeline: dict,
+    commits: list[dict] | None = None,
+    arc_lookup: dict | None = None,
+    acts: list[dict] | None = None,
 ) -> str:
     """The masthead strip above the H1 dateline.
 
     With per-commit data (the normal broadsheet path), renders a commit-density
     micro-timeline (#136): commits as bubbles on the absolute spine, significant
-    ones surfaced for hover. Without commits — an empty repo, or a caller that
-    only has the timeline — falls back to the original dual-axis reference
-    ribbon so the page still has a masthead.
+    ones surfaced for hover. When ``acts`` are supplied the strip also carries
+    the top-tier structure (#149) — a quiet tint per movement plus divider lines
+    — so the masthead and the Acts band read the same shape. Without commits — an
+    empty repo, or a caller that only has the timeline — falls back to the
+    original dual-axis reference ribbon so the page still has a masthead.
     """
     if not timeline or not timeline.get("full_span"):
         return ""
     if commits:
-        return _render_masthead_density(timeline, commits, arc_lookup or {})
+        return _render_masthead_density(timeline, commits, arc_lookup or {}, acts or [])
     return _render_masthead_reference(timeline)
 
 
@@ -2150,7 +2230,10 @@ def render_broadsheet(
         c for lane in data.get("swimlane", {}).get("lanes", []) for c in lane["commits"]
     ]
     masthead_svg = render_timeline_masthead(
-        timeline, commits=masthead_commits, arc_lookup=arc_lookup
+        timeline,
+        commits=masthead_commits,
+        arc_lookup=arc_lookup,
+        acts=data.get("acts", []),
     )
     atoms = {
         "todo_strip": render_todo_strip(data["todos"], timeline),
