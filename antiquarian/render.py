@@ -2031,6 +2031,7 @@ def render_story_page(
     *,
     all_files: list[str] | None = None,
     files_with_stories: set[str] | None = None,
+    link_backend=None,
     metrics: list[dict] | None = None,
 ) -> str:
     """Render a single per-file story.md as a styled HTML page (#46).
@@ -2052,6 +2053,11 @@ def render_story_page(
     When either is absent or the current file has no siblings, the sidebar
     is omitted and the page falls back to its original single-column layout.
 
+    Pass ``link_backend`` (a :class:`antiquarian.link_backend.LinkBackend`)
+    to turn ``#N`` and commit-SHA references in the prose into clickable
+    links (#113). Defaults to no linkification, so unit tests and other
+    callers without a repo context still work unchanged.
+
     The CSS and HTML scaffolding live as separate files under
     ``antiquarian/templates/`` so editing them gets IDE syntax highlighting
     and produces clean diffs.
@@ -2065,6 +2071,11 @@ def render_story_page(
     # from stories cached before the system-prompt change that stopped
     # emitting it.
     story_md = _strip_empty_todo_section(story_md)
+
+    if link_backend is not None:
+        from antiquarian.link_backend import linkify_markdown
+
+        story_md = linkify_markdown(story_md, link_backend)
 
     import markdown as _markdown
 
