@@ -514,6 +514,19 @@ def build_acts(commits: Sequence[CommitFeatures]) -> list[Act]:
     return acts
 
 
+def act_signature(start_iso: str, end_iso: str) -> str:
+    """A stable cross-run key for an Act — its boundaries (#149 phase 2).
+
+    ``build_acts`` mints a fresh ULID per Act each run, so the id can't key
+    persisted names. The boundaries ARE deterministic (same commits → same
+    segmentation), so ``start|end`` is the durable identity the naming pass
+    writes against and the renderer looks names up by. If the history changes
+    enough to move a boundary, the old name simply no longer matches — a moved
+    movement should be re-named, which is the honest behavior.
+    """
+    return f"{start_iso}|{end_iso}"
+
+
 def assign_arcs_to_acts(
     acts: Sequence[Act], arc_commit_times: dict[str, list]
 ) -> dict[str, str]:

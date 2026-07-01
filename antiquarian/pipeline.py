@@ -8,6 +8,7 @@ The CLI wraps these functions for I/O; the survey command composes
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,7 +25,11 @@ from antiquarian.cache import (
 from antiquarian.identity import coalesce_by_email
 from antiquarian.mining import historical_shas, mine_file_history
 from antiquarian.models import CommitFeatures, TodoAnnotation
-from antiquarian.narrative import synthesize_narrative, synthesize_survey
+from antiquarian.narrative import (
+    synthesize_act_names,
+    synthesize_narrative,
+    synthesize_survey,
+)
 from antiquarian.profile import build_author_baselines, build_co_changes, build_regions
 from antiquarian.prs import detect_github_repo, enrich_with_pr
 from antiquarian.render import (
@@ -652,3 +657,46 @@ def render_broadsheet_site(
     output_path.write_text(html, encoding="utf-8")
     log(f"[render] wrote {output_path}")
     return output_path
+
+
+def generate_act_names(
+    repo_path: Path,
+    *,
+    backend: NarrativeBackend | None = None,
+    timeout_seconds: int = 300,
+    log: Callable[[str], None] = _noop,
+) -> tuple[dict[str, str], Path]:
+    """Name the codebase's structural Acts and persist them (#149 phase 2).
+
+    Reuses the render bundle for its inputs — the Acts (spans, signals, member
+    arcs) and the survey excerpt are already assembled by ``extract_render_data``
+    — names the whole set in one ``claude -p`` call, and writes
+    ``{act_signature: name}`` to ``<repo>/.antiquarian/act_names.json`` where the
+    renderer reads it. Returns ``(names, path)``. Names come back empty (and no
+    file is written) when the repo has no Acts yet.
+    """
+    out_path = repo_path / ".antiquarian" / "act_names.json"
+    data = extract_render_data(repo_path)
+    acts = data.get("acts", [])
+    if not acts:
+        log("[name-acts] no acts to name (empty or too-thin history)")
+        return {}, out_path
+
+    arc_names_by_slug = {a["slug"]: a["name"] for a in data.get("arcs", [])}
+    survey_excerpt = data.get("survey_excerpt")
+    log(f"[name-acts] naming {len(acts)} act(s)")
+    names = synthesize_act_names(
+        acts,
+        arc_names_by_slug,
+        survey_excerpt,
+        timeout_seconds=timeout_seconds,
+        log=log,
+        backend=backend,
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(names, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    log(f"[name-acts] wrote {len(names)} name(s) → {out_path}")
+    return names, out_path
