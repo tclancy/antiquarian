@@ -380,6 +380,55 @@ class TestArcPanel:
         assert 'class="arc-acts-index"' not in html
         assert 'class="arc-index"' in html  # flat roster
 
+    def test_over_threshold_act_group_folds_heaviest_first(self):
+        # 25 arcs in one act (> fold threshold) → heaviest stay in view, the
+        # rest defer into an <details> — and nothing is dropped.
+        arcs = [
+            {
+                "slug": f"a{i:02d}",
+                "name": f"Arc {i:02d}",
+                "date_range": "2026",
+                "file_path": f"src/f{i}.py",
+                # weight = commit count = i+1, so a24 is heaviest, a00 lightest.
+                "commits": [
+                    {"timestamp": "2026-02-01T00:00:00", "short_sha": f"s{i:02d}"}
+                ]
+                * (i + 1),
+            }
+            for i in range(25)
+        ]
+        band = {"arc_count": 25, "arcs": arcs}
+        act = {
+            "index": 1,
+            "start": "2026-01-01T00:00:00",
+            "end": "2026-06-01T00:00:00",
+            "boundary_confidence": 1.0,
+            "name": None,
+            "arc_slugs": [a["slug"] for a in arcs],
+        }
+        html = render_arc_panel(band, {}, self.TIMELINE, acts=[act])
+        assert 'class="arc-fold"' in html
+        assert "show all 25 arcs" in html
+        # Assert on the chip form (<li class="arc-chip">), not the mini-map's
+        # <rect class="arc-seg"> which carries every slug regardless of fold.
+        shown = html.split('<details class="arc-fold"')[0]
+        assert '<li class="arc-chip" data-arc-slug="a24"' in shown  # heaviest in view
+        assert (
+            '<li class="arc-chip" data-arc-slug="a00"' not in shown
+        )  # lightest folded
+        assert '<li class="arc-chip" data-arc-slug="a00"' in html  # still in the DOM
+
+    def test_small_group_does_not_fold(self):
+        html = render_arc_panel(
+            self._band(), self._lookup(), self.TIMELINE, acts=self._acts()
+        )
+        assert 'class="arc-fold"' not in html  # under threshold → plain list
+
+    def test_arc_fold_css_forces_print_expand(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert ".arc-fold > *:not(summary)" in html  # deferred arcs print in full
+
     def test_broadsheet_panel_is_sticky_and_print_degrades(self, seeded_repo: Path):
         """The panel floats while scrolling but prints inline (print-first, #40)."""
         _seed_arc_story(seeded_repo)
