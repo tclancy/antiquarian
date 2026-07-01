@@ -324,6 +324,62 @@ class TestArcPanel:
         html = render_arc_panel(self._band(), self._lookup(), self.TIMELINE)
         assert 'href="stories/src__a.py.html"' in html
 
+    def _acts(self):
+        # Act I claims the datable arc s1; Act II claims nothing. s2 is undated
+        # and belongs to no act, so it must land in the unplaced group.
+        return [
+            {
+                "index": 1,
+                "start": "2026-01-01T00:00:00",
+                "end": "2026-03-15T00:00:00",
+                "boundary_confidence": 1.0,
+                "name": None,
+                "arc_slugs": ["s1"],
+            },
+            {
+                "index": 2,
+                "start": "2026-03-15T00:00:00",
+                "end": "2026-06-01T00:00:00",
+                "boundary_confidence": 0.4,
+                "name": None,
+                "arc_slugs": [],
+            },
+        ]
+
+    def test_acts_group_arcs_under_movements(self):
+        html = render_arc_panel(
+            self._band(), self._lookup(), self.TIMELINE, acts=self._acts()
+        )
+        assert "The work in acts" in html  # Acts-first title
+        assert 'class="arc-acts-index"' in html
+        assert 'class="arc-act-numeral">I<' in html  # Act I heads a group
+        # s1 nests under its act; the group's chip still carries the JS hooks
+        assert 'data-arc-slug="s1"' in html
+
+    def test_unplaced_arcs_trail_in_own_group(self):
+        html = render_arc_panel(
+            self._band(), self._lookup(), self.TIMELINE, acts=self._acts()
+        )
+        # s2 (undated, claimed by no act) survives in the unplaced group — the
+        # Acts-first layout must not silently drop it.
+        assert 'class="arc-act-group arc-unplaced"' in html
+        assert "arcs not placed in an act" in html
+        assert 'data-arc-slug="s2"' in html
+        assert "(undated)" in html
+
+    def test_low_confidence_act_divider_on_minimap_is_dashed(self):
+        html = render_arc_panel(
+            self._band(), self._lookup(), self.TIMELINE, acts=self._acts()
+        )
+        # Act II's boundary (confidence 0.4) draws a dashed divider on the spine.
+        assert 'stroke-dasharray="3 2"' in html
+
+    def test_no_acts_keeps_flat_index_and_old_title(self):
+        html = render_arc_panel(self._band(), self._lookup(), self.TIMELINE)
+        assert "The named arcs of the work" in html
+        assert 'class="arc-acts-index"' not in html
+        assert 'class="arc-index"' in html  # flat roster
+
     def test_broadsheet_panel_is_sticky_and_print_degrades(self, seeded_repo: Path):
         """The panel floats while scrolling but prints inline (print-first, #40)."""
         _seed_arc_story(seeded_repo)

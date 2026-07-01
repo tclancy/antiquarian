@@ -1208,10 +1208,103 @@ def _pack_arc_rows(entries: list[dict], gap: float) -> int:
     return len(row_right)
 
 
+def _render_scene_chip(e: dict) -> str:
+    """One arc chip in the panel index — coloured dot, name (linked to its story
+    when one exists), date range, and an ``(undated)`` flag when the arc has no
+    datable commits to place on the spine. Shared by the flat and Acts-grouped
+    layouts so both stay identical below the grouping.
+    """
+    name = _xml_escape(e["name"])
+    label = (
+        f'<a href="{_xml_escape(e["story_href"])}">{name}</a>'
+        if e["story_href"]
+        else name
+    )
+    when = (
+        f'<span class="arc-when">{_xml_escape(e["date_range"])}</span>'
+        if e["date_range"]
+        else ""
+    )
+    undated = (
+        "" if e.get("x0") is not None else ' <span class="arc-undated">(undated)</span>'
+    )
+    return (
+        f'<li class="arc-chip" data-arc-slug="{_xml_escape(e["slug"])}" '
+        f'data-arc-color="{_xml_escape(e["color"])}">'
+        f'<span class="arc-dot" style="background:{e["color"]}"></span>'
+        f"{label}{when}{undated}</li>"
+    )
+
+
+def _render_act_scene_group(act: dict, entries: list[dict]) -> str:
+    """An Act header plus the arcs that most-correlate with it (#149 phase 5).
+
+    Under the Act tier the panel leads with the movement; the arcs nest beneath
+    as the scenes that played out inside it. The header carries the roman
+    numeral, the Act's name once the naming pass has run, and its span.
+    """
+    roman = (
+        _ROMAN_NUMERALS[act["index"] - 1].upper()
+        if act["index"] <= len(_ROMAN_NUMERALS)
+        else str(act["index"])
+    )
+    span = (
+        f"{_iso_to_dt(act['start']).strftime('%b %Y')} – "
+        f"{_iso_to_dt(act['end']).strftime('%b %Y')}"
+    )
+    name = (
+        f'<span class="arc-act-name">{_xml_escape(act["name"])}</span>'
+        if act.get("name")
+        else ""
+    )
+    chips = "".join(_render_scene_chip(e) for e in entries)
+    return (
+        '<section class="arc-act-group">'
+        f'<div class="arc-act-head"><span class="arc-act-numeral">{roman}</span>'
+        f'{name}<span class="arc-act-span">{_xml_escape(span)}</span></div>'
+        f'<ul class="arc-index">{chips}</ul>'
+        "</section>"
+    )
+
+
+def _group_scenes_by_act(entries: list[dict], acts: list[dict]) -> str:
+    """Panel index organised Acts-first (#149 phase 5).
+
+    Each Act heads a group of the arcs assigned to it (via the data layer's
+    most-correlated attach); arcs no Act claims — the undatable ones — trail in
+    a final 'unplaced' group so nothing is silently dropped. Returns ``""`` when
+    no Act actually claims an arc, so the caller falls back to the flat index.
+    """
+    by_slug = {e["slug"]: e for e in entries}
+    groups: list[str] = []
+    claimed: set[str] = set()
+    for a in acts:
+        act_entries = [by_slug[s] for s in a.get("arc_slugs", []) if s in by_slug]
+        if not act_entries:
+            continue
+        claimed.update(e["slug"] for e in act_entries)
+        groups.append(_render_act_scene_group(a, act_entries))
+    if not groups:
+        return ""
+    unplaced = [e for e in entries if e["slug"] not in claimed]
+    if unplaced:
+        chips = "".join(_render_scene_chip(e) for e in unplaced)
+        groups.append(
+            '<section class="arc-act-group arc-unplaced">'
+            '<div class="arc-act-head"><span class="arc-act-numeral">·</span>'
+            '<span class="arc-act-name">arcs not placed in an act</span></div>'
+            f'<ul class="arc-index">{chips}</ul></section>'
+        )
+    return f'<div class="arc-acts-index">{"".join(groups)}</div>'
+
+
 def render_arc_panel(
-    arc_band: dict | None, arc_lookup: dict | None, timeline: dict
+    arc_band: dict | None,
+    arc_lookup: dict | None,
+    timeline: dict,
+    acts: list[dict] | None = None,
 ) -> str:
-    """Sticky named-arcs reference panel (#119, phase 1).
+    """Sticky named-arcs reference panel (#119; Acts-first as of #149 phase 5).
 
     In the httpx POC the named-arcs strip sat ~20,000px below the contributor
     scatter, so a reader could not hold both in view to cross-reference. This
@@ -1219,6 +1312,12 @@ def render_arc_panel(
     to the shared absolute time spine (#117) so each arc sits at the same x as
     the commits it names in "Hands that touched the work". Hovering an arc
     lights its commit bubbles, reusing the phase-2 cross-atom highlight.
+
+    When ``acts`` are supplied the index leads with the top-tier movements
+    (#149): each Act heads a group of the arcs that played out within it, and
+    the spine mini-map gains the Act divider lines (dashed where the boundary is
+    uncertain) so the panel and the Acts band read the same structure. Without
+    acts it falls back to the original flat arc index.
 
     Degrades for print (#40): the enclosing CSS drops the float so the panel
     prints once, inline, at the top — no sticky, no hover. Returns ``""`` when
@@ -1256,6 +1355,11 @@ def render_arc_panel(
             }
         )
 
+    # Group Acts-first when acts claim at least one arc; "" means fall back to
+    # the flat roster. Computed up front so the mini-map dividers and the index
+    # agree — dividers belong to the Acts-first treatment, not the flat one.
+    grouped_index = _group_scenes_by_act(entries, acts) if acts else ""
+
     n_rows = _pack_arc_rows(entries, gap=4.0)
     svg = ""
     if n_rows:
@@ -1266,6 +1370,20 @@ def render_arc_panel(
             f'xmlns="http://www.w3.org/2000/svg" width="100%" '
             f'style="display:block; max-width:100%;" aria-hidden="true">'
         ]
+        # Act dividers behind the arc segments — the same top-tier structure the
+        # masthead and Acts band carry, so a scene reads against its movement.
+        for a in (acts or [])[1:] if grouped_index else []:
+            bx = margin_left + scale(_iso_to_dt(a["start"]))
+            dash = (
+                ' stroke-dasharray="3 2"'
+                if a["boundary_confidence"] < _ACT_DASHED_BELOW
+                else ""
+            )
+            segs.append(
+                f'<line x1="{bx:.1f}" y1="{top_pad:.1f}" x2="{bx:.1f}" '
+                f'y2="{top_pad + n_rows * row_pitch:.1f}" stroke="{PALETTE["ink"]}" '
+                f'stroke-width="0.6" opacity="0.4"{dash}/>'
+            )
         for e in entries:
             if e.get("x0") is None:
                 continue
@@ -1282,38 +1400,23 @@ def render_arc_panel(
         segs.append("</svg>")
         svg = "".join(segs)
 
-    chips = ['<ul class="arc-index">']
-    for e in entries:
-        name = _xml_escape(e["name"])
-        label = (
-            f'<a href="{_xml_escape(e["story_href"])}">{name}</a>'
-            if e["story_href"]
-            else name
+    index_html = grouped_index
+    if index_html:
+        title = "The work in acts — the arcs within each"
+    else:
+        title = "The named arcs of the work"
+        index_html = (
+            '<ul class="arc-index">'
+            + "".join(_render_scene_chip(e) for e in entries)
+            + "</ul>"
         )
-        when = (
-            f'<span class="arc-when">{_xml_escape(e["date_range"])}</span>'
-            if e["date_range"]
-            else ""
-        )
-        undated = (
-            ""
-            if e.get("x0") is not None
-            else ' <span class="arc-undated">(undated)</span>'
-        )
-        chips.append(
-            f'<li class="arc-chip" data-arc-slug="{_xml_escape(e["slug"])}" '
-            f'data-arc-color="{_xml_escape(e["color"])}">'
-            f'<span class="arc-dot" style="background:{e["color"]}"></span>'
-            f"{label}{when}{undated}</li>"
-        )
-    chips.append("</ul>")
 
     return (
-        '<aside class="arc-panel" aria-label="The named arcs of the work">'
-        '<div class="arc-panel-title">The named arcs of the work'
+        f'<aside class="arc-panel" aria-label="{title}">'
+        f'<div class="arc-panel-title">{title}'
         '<span class="arc-panel-hint"> — hover an arc to light its commits below</span>'
         "</div>"
-        f"{svg}{''.join(chips)}"
+        f"{svg}{index_html}"
         "</aside>"
     )
 
@@ -1770,6 +1873,14 @@ def render_page(
     .arc-dot {{ width: 0.62rem; height: 0.62rem; border-radius: 2px; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15); }}
     .arc-when {{ color: var(--ink-dim); font-style: italic; }}
     .arc-undated {{ color: var(--ink-dim); font-size: 0.75rem; }}
+    /* Acts-first index (#149 phase 5): each movement heads its scenes. */
+    .arc-acts-index {{ display: flex; flex-direction: column; gap: 0.4rem; }}
+    .arc-act-group {{ border-left: 2px solid var(--rule); padding-left: 0.55rem; }}
+    .arc-unplaced {{ border-left-style: dashed; }}
+    .arc-act-head {{ display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.8rem; color: var(--ink-dim); margin: 0.1rem 0 0.2rem; }}
+    .arc-act-numeral {{ font-weight: 700; color: var(--ink); font-variant: small-caps; }}
+    .arc-act-name {{ font-weight: 600; color: var(--ink); }}
+    .arc-act-span {{ font-style: italic; }}
     @media print {{
       /* Print-first (#40): drop the float; the panel prints once, inline, at top. */
       .arc-panel {{ position: static; max-height: none; overflow: visible; box-shadow: none; break-inside: avoid; }}
@@ -2241,7 +2352,9 @@ def render_broadsheet(
             data["swimlane"], timeline, data["file_lifespans"], arc_lookup=arc_lookup
         ),
     }
-    arc_panel = render_arc_panel(data.get("arc_band"), arc_lookup, timeline)
+    arc_panel = render_arc_panel(
+        data.get("arc_band"), arc_lookup, timeline, acts=data.get("acts", [])
+    )
     acts_atom = render_acts_atom(data.get("acts", []), timeline)
     raw_excerpt = data.get("survey_excerpt")
     survey_excerpt = _xml_escape(raw_excerpt) if raw_excerpt else None
