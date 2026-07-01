@@ -483,6 +483,40 @@ class TestMastheadDensityTimeline:
         assert 'class="masthead-density"' not in html
         assert "active commit windows" in html  # the old reference legend
 
+    def _act(self, index, start_mo, end_mo, confidence=1.0):
+        return {
+            "index": index,
+            "start": f"2026-0{start_mo}-01T00:00:00+00:00",
+            "end": f"2026-0{end_mo}-01T00:00:00+00:00",
+            "commit_count": 3,
+            "boundary_confidence": confidence,
+            "signals": [],
+            "name": None,
+        }
+
+    def test_acts_overlay_boundary_and_numeral_and_legend(self):
+        commits = [self._commit(f"sha{i:04d}", (i % 5) + 1, 10, 10) for i in range(6)]
+        acts = [self._act(1, 1, 3), self._act(2, 3, 6)]
+        html = render_timeline_masthead(self.TIMELINE, commits, self.LOOKUP, acts=acts)
+        assert "act boundary" in html  # legend entry appears with acts
+        assert ">II<" in html  # second movement's roman numeral
+        # Exactly one internal divider: Act II's start. Act I's start is the
+        # spine's own start and must NOT draw a leading divider. Divider lines
+        # carry y1="26.0"; the legend glyph and axis ticks use other y values.
+        assert html.count('y1="26.0"') == 1
+        assert html.count("stroke-dasharray") == 0  # this boundary is confident
+
+    def test_low_confidence_act_boundary_is_dashed(self):
+        commits = [self._commit(f"sha{i:04d}", (i % 5) + 1, 10, 10) for i in range(6)]
+        acts = [self._act(1, 1, 3), self._act(2, 3, 6, confidence=0.4)]
+        html = render_timeline_masthead(self.TIMELINE, commits, self.LOOKUP, acts=acts)
+        assert 'stroke-dasharray="3 2"' in html  # uncertain boundary renders dashed
+
+    def test_no_acts_leaves_masthead_unchanged(self):
+        commits = [self._commit(f"sha{i:04d}", (i % 5) + 1, 10, 10) for i in range(6)]
+        html = render_timeline_masthead(self.TIMELINE, commits, self.LOOKUP)
+        assert "act boundary" not in html  # no act layer without acts
+
     def test_significant_dots_survive_print_via_css(self, seeded_repo: Path):
         _seed_arc_story(seeded_repo)
         data = extract_render_data(seeded_repo)
