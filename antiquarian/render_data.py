@@ -24,6 +24,12 @@ from antiquarian.cache import cache_path_for_repo
 from antiquarian.identity import coalesce_by_email, parse_mailmap
 from antiquarian.metrics import build_file_metrics, reference_timestamp
 from antiquarian.profile import act_signature, assign_arcs_to_acts, build_acts
+from antiquarian.link_backend import (
+    GitHubBackend,
+    LinkBackend,
+    NoopLinkBackend,
+    linkify_markdown,
+)
 from antiquarian.prs import detect_github_repo
 from antiquarian.todos import extract_todos
 
@@ -269,12 +275,23 @@ def _load_todos(repo_path: Path, files: list[str]) -> list[_Todo]:
     return todos
 
 
-def _build_swimlane(commits: list[_Commit], base_url: str | None = None) -> dict:
+def _build_swimlane(
+    commits: list[_Commit],
+    base_url: str | None = None,
+    link_backend: LinkBackend | None = None,
+) -> dict:
     """One row per author, time on X, marks per commit.
 
     Author email is sticky — same person can show two different display names
     over time. Group by email but display the most recent name.
+
+    ``detail`` (the commit/PR text shown in the masthead popover) is linkified
+    the same way story prose is (#113): ``#N`` and SHA references become
+    Markdown links, which the renderer's safe inline-markdown pass turns into
+    clickable anchors. Linkify runs *after* truncation so a trailing ref can't
+    be split mid-link.
     """
+    backend = link_backend or NoopLinkBackend()
     by_email: dict[str, dict] = defaultdict(
         lambda: {"author": "", "email": "", "commits": []}
     )
@@ -294,7 +311,10 @@ def _build_swimlane(commits: list[_Commit], base_url: str | None = None) -> dict
                 "arcs": c.arcs,
                 "files_changed": c.files_changed,
                 "detail_source": "pr" if c.pr_body else "commit",
-                "detail": _truncate_words(c.pr_body or c.message or c.message_subject),
+                "detail": linkify_markdown(
+                    _truncate_words(c.pr_body or c.message or c.message_subject),
+                    backend,
+                ),
                 "pr_url": (
                     f"{base_url}/pull/{c.pr_number}"
                     if base_url and c.pr_number
@@ -748,6 +768,9 @@ def extract_render_data(repo_path: Path) -> dict:
 
     gh = detect_github_repo(repo_path)
     base_url = f"https://github.com/{gh[0]}/{gh[1]}" if gh else None
+    link_backend: LinkBackend = (
+        GitHubBackend(owner=gh[0], repo=gh[1]) if gh else NoopLinkBackend()
+    )
 
     commit_dicts = [asdict(c) for c in commits]
     file_metrics = _build_file_metrics_index(files, commit_dicts)
@@ -761,7 +784,7 @@ def extract_render_data(repo_path: Path) -> dict:
         "commits": commit_dicts,
         "todos": [asdict(t) for t in todos],
         "arcs": [asdict(a) for a in arcs],
-        "swimlane": _build_swimlane(commits, base_url),
+        "swimlane": _build_swimlane(commits, base_url, link_backend),
         "arc_band": _build_arc_band(arcs, commits),
         "acts": _build_acts_data(commits, arcs, _load_act_names(repo_path)),
         "timeline": _build_timeline(commits),

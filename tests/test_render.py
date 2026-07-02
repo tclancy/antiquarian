@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 from antiquarian.cli import app
 from antiquarian.render import (
     _knotwork_ribbon_svg,
+    _safe_inline_markdown,
     _render_dramatis_personae,
     _axis_ticks,
     _render_absolute_axis,
@@ -1575,3 +1576,79 @@ class TestMailmapCoalescing:
     def test_no_mailmap_leaves_lanes_separate(self, seeded_repo: Path):
         data = extract_render_data(seeded_repo)
         assert len(data["swimlane"]["lanes"]) == 2
+
+
+class TestSafeInlineMarkdown:
+    """`_safe_inline_markdown` renders the popover's markdown subset safely."""
+
+    def test_renders_markdown_link(self):
+        out = _safe_inline_markdown("see [269](https://github.com/o/r/pull/269) here")
+        assert (
+            '<a href="https://github.com/o/r/pull/269" target="_blank" '
+            'rel="noopener">269</a>' in out
+        )
+        assert "[269]" not in out  # raw markdown gone
+
+    def test_renders_bold_italic_code(self):
+        out = _safe_inline_markdown("**Edit** by *me* in `file.py`")
+        assert "<strong>Edit</strong>" in out
+        assert "<em>me</em>" in out
+        assert "<code>file.py</code>" in out
+
+    def test_escapes_raw_html_xss(self):
+        out = _safe_inline_markdown('<img src=x onerror="alert(1)">')
+        assert "<img" not in out
+        assert "onerror" in out  # present, but as escaped text
+        assert "&lt;img" in out
+
+    def test_script_tag_is_inert(self):
+        out = _safe_inline_markdown("<script>alert(1)</script>")
+        assert "<script>" not in out
+        assert "&lt;script&gt;" in out
+
+    def test_javascript_url_not_linked(self):
+        # Only http(s)/mailto match the link pattern; a javascript: URL stays
+        # literal escaped text, never becomes a clickable href.
+        out = _safe_inline_markdown("[x](javascript:alert(1))")
+        assert "javascript:" not in out or "href=" not in out
+        assert 'href="javascript:' not in out
+
+    def test_link_label_html_is_escaped(self):
+        out = _safe_inline_markdown("[<b>x</b>](https://e.com)")
+        assert "<b>" not in out
+        assert 'href="https://e.com"' in out
+
+    def test_ampersand_in_url_preserved(self):
+        out = _safe_inline_markdown("[q](https://e.com/?a=1&b=2)")
+        assert 'href="https://e.com/?a=1&amp;b=2"' in out
+
+    def test_empty_string(self):
+        assert _safe_inline_markdown("") == ""
+        assert _safe_inline_markdown(None) == ""
+
+    def test_plain_text_unchanged_but_escaped(self):
+        assert _safe_inline_markdown("just words") == "just words"
+
+
+class TestPopoverDetailHtml:
+    """The masthead/lens dots carry a sanitised data-detail-html for the popover."""
+
+    def test_dot_attrs_include_detail_html(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        assert "data-detail-html=" in html
+
+    def test_detail_html_renders_markdown_link_from_pr_body(self, seeded_repo: Path):
+        # A #N ref in detail is linkified upstream then safe-rendered to an
+        # anchor inside the data-detail-html attribute (escaped for the attr).
+        data = extract_render_data(seeded_repo)
+        # Inject a PR-body-style ref into one masthead commit's detail.
+        for lane in data["swimlane"]["lanes"]:
+            if lane["commits"]:
+                lane["commits"][0]["detail"] = (
+                    "[#503](https://github.com/o/r/issues/503)"
+                )
+                break
+        html = render_broadsheet(data)
+        # The anchor survives, XML-escaped, in the attribute value.
+        assert "&lt;a href=" in html and "issues/503" in html

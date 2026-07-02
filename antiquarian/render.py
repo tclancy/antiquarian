@@ -259,6 +259,55 @@ def _xml_escape(s: str) -> str:
     )
 
 
+# Inline-markdown subset rendered in the masthead/lens commit popovers. Only
+# these constructs are recognised; everything else stays literal escaped text.
+_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+|mailto:[^)\s]+)\)")
+_MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MD_BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<![\*\w])\*([^*\n]+)\*(?![\*\w])")
+
+
+def _emphasis_on_escaped(escaped: str) -> str:
+    """Apply code/bold/italic to text that is ALREADY HTML-escaped.
+
+    ``_xml_escape`` leaves ``*`` and `` ` `` untouched, so matching them here is
+    safe and every captured group is already escaped — no markup in the source
+    can break out into live HTML. Code first so ``*`` inside a span stays text.
+    """
+    escaped = _MD_CODE_RE.sub(r"<code>\1</code>", escaped)
+    escaped = _MD_BOLD_RE.sub(r"<strong>\1</strong>", escaped)
+    escaped = _MD_ITALIC_RE.sub(r"<em>\1</em>", escaped)
+    return escaped
+
+
+def _safe_inline_markdown(raw: str) -> str:
+    """Render a SAFE inline-markdown subset (links, bold, italic, code) to HTML.
+
+    Every span of source is ``_xml_escape``-d BEFORE any tag is introduced, and
+    only a fixed whitelist of tags is emitted; link URLs are restricted to
+    ``http(s)``/``mailto`` and attribute-escaped. Raw HTML in the source — e.g.
+    a PR body containing ``<img onerror=...>`` — therefore stays inert text.
+
+    This is why the commit popovers can assign the result via ``innerHTML``: the
+    string is server-sanitised to a whitelist here, so the untrusted-content
+    DOM-XSS concern that forced ``textContent`` no longer applies. The result
+    is Markdown-link-free HTML; ``#N``/SHA references are expected to already be
+    Markdown links (``render_data`` runs ``linkify_markdown`` on the detail).
+    """
+    if not raw:
+        return ""
+    out: list[str] = []
+    pos = 0
+    for m in _MD_LINK_RE.finditer(raw):
+        out.append(_emphasis_on_escaped(_xml_escape(raw[pos : m.start()])))
+        label = _emphasis_on_escaped(_xml_escape(m.group(1)))
+        href = _xml_escape(m.group(2))
+        out.append(f'<a href="{href}" target="_blank" rel="noopener">{label}</a>')
+        pos = m.end()
+    out.append(_emphasis_on_escaped(_xml_escape(raw[pos:])))
+    return "".join(out)
+
+
 def _knotwork_ribbon_svg(width: int = 480) -> str:
     """A Celtic interlace ribbon rendered as inline SVG.
 
@@ -369,10 +418,12 @@ def _masthead_dot_attrs(
     if arc_names:
         bits.append("arc: " + "; ".join(arc_names))
     title = " · ".join(b for b in bits if b)
+    _detail = c.get("detail") or c.get("subject") or ""
     attrs = (
         f' data-sha="{_xml_escape(c["short_sha"])}"'
         f' data-date="{_xml_escape(c.get("date") or "")}"'
-        f' data-detail="{_xml_escape(c.get("detail") or c.get("subject") or "")}"'
+        f' data-detail="{_xml_escape(_detail)}"'
+        f' data-detail-html="{_xml_escape(_safe_inline_markdown(_detail))}"'
         f' data-arc-names="{_xml_escape("; ".join(arc_names))}"'
     )
     if c.get("pr_url"):
@@ -966,10 +1017,12 @@ def render_swimlane(
                 None,
             )
             arc_color_attr = f' data-arc-color="{arc_color}"' if arc_color else ""
+            _lens_detail = c.get("detail") or ""
             lens_attrs = (
                 f' data-sha="{_xml_escape(c["short_sha"])}" data-lane="{i}" '
                 f'data-date="{_xml_escape(c.get("date") or "")}" '
-                f'data-detail="{_xml_escape(c.get("detail") or "")}" '
+                f'data-detail="{_xml_escape(_lens_detail)}" '
+                f'data-detail-html="{_xml_escape(_safe_inline_markdown(_lens_detail))}" '
                 f'data-detail-source="{_xml_escape(c.get("detail_source") or "commit")}"'
             )
             if c.get("pr_url"):
@@ -2079,15 +2132,21 @@ def render_page(
         .slice(0, LENS_N).map(function (p) {{ return p.b; }})
         .sort(function (a, c) {{ return parseFloat(a.getAttribute('cx')) - parseFloat(c.getAttribute('cx')); }});
     }}
-    /* DOM nodes, NOT innerHTML — detail text comes from untrusted third-party
-       commit/PR bodies; getAttribute decodes the escaped value, so innerHTML
-       would re-parse it as HTML (DOM-XSS). textContent is safe. */
+    /* The detail body is server-sanitised inline markdown (see
+       render._safe_inline_markdown): all HTML escaped, only a whitelist of
+       tags (a/strong/em/code) emitted, links restricted to http(s)/mailto. So
+       innerHTML on data-detail-html is safe — the untrusted third-party
+       commit/PR text can't break out. data-detail (plain) is the fallback. */
     function showDetail(panel, b) {{
       panel.textContent = '';
       var lbl = document.createElement('em');
       lbl.textContent = (b.getAttribute('data-detail-source') === 'pr' ? 'PR' : 'commit') + ':';
       panel.appendChild(lbl);
-      panel.appendChild(document.createTextNode(' ' + (b.getAttribute('data-detail') || '(no message)')));
+      var det = document.createElement('span');
+      var dh = b.getAttribute('data-detail-html');
+      if (dh) {{ det.innerHTML = ' ' + dh; }}
+      else {{ det.textContent = ' ' + (b.getAttribute('data-detail') || '(no message)'); }}
+      panel.appendChild(det);
       panel.appendChild(document.createElement('br'));
       [['data-pr-url', 'view PR →'], ['data-commit-url', 'view commit →']].forEach(function (pair) {{
         var u = b.getAttribute(pair[0]);
@@ -2206,7 +2265,9 @@ def render_page(
      the subject, arc names and clickable PR/commit links — the progressive
      enhancement on top of the SVG <title> baseline. Self-contained; the card
      reuses .commit-lens styling and is JS-created so print gets nothing dynamic.
-     DOM nodes + textContent only — commit/PR text is untrusted, never innerHTML. */
+     The body is server-sanitised inline markdown (render._safe_inline_markdown:
+     HTML escaped, whitelist tags only), so innerHTML on data-detail-html is
+     safe for the untrusted commit/PR text; data-detail (plain) is the fallback. */
   (function () {{
     var strip = document.querySelector('.masthead-density');
     if (!strip) return;
@@ -2224,7 +2285,9 @@ def render_page(
       var x = document.createElement('button'); x.className = 'commit-lens-close'; x.textContent = '×';
       x.addEventListener('click', closeCard); head.appendChild(x);
       var body = document.createElement('div'); body.className = 'commit-lens-detail';
-      body.textContent = dot.getAttribute('data-detail') || '(no message)';
+      var dh = dot.getAttribute('data-detail-html');
+      if (dh) {{ var ds = document.createElement('span'); ds.innerHTML = dh; body.appendChild(ds); }}
+      else {{ body.appendChild(document.createTextNode(dot.getAttribute('data-detail') || '(no message)')); }}
       var arcs = dot.getAttribute('data-arc-names');
       if (arcs) {{
         body.appendChild(document.createElement('br'));
