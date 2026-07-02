@@ -12,6 +12,7 @@ from antiquarian.models import CommitFeatures, TodoAnnotation
 from antiquarian.narrative import (
     THRESHOLD_BYTES,
     _compress_message,
+    _first_stderr_line,
     _is_low_info_commit,
     _run_claude_p,
     _sanitize_for_claude,
@@ -637,6 +638,47 @@ class TestRunClaudeP:
         assert len(logs) == 1
         assert "exited 1" in logs[0]
         assert "retrying" in logs[0]
+
+    def test_surfaces_stderr_first_line_in_logs(self) -> None:
+        """A non-zero exit's stderr (e.g. a usage-limit notice) reaches the log.
+
+        The overnight httpx rebuild hit a rolling usage limit; the log showed
+        only ``exited 1`` because stderr was discarded. Both the retry and the
+        giving-up lines should now carry the real reason.
+        """
+        logs: list[str] = []
+        err = subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["claude"],
+            stderr="Usage limit reached. Resets at 2026-07-02T04:00:00Z\n",
+        )
+        with patch("antiquarian.narrative.subprocess.run", side_effect=[err, err]):
+            with pytest.raises(subprocess.CalledProcessError):
+                _run_claude_p(
+                    ["claude", "-p"],
+                    "hi",
+                    300,
+                    base_backoff_seconds=0.01,
+                    log=logs.append,
+                    sleep=lambda _s: None,
+                )
+        # Retry line and giving-up line both name the limit.
+        assert all("Usage limit reached" in m for m in logs)
+        assert "giving up" in logs[-1]
+        assert "Usage limit reached" in logs[-1]
+
+    def test_first_stderr_line_empty_when_no_stderr(self) -> None:
+        """No stderr → no suffix, so a bare exit still logs cleanly."""
+        err = subprocess.CalledProcessError(returncode=1, cmd=["claude"], stderr="")
+        assert _first_stderr_line(err) == ""
+        err_none = subprocess.CalledProcessError(returncode=1, cmd=["claude"])
+        assert _first_stderr_line(err_none) == ""
+
+    def test_first_stderr_line_skips_leading_blank_lines(self) -> None:
+        err = subprocess.CalledProcessError(
+            returncode=1, cmd=["claude"], stderr="\n\n  real cause  \nsecond line\n"
+        )
+        assert _first_stderr_line(err) == " — real cause"
 
     def test_raises_called_process_error_after_max_attempts(self) -> None:
         logs: list[str] = []
