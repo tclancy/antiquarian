@@ -48,14 +48,19 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          classify_inline_comments: true
-          # The inline-comment MCP tool must be explicitly allowed, or every
-          # post is denied — the reviewer then burns its whole turn budget on
-          # denials and exits with "Reached maximum number of turns" having
-          # posted nothing. Read/Grep/Glob are on by default; --allowedTools is
-          # additive, so the action's built-in GitHub tools stay enabled. gh pr
-          # diff/view give full-diff context; gh pr comment is the channel for
-          # the "diff is clean" summary when there are no line-level findings.
+          # track_progress is what actually REGISTERS the inline-comment MCP
+          # server (and a live tracking comment). Without it the server never
+          # connects, so mcp__github_inline_comment__create_inline_comment is
+          # denied even though it's in --allowedTools — --allowedTools only
+          # FILTERS already-registered servers, it does not register them. That
+          # was the "14 denials, posted nothing, max-turns" failure. This
+          # mirrors the official pr-review-comprehensive.yml example (which also
+          # omits classify_inline_comments — #1405 documents buffering bugs when
+          # it's set explicitly, so we let it default).
+          track_progress: true
+          # --allowedTools then ALLOWS the now-registered inline-comment tool.
+          # gh pr diff/view give full-diff context; gh pr comment is the channel
+          # for a "diff is clean" summary when there are no line-level findings.
           claude_args: >-
             --allowedTools
             "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
