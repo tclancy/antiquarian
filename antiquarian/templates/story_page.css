@@ -43,6 +43,47 @@ html, body {
   gap: 2rem;
   max-width: 1040px;
 }
+/* Right-gutter vertical commit timeline (#138 phase-2). Widens the shell and
+   sits the strip to the right of the article, sticky so it tracks the prose as
+   you scroll — the vertical cousin of the masthead density bar. */
+.story-layout:has(.story-timeline) {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.75rem;
+  max-width: 1320px;
+}
+.story-timeline {
+  width: 250px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 1rem;
+  max-height: 100vh;
+  overflow-y: auto;
+  padding-top: 1.5rem;
+}
+/* Scroll-highlight: once JS marks an arc active, non-active arcs dim so the
+   section you're reading stands out. JS-off: has-active never lands, so every
+   arc stays fully legible. */
+.tl-arc { transition: opacity 0.25s ease; }
+.story-timeline.has-active .tl-arc { opacity: 0.3; }
+.story-timeline.has-active .tl-arc.tl-active { opacity: 1; }
+.tl-arc a { text-decoration: none; }
+.tl-arc a:hover .tl-label { text-decoration: underline; }
+.tl-arc.tl-active .tl-label { font-weight: 600; }
+/* The prose arc anchors sit under the sticky masthead; nudge so linking to one
+   doesn't tuck its heading against the top edge. */
+.story-arc { scroll-margin-top: 1.5rem; }
+
+@media (max-width: 900px) {
+  .story-layout:has(.story-timeline) { flex-wrap: wrap; }
+  .story-timeline {
+    position: static;
+    width: 100%;
+    max-height: none;
+    order: 3;
+  }
+}
+@media print { .story-timeline { display: none; } }
 
 /* -----------------------------------------------------------------------
  * Directory-navigation sidebar (#138)

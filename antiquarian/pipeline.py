@@ -553,6 +553,30 @@ def _render_story_pages(
     all_candidates: set[str] = set(candidates)
     file_metrics: dict[str, list[dict]] = data.get("file_metrics", {})
 
+    # POC (#138 phase-2): per-file arc→commit timeline for the story-page gutter.
+    # Group the arc_band arcs by file, colouring each by arc order (mirrors the
+    # broadsheet's NEON_ARC_COLORS assignment) so the strip and the panel agree.
+    from antiquarian.render import ARC_COLORS_DARK, _render_story_gutter_timeline
+
+    arcs_by_file: dict[str, list[dict]] = {}
+    for arc in data.get("arc_band", {}).get("arcs", []):
+        arcs_by_file.setdefault(arc["file_path"], []).append(arc)
+
+    def _gutter_for(file_path: str) -> str:
+        arcs = sorted(
+            arcs_by_file.get(file_path, []), key=lambda a: a.get("arc_number", 0)
+        )
+        file_arcs = [
+            {
+                "number": a.get("arc_number", i + 1),
+                "name": a.get("name", ""),
+                "color": ARC_COLORS_DARK[i % len(ARC_COLORS_DARK)],
+                "commits": a.get("commits", []),
+            }
+            for i, a in enumerate(arcs)
+        ]
+        return _render_story_gutter_timeline(file_arcs)
+
     # Detect the link backend once per render — pure config, no per-file
     # cost. A non-GitHub remote degrades to NoopLinkBackend, leaving refs
     # as plain text (#113).
@@ -571,6 +595,7 @@ def _render_story_pages(
             files_with_stories=all_candidates,
             link_backend=link_backend,
             metrics=file_metrics.get(file_path),
+            gutter_timeline=_gutter_for(file_path),
         )
         (pages_dir / _story_md_to_html_name(story_md_name)).write_text(
             story_html, encoding="utf-8"
