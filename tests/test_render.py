@@ -31,6 +31,7 @@ from antiquarian.render import (
     build_absolute_scale,
     MASTHEAD_BIN_THRESHOLD,
     _masthead_significant,
+    _truncate_svg_label,
     render_acts_atom,
     render_arc_panel,
     render_broadsheet,
@@ -515,6 +516,187 @@ class TestActsAtom:
         html = render_acts_atom([self._acts()[0]], self.TL)
         assert "The work in 1 act —" in html
         assert "act(s)" not in html
+
+    # Long-name / narrow-band handling (#177) — SVG has no native
+    # text-overflow: ellipsis, so the atom measures glyph widths in Python.
+
+    def test_long_name_in_narrow_band_is_truncated_with_title(self):
+        # First Act runs 4 months of a 10-year span — its band is ~32 px on
+        # the 980 px chart, wide enough to hold an ellipsized label but far
+        # too tight for the full 40-char name.
+        long_name = "The Async-First Pivot That Rewrote Everything"
+        tl = {
+            "full_span": {
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2030-01-01T00:00:00+00:00",
+                "days": 3653,
+            }
+        }
+        acts = [
+            {
+                "id": "a1",
+                "index": 1,
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2020-05-01T00:00:00+00:00",
+                "commit_count": 3,
+                "boundary_confidence": 1.0,
+                "signals": ["origin"],
+                "name": long_name,
+                "arc_slugs": [],
+            },
+            {
+                "id": "a2",
+                "index": 2,
+                "start": "2020-05-01T00:00:00+00:00",
+                "end": "2030-01-01T00:00:00+00:00",
+                "commit_count": 500,
+                "boundary_confidence": 0.9,
+                "signals": ["cadence-shift"],
+                "name": None,
+                "arc_slugs": [],
+            },
+        ]
+        html = render_acts_atom(acts, tl)
+        # Full name reaches the DOM only via a <title> tooltip on the label.
+        assert f"<title>{long_name}</title>" in html
+        # The full name never renders as visible text — it would overflow the
+        # sliver and jam into the next Act.
+        assert f">{long_name}</text>" not in html
+        # A trailing-ellipsis form does render as visible text.
+        assert "…</text>" in html
+
+    def test_short_name_in_wide_band_has_no_redundant_title(self):
+        acts = self._acts()
+        acts[0]["name"] = "Init"
+        html = render_acts_atom(acts, self.TL)
+        # Full name renders as visible text.
+        assert ">Init</text>" in html
+        # No redundant <title> on the label — the rect's own <title>
+        # already carries the same detail.
+        assert "<title>Init</title>" not in html
+
+    def test_narrow_band_drops_span_label_rather_than_truncating(self):
+        # A truncated date-span ("Jan 2020 – …") would misread the range —
+        # so we drop it entirely on slivers that can't hold the whole thing.
+        tl = {
+            "full_span": {
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2030-01-01T00:00:00+00:00",
+                "days": 3653,
+            }
+        }
+        acts = [
+            {
+                "id": "a1",
+                "index": 1,
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2020-01-08T00:00:00+00:00",
+                "commit_count": 3,
+                "boundary_confidence": 1.0,
+                "signals": ["origin"],
+                "name": None,
+                "arc_slugs": [],
+            },
+            {
+                "id": "a2",
+                "index": 2,
+                "start": "2020-01-08T00:00:00+00:00",
+                "end": "2030-01-01T00:00:00+00:00",
+                "commit_count": 500,
+                "boundary_confidence": 0.9,
+                "signals": ["cadence-shift"],
+                "name": None,
+                "arc_slugs": [],
+            },
+        ]
+        html = render_acts_atom(acts, tl)
+        # font-size=8.5 marks the date-span labels; count occurrences.
+        # First act's sliver band drops the span → only Act II has one.
+        span_labels = re.findall(r'font-size="8.5"[^>]*>[^<]+</text>', html)
+        assert len(span_labels) == 1
+        # The one that survives is Act II's (wide band).
+        assert "2030" in span_labels[0] or "2020" in span_labels[0]
+
+    def test_truncate_helper_fits_full_when_room(self):
+        assert _truncate_svg_label("hello", 200, 13) == "hello"
+
+    def test_truncate_helper_ellipsizes_when_over_budget(self):
+        result = _truncate_svg_label("The Async-First Pivot", 40, 13)
+        assert result.endswith("…")
+        assert len(result) < len("The Async-First Pivot")
+
+    def test_truncate_helper_returns_empty_when_no_room(self):
+        # No pixels, no text, no ellipsis-alone → empty.
+        assert _truncate_svg_label("hello", 0, 13) == ""
+        assert _truncate_svg_label("hello", -5, 13) == ""
+        assert _truncate_svg_label("", 200, 13) == ""
+        # Only one char's worth of room — even the ellipsis would look like
+        # noise, so drop the label entirely.
+        assert _truncate_svg_label("hello", 8, 13) == ""
+
+    def test_narrow_band_falls_back_to_roman_when_name_wont_fit_ellipsized(self):
+        # First Act ≈ 2 months of a 10-year span → ~16 px band, avail ~12 px.
+        # At font-size 13 the budget is 1 char — enough for the roman numeral,
+        # not even enough for a "T…" truncation of the name. The fall-back
+        # branch renders the roman and reveals the full name on hover.
+        long_name = "Some Long Meaningful Name"
+        tl = {
+            "full_span": {
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2030-01-01T00:00:00+00:00",
+                "days": 3653,
+            }
+        }
+        acts = [
+            {
+                "id": "a1",
+                "index": 1,
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2020-03-01T00:00:00+00:00",
+                "commit_count": 3,
+                "boundary_confidence": 1.0,
+                "signals": ["origin"],
+                "name": long_name,
+                "arc_slugs": [],
+            },
+            {
+                "id": "a2",
+                "index": 2,
+                "start": "2020-03-01T00:00:00+00:00",
+                "end": "2030-01-01T00:00:00+00:00",
+                "commit_count": 500,
+                "boundary_confidence": 0.9,
+                "signals": ["cadence-shift"],
+                "name": None,
+                "arc_slugs": [],
+            },
+        ]
+        html = render_acts_atom(acts, tl)
+        # Full name only in the tooltip …
+        assert f"<title>{long_name}</title>" in html
+        # … visible label falls back to the roman "I" for Act I.
+        assert ">I</text>" in html
+        # No ellipsized form — the name didn't get truncated, it got replaced.
+        assert "…</text>" not in html
+
+    def test_truncate_helper_leading_whitespace_source_drops(self):
+        # Regression: a source that rstrips to nothing after truncation used
+        # to emit a bare "…" — the guard extends the "lone ellipsis is noise"
+        # rule to cover that case too.
+        assert _truncate_svg_label("   text", 15, 13) == ""
+
+    def test_truncate_helper_drop_if_truncated_flag(self):
+        # Date-span labels use this — a mid-cut span misreads the range,
+        # so we ask the helper to return "" instead of ellipsizing.
+        assert (
+            _truncate_svg_label("Jan 2020 – Sep 2020", 40, 8.5, drop_if_truncated=True)
+            == ""
+        )
+        # Same input, room to fit whole → returns the string unchanged.
+        assert (
+            _truncate_svg_label("Jan 2020 – Sep 2020", 200, 8.5, drop_if_truncated=True)
+            == "Jan 2020 – Sep 2020"
+        )
 
 
 class TestMastheadDensityTimeline:

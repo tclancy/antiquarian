@@ -2329,6 +2329,57 @@ _ACT_TINTS = (PALETTE["paper"], PALETTE["paper_alt"])
 # Below this start-boundary confidence the divider renders dashed — the evidence
 # couldn't place the movement cleanly (#149 decision 7).
 _ACT_DASHED_BELOW = 0.7
+# Average glyph width for EB Garamond at proportional label sizes (#177). The
+# atom is static-complete (JS-off; #40), so we can't call `getBBox()` at
+# render time — a Python-side em-based estimate is what lets us decide when
+# a name overflows its band. Slightly wider than the ~0.5em empirical avg to
+# ellipsize a touch early instead of clipping past the edge.
+_ACT_LABEL_CHAR_EM = 0.55
+# Horizontal padding inside each Act band so centered labels don't run
+# right up to the band's rules.
+_ACT_LABEL_PADDING = 4.0
+
+
+def _truncate_svg_label(
+    text: str,
+    avail_px: float,
+    font_size_px: float,
+    *,
+    drop_if_truncated: bool = False,
+) -> str:
+    """Trim `text` to fit within `avail_px` at the given SVG font size (#177).
+
+    SVG `<text>` has no native `text-overflow: ellipsis`, so the acts band
+    measures glyph widths in Python and returns either the full string, a
+    trailing-ellipsis form, or ``""`` when nothing meaningful will fit.
+    Uses an em-based average glyph width (EB Garamond ≈ 0.55em/char) — a
+    coarse estimate is enough because we err on the "ellipsize slightly
+    early" side.
+
+    ``drop_if_truncated=True`` skips the ellipsis form entirely, returning
+    ``""`` when the text won't fit whole. Used for the date-span label,
+    where a truncated span (``"Jan 2020 – …"``) would misread the range.
+    """
+    if avail_px <= 0 or not text:
+        return ""
+    char_w = font_size_px * _ACT_LABEL_CHAR_EM
+    budget = int(avail_px // char_w)
+    if budget <= 0:
+        return ""
+    if len(text) <= budget:
+        return text
+    if drop_if_truncated:
+        return ""
+    if budget < 2:
+        # Only room for the ellipsis (or less) — drop the label so we don't
+        # emit a lone "…" that reads as noise.
+        return ""
+    stem = text[: budget - 1].rstrip()
+    if not stem:
+        # A leading-whitespace source could rstrip to nothing and leave a
+        # bare "…" — same "lone ellipsis is noise" case as budget < 2.
+        return ""
+    return stem + "…"
 
 
 def render_acts_atom(acts: list[dict], timeline: dict) -> str:
@@ -2369,7 +2420,8 @@ def render_acts_atom(acts: list[dict], timeline: dict) -> str:
             if a["index"] <= len(_ROMAN_NUMERALS)
             else str(a["index"])
         )
-        label = a.get("name") or roman
+        name = a.get("name")
+        label_source = name or roman
         span_lbl = (
             f"{_iso_to_dt(a['start']).strftime('%b %Y')} – "
             f"{_iso_to_dt(a['end']).strftime('%b %Y')}"
@@ -2383,16 +2435,36 @@ def render_acts_atom(acts: list[dict], timeline: dict) -> str:
             f'fill="{fill}" stroke="{PALETTE["rule"]}" stroke-width="0.6">'
             f"<title>{_xml_escape(title)}</title></rect>"
         )
-        parts.append(
-            f'<text x="{cx:.1f}" y="{top + 15}" text-anchor="middle" '
-            f'font-family="EB Garamond, serif" font-size="13" font-weight="600" '
-            f'fill="{PALETTE["ink"]}">{_xml_escape(label)}</text>'
-        )
-        parts.append(
-            f'<text x="{cx:.1f}" y="{top + 28}" text-anchor="middle" '
-            f'font-family="EB Garamond, serif" font-size="8.5" fill="{PALETTE["ink_dim"]}">'
-            f"{_xml_escape(span_lbl)}</text>"
-        )
+        # Fit the primary label to the band width (#177). Prefer the full
+        # name, then a trailing-ellipsis truncation, then a fall-back to the
+        # roman numeral if the name won't fit even truncated. Drop the label
+        # entirely on slivers too narrow for the ellipsis.
+        avail = max(0.0, w - _ACT_LABEL_PADDING)
+        label_display = _truncate_svg_label(label_source, avail, 13)
+        if not label_display and name:
+            label_display = _truncate_svg_label(roman, avail, 13)
+        if label_display:
+            # Reveal the full name on hover only when we had to truncate —
+            # unmodified labels don't need a redundant tooltip.
+            name_tooltip = (
+                f"<title>{_xml_escape(label_source)}</title>"
+                if label_display != label_source
+                else ""
+            )
+            parts.append(
+                f'<text x="{cx:.1f}" y="{top + 15}" text-anchor="middle" '
+                f'font-family="EB Garamond, serif" font-size="13" font-weight="600" '
+                f'fill="{PALETTE["ink"]}">{name_tooltip}{_xml_escape(label_display)}</text>'
+            )
+        # Date-span label: drop entirely rather than truncate — a half-cut
+        # "Jan 2020 – …" misreads the range.
+        span_display = _truncate_svg_label(span_lbl, avail, 8.5, drop_if_truncated=True)
+        if span_display:
+            parts.append(
+                f'<text x="{cx:.1f}" y="{top + 28}" text-anchor="middle" '
+                f'font-family="EB Garamond, serif" font-size="8.5" fill="{PALETTE["ink_dim"]}">'
+                f"{_xml_escape(span_display)}</text>"
+            )
         if i > 0:  # a boundary — dashed when the evidence is uncertain
             dash = (
                 ' stroke-dasharray="3 2"'
