@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # claude-code-action mints its GitHub App token by exchanging a GitHub OIDC
+  # token, so the job needs id-token: write even though we pass an OAuth token
+  # for Claude itself. Without it the action fails: "Could not fetch an OIDC
+  # token. Did you remember to add id-token: write to your workflow
+  # permissions?"
+  id-token: write
 
 jobs:
   claude-review:
