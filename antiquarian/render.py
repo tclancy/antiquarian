@@ -2730,45 +2730,45 @@ def _render_story_gutter_timeline(file_arcs: list[dict]) -> str:
     [{"timestamp", "short_sha", "subject"}]}]`` in arc order. Returns "" when
     there are too few datable commits to draw a meaningful spine — an honest
     empty, not a one-dot chart.
+
+    Layout is by ARC ORDER, not absolute time: arc 1's block, then arc 2's,
+    then arc 3's, down the strip — so the strip parallels the prose exactly and
+    the scroll-highlight moves monotonically. (A pure time axis interleaves arcs
+    that overlap in time — e.g. httpx's 2021-2023 and 2022-2024 arcs — which
+    reversed the labels and made the highlight jump around.) Within an arc the
+    commits are evenly spaced in chronological order; block length scales with
+    commit count, so a busy arc still reads as a longer stretch.
     """
-    marks = [
-        c for arc in file_arcs for c in arc.get("commits", []) if c.get("timestamp")
-    ]
-    if len(marks) < 2:
-        return ""
-    times = [_iso_to_dt(c["timestamp"]) for c in marks]
-    t0, t1 = min(times), max(times)
-    span = (t1 - t0).total_seconds() or 1.0
-    width, axis_x, top, bot, radius = 236, 44, 46, 34, 5.5
-    height = max(480, len(marks) * 22 + top + bot)
-
-    def y_of(ts: str) -> float:
-        return top + (height - top - bot) * (
-            (_iso_to_dt(ts) - t0).total_seconds() / span
-        )
-
-    # Per-arc rows first, so labels can be de-cluttered before drawing.
-    rows = []
+    arcs = []
     for arc in file_arcs:
-        cs = [c for c in arc.get("commits", []) if c.get("timestamp")]
-        if not cs:
-            continue
-        ys = sorted(y_of(c["timestamp"]) for c in cs)
-        rows.append(
-            {
-                "n": str(arc.get("number", "")),
-                "name": arc.get("name", ""),
-                "color": arc.get("color") or PALETTE["ink"],
-                "cs": cs,
-                "label_y": ys[0],
-            }
+        cs = sorted(
+            (c for c in arc.get("commits", []) if c.get("timestamp")),
+            key=lambda c: c["timestamp"],
         )
-    # Greedy declutter: push each label down so consecutive names don't collide
-    # when their arcs cluster close in time.
-    last_y = -1e9
-    for r in sorted(rows, key=lambda r: r["label_y"]):
-        r["label_y"] = max(r["label_y"], last_y + 17)
-        last_y = r["label_y"]
+        if cs:
+            arcs.append(
+                {
+                    "n": str(arc.get("number", "")),
+                    "name": arc.get("name", ""),
+                    "color": arc.get("color") or PALETTE["ink"],
+                    "cs": cs,
+                }
+            )
+    if sum(len(a["cs"]) for a in arcs) < 2:
+        return ""
+
+    width, axis_x, top, bot, radius = 236, 44, 40, 30, 5.5
+    label_gap, bubble_gap, arc_gap = 22, 18, 28
+
+    # Stack arcs in order: label, then its bubbles, then a gap before the next.
+    y = top
+    for a in arcs:
+        a["label_y"] = y + 12
+        y += label_gap
+        a["bubble_ys"] = [y + i * bubble_gap for i in range(len(a["cs"]))]
+        y = a["bubble_ys"][-1] + arc_gap
+    spine_end = arcs[-1]["bubble_ys"][-1]
+    height = spine_end + bot
 
     parts = [
         f'<svg class="story-timeline-svg" viewBox="0 0 {width} {height}" '
@@ -2778,23 +2778,22 @@ def _render_story_gutter_timeline(file_arcs: list[dict]) -> str:
         f'<text x="{axis_x - 12}" y="22" font-size="11" '
         f'font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}" '
         f'letter-spacing="0.14em">THE FILE OVER TIME</text>',
-        f'<line x1="{axis_x}" y1="{top}" x2="{axis_x}" y2="{height - bot}" '
+        f'<line x1="{axis_x}" y1="{top}" x2="{axis_x}" y2="{spine_end:.1f}" '
         f'stroke="{PALETTE["rule"]}" stroke-width="1.2"/>',
     ]
-    for r in rows:
-        color = r["color"]
-        parts.append(f'<g class="tl-arc" data-arc="{r["n"]}">')
+    for a in arcs:
+        color = a["color"]
+        parts.append(f'<g class="tl-arc" data-arc="{a["n"]}">')
         # Anchor label into the prose section (works JS-off).
-        raw = r["name"]
+        raw = a["name"]
         shown = raw if len(raw) <= 26 else raw[:25] + "…"
         parts.append(
-            f'<a href="#file-arc-{r["n"]}">'
-            f'<text class="tl-label" x="{axis_x + 12}" y="{r["label_y"]:.1f}" '
+            f'<a href="#file-arc-{a["n"]}">'
+            f'<text class="tl-label" x="{axis_x + 12}" y="{a["label_y"]:.1f}" '
             f'font-size="12.5" font-family="EB Garamond, serif" fill="{color}">'
             f"{_xml_escape(shown)}<title>{_xml_escape(raw)}</title></text></a>"
         )
-        for c in r["cs"]:
-            yy = y_of(c["timestamp"])
+        for c, yy in zip(a["cs"], a["bubble_ys"]):
             subj = _xml_escape(c.get("subject") or "")
             parts.append(
                 f'<circle cx="{axis_x}" cy="{yy:.1f}" r="{radius}" fill="{color}" '
