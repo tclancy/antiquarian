@@ -49,7 +49,17 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           classify_inline_comments: true
-          claude_args: "--max-turns 12"
+          # The inline-comment MCP tool must be explicitly allowed, or every
+          # post is denied — the reviewer then burns its whole turn budget on
+          # denials and exits with "Reached maximum number of turns" having
+          # posted nothing. Read/Grep/Glob are on by default; --allowedTools is
+          # additive, so the action's built-in GitHub tools stay enabled. gh pr
+          # diff/view give full-diff context; gh pr comment is the channel for
+          # the "diff is clean" summary when there are no line-level findings.
+          claude_args: >-
+            --allowedTools
+            "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+            --max-turns 25
           prompt: |
             You are an independent reviewer of this pull request — you did NOT
             write the diff. Review it for real defects a careful reviewer would
@@ -75,7 +85,9 @@ jobs:
                (commit_sha, file_path) needing migrations, and the arc-tier gate
                (docs/arc-tier-and-density.md) for any arc/Act/density change.
 
-            Post each finding as an inline comment on the exact line, with a
+            Post each finding as an inline comment on the exact line using the
+            mcp__github_inline_comment__create_inline_comment tool, with a
             concrete failure scenario (inputs/state -> wrong output). Do not
-            invent issues to have something to say; if the diff is clean, say so
-            briefly. Skip pure style nits with no observable effect.
+            invent issues to have something to say; if the diff is clean, post
+            one brief top-level `gh pr comment` saying so. Skip pure style nits
+            with no observable effect.
