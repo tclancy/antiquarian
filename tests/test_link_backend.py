@@ -140,9 +140,32 @@ def test_linkify_handles_full_40_char_sha():
     assert f"[`{sha[:7]}`](https://github.com/o/r/commit/{sha})" in out
 
 
-def test_linkify_skips_inside_inline_code():
-    md = "the literal `#113` and `7af3c1b` stay"
+def test_linkify_links_lone_ref_in_code_span():
+    # The narrative LLM habitually writes refs as inline code (`#1522`,
+    # `7af3c1b`); a code span that is EXACTLY a ref should link, keeping the
+    # code styling. (Reverses the old skip-all-code-spans behavior — that was
+    # causing backtick-wrapped refs to render un-linked while bare ones linked.)
+    out = linkify_markdown("the `#113` fix and `7af3c1b` commit", GH)
+    assert "[`#113`](https://github.com/o/r/issues/113)" in out
+    assert "[`7af3c1b`](https://github.com/o/r/commit/7af3c1b)" in out
+
+
+def test_linkify_links_lone_full_sha_in_code_span():
+    sha = "7af3c1b1234567890123456789012345678901ab"
+    out = linkify_markdown(f"see `{sha}` here", GH)
+    assert f"[`{sha[:7]}`](https://github.com/o/r/commit/{sha})" in out
+
+
+def test_linkify_skips_ref_among_other_text_in_code_span():
+    # A code span with a ref among other text is a genuine snippet — leave it.
+    md = "run `git show 7af3c1b` then `see #113 for context`"
     assert linkify_markdown(md, GH) == md
+
+
+def test_linkify_lone_code_ref_passes_through_on_noop_backend():
+    # No host known → no link, and the code span stays exactly as written.
+    md = "the `#113` fix"
+    assert linkify_markdown(md, NoopLinkBackend()) == md
 
 
 def test_linkify_skips_inside_fenced_block():

@@ -126,14 +126,27 @@ _TOKEN = re.compile(
 )
 
 
+# A code span whose ENTIRE content is a lone ref — ``#123`` or a bare SHA. The
+# narrative LLM habitually writes references as inline code (`#1522`, `7af3c1b`)
+# because they read as identifiers; those are meant as links, so we linkify them
+# while keeping the code styling. A code span with a ref *among other text* (a
+# real snippet like ``git show 7af3c1b``) is left alone — see ``linkify_markdown``.
+_LONE_HASH_REF = re.compile(r"#(\d{1,7})")
+_LONE_SHA_REF = re.compile(r"[0-9a-f]{7,40}")
+
+
 def linkify_markdown(md: str, backend: LinkBackend) -> str:
     """Rewrite ``#N`` and commit SHA references in ``md`` as Markdown links.
 
     Operates on the Markdown source before HTML conversion so the result is
     still valid Markdown — Python-Markdown then renders the links as normal.
-    Code spans, fenced blocks, existing links, and bare URLs are left intact,
-    so a SHA-looking path inside a URL isn't double-linked and ``#1`` inside
-    a code span stays a literal.
+    Fenced blocks, existing links, and bare URLs are left intact, so a
+    SHA-looking path inside a URL isn't double-linked and a snippet in a fenced
+    block stays literal.
+
+    Inline code spans are linked only when their entire content is a lone ref
+    (```` `#113` ```` or a bare SHA) — the LLM's habitual identifier styling —
+    and left untouched when they carry a ref among other text (genuine code).
 
     When ``backend`` returns ``None`` for a reference, the original text is
     emitted unchanged — the renderer never produces a broken link.
@@ -149,7 +162,20 @@ def linkify_markdown(md: str, backend: LinkBackend) -> str:
         if sha is not None:
             url = backend.commit_url(sha)
             return f"[`{sha[:7]}`]({url})" if url else text
-        # Opaque token (code, existing link, URL) — pass through.
+        # Inline code span (single backticks, not a ``` fenced block, which the
+        # regex matched first) whose whole content is a lone ref → link it,
+        # keeping the code styling. Anything else opaque passes through.
+        if text.startswith("`") and not text.startswith("```") and text.endswith("`"):
+            inner = text[1:-1].strip()
+            hash_ref = _LONE_HASH_REF.fullmatch(inner)
+            if hash_ref:
+                url = backend.issue_url(int(hash_ref.group(1)))
+                if url:
+                    return f"[`#{hash_ref.group(1)}`]({url})"
+            if _LONE_SHA_REF.fullmatch(inner):
+                url = backend.commit_url(inner)
+                if url:
+                    return f"[`{inner[:7]}`]({url})"
         return text
 
     return _TOKEN.sub(repl, md)
