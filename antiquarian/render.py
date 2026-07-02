@@ -91,6 +91,18 @@ NEON_ARC_COLORS = [
     "#ff7a18",  # neon orange
 ]
 
+# Dark, muted arc palette that reads on parchment (the neon set above washes
+# out on the paper ground). Drawn from / harmonised with PALETTE — oxide red,
+# ink blue, moss, plum, ochre, teal — all dark enough to stay legible as text.
+ARC_COLORS_DARK = [
+    "#8a3a1f",  # oxide red (accent)
+    "#3a4e6a",  # deep ink blue (lane)
+    "#556b2f",  # moss green
+    "#6a3a5e",  # dark plum
+    "#8a6a1f",  # dark ochre
+    "#2f5f5a",  # dark teal
+]
+
 
 def _iso_to_dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
@@ -2677,6 +2689,133 @@ def _render_metric_pips(metrics: list[dict] | None) -> str:
     )
 
 
+_TIMELINE_SCROLL_JS = """
+(function () {
+  var tl = document.querySelector('.story-timeline');
+  if (!tl) return;
+  var arcs = Array.prototype.slice.call(
+    document.querySelectorAll('.story-arc[data-arc]'));
+  if (!arcs.length) return;
+  function setActive(n) {
+    tl.classList.add('has-active');
+    tl.querySelectorAll('.tl-arc').forEach(function (g) {
+      g.classList.toggle('tl-active', g.getAttribute('data-arc') === n);
+    });
+  }
+  // Scrollspy: the current arc is the LAST heading that has scrolled above a
+  // line a little below the top of the viewport — i.e. the section the reader
+  // is currently inside. Headings are in document order, so the last one
+  // satisfying the test wins.
+  var LINE = 140, ticking = false;
+  function update() {
+    ticking = false;
+    var current = null;
+    arcs.forEach(function (a) {
+      if (a.getBoundingClientRect().top <= LINE) current = a.getAttribute('data-arc');
+    });
+    if (current) setActive(current);
+  }
+  window.addEventListener('scroll', function () {
+    if (!ticking) { ticking = true; requestAnimationFrame(update); }
+  }, { passive: true });
+  update();
+})();
+"""
+
+
+def _render_story_gutter_timeline(file_arcs: list[dict]) -> str:
+    """A VERTICAL commit-bubble timeline for the story-page gutter (#138 phase-2).
+
+    The file's own commits down a time spine, coloured by the arc each belongs
+    to, so the strip parallels the arcs as the reader scrolls the prose. Each
+    arc label is an anchor into its section in the prose; a small script lights
+    the arc whose section is on screen (progressive enhancement — static SVG is
+    complete on its own, #40).
+
+    ``file_arcs`` is ``[{"number": int, "name": str, "color": str, "commits":
+    [{"timestamp", "short_sha", "subject"}]}]`` in arc order. Returns "" when
+    there are too few datable commits to draw a meaningful spine — an honest
+    empty, not a one-dot chart.
+
+    Layout is by ARC ORDER, not absolute time: arc 1's block, then arc 2's,
+    then arc 3's, down the strip — so the strip parallels the prose exactly and
+    the scroll-highlight moves monotonically. (A pure time axis interleaves arcs
+    that overlap in time — e.g. httpx's 2021-2023 and 2022-2024 arcs — which
+    reversed the labels and made the highlight jump around.) Within an arc the
+    commits are evenly spaced in chronological order; block length scales with
+    commit count, so a busy arc still reads as a longer stretch.
+    """
+    arcs = []
+    for arc in file_arcs:
+        cs = sorted(
+            (c for c in arc.get("commits", []) if c.get("timestamp")),
+            key=lambda c: c["timestamp"],
+        )
+        if cs:
+            arcs.append(
+                {
+                    "n": str(arc.get("number", "")),
+                    "name": arc.get("name", ""),
+                    "color": arc.get("color") or PALETTE["ink"],
+                    "cs": cs,
+                }
+            )
+    if sum(len(a["cs"]) for a in arcs) < 2:
+        return ""
+
+    width, axis_x, top, bot, radius = 236, 44, 40, 30, 5.5
+    label_gap, bubble_gap, arc_gap = 22, 18, 28
+
+    # Stack arcs in order: label, then its bubbles, then a gap before the next.
+    y = top
+    for a in arcs:
+        a["label_y"] = y + 12
+        y += label_gap
+        a["bubble_ys"] = [y + i * bubble_gap for i in range(len(a["cs"]))]
+        y = a["bubble_ys"][-1] + arc_gap
+    spine_end = arcs[-1]["bubble_ys"][-1]
+    height = spine_end + bot
+
+    parts = [
+        f'<svg class="story-timeline-svg" viewBox="0 0 {width} {height}" '
+        f'xmlns="http://www.w3.org/2000/svg" width="100%" '
+        f'style="display:block;max-width:100%;" role="img" '
+        f'aria-label="Commit timeline for this file">',
+        f'<text x="{axis_x - 12}" y="22" font-size="11" '
+        f'font-family="EB Garamond, serif" fill="{PALETTE["ink_dim"]}" '
+        f'letter-spacing="0.14em">THE FILE OVER TIME</text>',
+        f'<line x1="{axis_x}" y1="{top}" x2="{axis_x}" y2="{spine_end:.1f}" '
+        f'stroke="{PALETTE["rule"]}" stroke-width="1.2"/>',
+    ]
+    for a in arcs:
+        color = a["color"]
+        parts.append(f'<g class="tl-arc" data-arc="{a["n"]}">')
+        # Anchor label into the prose section (works JS-off).
+        raw = a["name"]
+        shown = raw if len(raw) <= 26 else raw[:25] + "…"
+        parts.append(
+            f'<a href="#file-arc-{a["n"]}">'
+            f'<text class="tl-label" x="{axis_x + 12}" y="{a["label_y"]:.1f}" '
+            f'font-size="12.5" font-family="EB Garamond, serif" fill="{color}">'
+            f"{_xml_escape(shown)}<title>{_xml_escape(raw)}</title></text></a>"
+        )
+        for c, yy in zip(a["cs"], a["bubble_ys"]):
+            subj = _xml_escape(c.get("subject") or "")
+            parts.append(
+                f'<circle cx="{axis_x}" cy="{yy:.1f}" r="{radius}" fill="{color}" '
+                f'stroke="{PALETTE["paper"]}" stroke-width="1">'
+                f"<title>{_xml_escape(c.get('short_sha', ''))} · {subj}</title></circle>"
+            )
+        parts.append("</g>")
+    parts.append("</svg>")
+    return (
+        '<aside class="story-timeline" aria-label="File commit timeline">'
+        + "".join(parts)
+        + f"<script>{_TIMELINE_SCROLL_JS}</script>"
+        + "</aside>"
+    )
+
+
 def render_story_page(
     file_path: str,
     story_md: str,
@@ -2686,6 +2825,7 @@ def render_story_page(
     files_with_stories: set[str] | None = None,
     link_backend=None,
     metrics: list[dict] | None = None,
+    gutter_timeline: str = "",
 ) -> str:
     """Render a single per-file story.md as a styled HTML page (#46).
 
@@ -2737,6 +2877,14 @@ def render_story_page(
         extensions=["fenced_code", "tables"],
         output_format="html",
     )
+    # Anchor each "**Arc N — …**" paragraph so the gutter-timeline labels can
+    # link to it and the scroll-highlight can observe it (#138 phase-2). Arc
+    # numbers here match the timeline's (both come from the same story prose).
+    body_html = re.sub(
+        r"<p><strong>Arc (\d+)(\s*[—-])",
+        r'<p id="file-arc-\1" data-arc="\1" class="story-arc"><strong>Arc \1\2',
+        body_html,
+    )
     project_escaped = _xml_escape(project)
     file_path_escaped = _xml_escape(file_path)
     sidebar = _render_story_sidebar(
@@ -2753,6 +2901,7 @@ def render_story_page(
         body_html=body_html,
         sidebar=sidebar,
         metric_pips=metric_pips,
+        gutter_timeline=gutter_timeline,
     )
 
 
