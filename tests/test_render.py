@@ -922,6 +922,14 @@ class TestSurveyPageRendering:
         html = render_survey_page("## Intro\nHello.\n", "A <B> & C", 1)
         assert "A &lt;B&gt; &amp; C" in html
 
+    def test_survey_page_article_is_centered(self):
+        """The survey article wraps in .story-layout (max-width + margin auto)
+        so it centers like a story page, not flush-left."""
+        html = render_survey_page("## Intro\nHello.\n", "proj", 1)
+        assert '<div class="story-layout">' in html
+        # The article sits inside the centering wrapper, not directly on body.
+        assert "</div>\n</body>" in html or "</div>\n  </body>" in html
+
     def test_broadsheet_meta_table_links_survey_when_present(self, seeded_repo: Path):
         data = extract_render_data(seeded_repo)
         html = render_broadsheet(data, has_survey=True)
