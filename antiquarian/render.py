@@ -1172,23 +1172,24 @@ def _render_atom_sequence(atoms: dict[str, str]) -> str:
     return "\n    ".join(parts)
 
 
-def _render_file_index(
-    files: list[str], linked: set[str], descs: dict[str, str]
-) -> str:
+def _render_file_index(files: list[str], linked: set[str]) -> str:
     """Render the surveyed-files list as a collapsible, searchable tree (#108/#109).
 
     Builds the pure tree (``file_tree``), opens it to the budget-derived depth,
     and emits ``<details>`` for folders / ``<li>`` for files. A search input sits
     above the tree; the live-search script and ``@media print`` rules (which force
     every disclosure open) live in the page template. Returns ``""`` for no files.
+
+    The leaf carries only name + story link — no per-file prose (#121). Once the
+    story-page directory sidebar shipped (#138) a reader can walk the tree from
+    any story page, so a description sentence in the index was redundant double
+    duty; the full story lives one click away on the file's own page.
     """
     if not files:
         return ""
     tree = build_file_tree(files)
     open_depth = choose_open_depth(tree)
-    body = _render_tree_nodes(
-        tree, linked, descs, current_depth=0, open_depth=open_depth
-    )
+    body = _render_tree_nodes(tree, linked, current_depth=0, open_depth=open_depth)
     search = (
         '<input type="search" class="file-search" '
         'placeholder="filter files…" aria-label="Filter surveyed files">'
@@ -1199,7 +1200,6 @@ def _render_file_index(
 def _render_tree_nodes(
     nodes: list,
     linked: set[str],
-    descs: dict[str, str],
     *,
     current_depth: int,
     open_depth: int,
@@ -1212,7 +1212,6 @@ def _render_tree_nodes(
             children = _render_tree_nodes(
                 node.children,
                 linked,
-                descs,
                 current_depth=current_depth + 1,
                 open_depth=open_depth,
             )
@@ -1225,16 +1224,14 @@ def _render_tree_nodes(
                 f"<ul>{children}</ul></details></li>"
             )
         else:
-            parts.append(_render_file_leaf(node, linked, descs))
+            parts.append(_render_file_leaf(node, linked))
     return "".join(parts)
 
 
-def _render_file_leaf(node: FileNode, linked: set[str], descs: dict[str, str]) -> str:
+def _render_file_leaf(node: FileNode, linked: set[str]) -> str:
     """One file row: basename shown, full path on hover, linked if it has a story."""
     path = node.path
     safe = _story_md_to_html_name(path.replace("/", "__") + ".md")
-    desc = descs.get(path, "")
-    desc_span = f' <span class="file-desc">— {_xml_escape(desc)}</span>' if desc else ""
     label = (
         f'<span class="file-name" title="{_xml_escape(path)}">'
         f"<code>{_xml_escape(node.name)}</code></span>"
@@ -1242,7 +1239,7 @@ def _render_file_leaf(node: FileNode, linked: set[str], descs: dict[str, str]) -
     if (path.replace("/", "__") + ".md") in linked:
         label = f'<a href="stories/{safe}">{label}</a>'
     data_path = _xml_escape(path.lower())
-    return f'<li class="file" data-path="{data_path}">{label}{desc_span}</li>'
+    return f'<li class="file" data-path="{data_path}">{label}</li>'
 
 
 def _pack_arc_rows(entries: list[dict], gap: float) -> int:
@@ -1526,7 +1523,6 @@ def render_page(
     survey_excerpt: str | None,
     stories_with_pages: set[str] | None = None,
     has_survey: bool = False,
-    story_descriptions: dict[str, str] | None = None,
     dramatis_personae: list[dict[str, str]] | None = None,
     arc_panel: str = "",
     acts_atom: str = "",
@@ -1538,18 +1534,14 @@ def render_page(
     in this set get a clickable link in the meta-table; the rest stay as plain
     ``<code>``. None = treat as empty (no links).
 
-    ``story_descriptions`` maps file paths to one-sentence Origin excerpts,
-    shown alongside each file in the meta-table.
-
     ``dramatis_personae`` is a list of contributor entries extracted from the
     survey, each with ``name`` and ``description`` keys.
     """
     generated = manifest.get("generated_at", "")
     files = manifest.get("files", [])
     linked = stories_with_pages or set()
-    descs = story_descriptions or {}
 
-    file_index = _render_file_index(files, linked, descs)
+    file_index = _render_file_index(files, linked)
 
     full_start = full_end = ""
     if timeline.get("full_span"):
@@ -1804,11 +1796,6 @@ def render_page(
       color: var(--ink);
     }}
     .meta-table ul {{ margin: 0; padding-left: 1rem; }}
-    .meta-table .file-desc {{
-      font-style: italic;
-      font-size: 0.78rem;
-      color: var(--ink-dim);
-    }}
     .meta-table code {{
       font-family: ui-monospace, "SF Mono", Monaco, monospace;
       font-size: 0.8rem;
@@ -2492,7 +2479,6 @@ def render_broadsheet(
         survey_excerpt,
         stories_with_pages=stories_with_pages,
         has_survey=has_survey,
-        story_descriptions=data.get("story_descriptions"),
         dramatis_personae=data.get("dramatis_personae"),
         arc_panel=arc_panel,
         acts_atom=acts_atom,

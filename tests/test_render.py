@@ -44,7 +44,6 @@ from antiquarian.render_data import (
     _apply_email_coalesce,
     _build_swimlane,
     _Commit,
-    _extract_story_descriptions,
     _pull_dramatis_personae,
     extract_render_data,
 )
@@ -89,7 +88,6 @@ class TestExtractRenderData:
             "file_lifespans",
             "survey_excerpt",
             "dramatis_personae",
-            "story_descriptions",
         ):
             assert key in data, f"missing key: {key}"
 
@@ -747,43 +745,8 @@ class TestStoryPageRendering:
         assert "<h2>Origin</h2>" in story_page.read_text()
 
 
-class TestStoryDescriptions:
-    """Story descriptions extracted from Origin sections appear in meta-table."""
-
-    def test_extract_story_descriptions_basic(self, tmp_path: Path):
-        stories_dir = tmp_path / "stories"
-        stories_dir.mkdir()
-        (stories_dir / "src__a.py.md").write_text(
-            "## Origin\nThe module handles authentication. More details.\n"
-        )
-        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
-        assert descs == {"src/a.py": "The module handles authentication."}
-
-    def test_extract_story_descriptions_strips_backtick_code(self, tmp_path: Path):
-        stories_dir = tmp_path / "stories"
-        stories_dir.mkdir()
-        (stories_dir / "src__a.py.md").write_text(
-            "## Origin\nIntroduced in `aaa11111` as a helper. More.\n"
-        )
-        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
-        assert "`" not in descs["src/a.py"]
-        assert "Introduced in" in descs["src/a.py"]
-
-    def test_extract_story_descriptions_truncates_long(self, tmp_path: Path):
-        stories_dir = tmp_path / "stories"
-        stories_dir.mkdir()
-        long_sentence = "A" * 200 + "."
-        (stories_dir / "src__a.py.md").write_text(f"## Origin\n{long_sentence} More.\n")
-        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
-        assert len(descs["src/a.py"]) <= 120
-        assert descs["src/a.py"].endswith("…")
-
-    def test_extract_story_descriptions_no_origin_section(self, tmp_path: Path):
-        stories_dir = tmp_path / "stories"
-        stories_dir.mkdir()
-        (stories_dir / "src__a.py.md").write_text("## Major arcs\nSome arcs.\n")
-        descs = _extract_story_descriptions(list(stories_dir.glob("*.md")))
-        assert descs == {}
+class TestFileIndexLeaf:
+    """The file-index leaf carries name + link only — no per-file prose (#121)."""
 
     def test_broadsheet_no_stories_on_file_row(self, seeded_repo: Path):
         """The 'stories on file' row is gone from the meta-table."""
@@ -792,7 +755,15 @@ class TestStoryDescriptions:
         assert "stories on file" not in html
         assert "files surveyed" in html
 
-    def test_broadsheet_shows_description(self, seeded_repo: Path):
+    def test_leaf_carries_no_description_even_when_origin_present(
+        self, seeded_repo: Path
+    ):
+        """#121: the index leaf sheds the Origin-excerpt sentence.
+
+        Since the story-page directory sidebar (#138) lets a reader walk the
+        tree from any story page, a description in the index is redundant double
+        duty — so even a file with a rich Origin section renders as a lean leaf.
+        """
         stories_dir = seeded_repo / ".antiquarian" / "stories"
         stories_dir.mkdir(parents=True, exist_ok=True)
         (stories_dir / "src__a.py.md").write_text(
@@ -800,24 +771,14 @@ class TestStoryDescriptions:
         )
         data = extract_render_data(seeded_repo)
         html = render_broadsheet(data, stories_with_pages={"src__a.py.md"})
-        assert "file-desc" in html
-        assert "The auth module handles login." in html
+        assert "file-desc" not in html
+        assert "The auth module handles login." not in html
 
-    def test_broadsheet_no_description_no_span(self, seeded_repo: Path):
-        """Files without stories don't get a description span in the body."""
+    def test_broadsheet_no_description_span_anywhere(self, seeded_repo: Path):
+        """No file-desc span in the body at all (#121 removed the feature)."""
         data = extract_render_data(seeded_repo)
         html = render_broadsheet(data)
         assert '<span class="file-desc">' not in html
-
-    def test_story_descriptions_in_extract_render_data(self, seeded_repo: Path):
-        stories_dir = seeded_repo / ".antiquarian" / "stories"
-        stories_dir.mkdir(parents=True, exist_ok=True)
-        (stories_dir / "src__a.py.md").write_text(
-            "## Origin\nA utility module. More.\n"
-        )
-        data = extract_render_data(seeded_repo)
-        assert "story_descriptions" in data
-        assert data["story_descriptions"]["src/a.py"] == "A utility module."
 
 
 class TestEmptyTodoSections:

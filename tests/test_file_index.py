@@ -37,7 +37,7 @@ def _page(files: list[str], **kwargs) -> str:
 
 class TestFileIndexRendering:
     def test_nested_folders_render_as_details(self):
-        out = _render_file_index(["pkg/a.py", "pkg/b.py"], set(), {})
+        out = _render_file_index(["pkg/a.py", "pkg/b.py"], set())
         assert "<details" in out
         assert "<summary" in out
         # folder summary carries the name and its recursive file count
@@ -45,37 +45,38 @@ class TestFileIndexRendering:
         assert "2" in out
 
     def test_root_file_renders_as_leaf_not_folder(self):
-        out = _render_file_index(["README.md"], set(), {})
+        out = _render_file_index(["README.md"], set())
         assert "README.md" in out
         assert "<details" not in out
 
     def test_file_with_story_page_is_linked(self):
-        out = _render_file_index(["src/a.py"], {"src__a.py.md"}, {})
+        out = _render_file_index(["src/a.py"], {"src__a.py.md"})
         assert 'href="stories/' in out
         assert "a.py" in out
 
-    def test_description_rendered_alongside_file(self):
-        out = _render_file_index(["src/a.py"], set(), {"src/a.py": "the origin point"})
-        assert "the origin point" in out
+    def test_leaf_carries_no_prose(self):
+        # #121: the leaf is name + link only; no description span.
+        out = _render_file_index(["src/a.py"], {"src__a.py.md"})
+        assert "file-desc" not in out
 
     def test_overflowing_tree_collapses_deep_folders(self):
         # 5 top folders x 10 files: opens to top summaries, sub-content collapsed.
         paths = [f"d{f}/file{i}.py" for f in range(5) for i in range(10)]
-        out = _render_file_index(paths, set(), {})
+        out = _render_file_index(paths, set())
         # at least one collapsed folder (a <details> without the open attribute)
         assert "<details>" in out
 
     def test_small_tree_opens_every_folder(self):
-        out = _render_file_index(["pkg/a.py", "pkg/b.py"], set(), {})
+        out = _render_file_index(["pkg/a.py", "pkg/b.py"], set())
         assert "<details open>" in out
         assert "<details>" not in out  # nothing left collapsed
 
     def test_search_control_present(self):
-        out = _render_file_index(["pkg/a.py"], set(), {})
+        out = _render_file_index(["pkg/a.py"], set())
         assert "file-search" in out
 
     def test_empty_files_is_empty_string(self):
-        assert _render_file_index([], set(), {}) == ""
+        assert _render_file_index([], set()) == ""
 
 
 class TestFileIndexInPage:
