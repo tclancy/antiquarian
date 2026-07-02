@@ -48,6 +48,15 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # This gate exists to review AGENT PRs (#164), and agents open PRs
+          # under bot identities (e.g. metaframework-dispatch-bot). The action
+          # blocks non-human actors by default ("Workflow initiated by
+          # non-human actor … Add bot to allowed_bots"), which would make the
+          # gate a no-op for exactly the PRs it's meant to catch. Allow all
+          # bots: safe here because fork PRs are already skipped above, so only
+          # branches pushed to this private repo (Tom + trusted Dispatch bots)
+          # can trigger it. Narrow to specific logins if that ever changes.
+          allowed_bots: "*"
           # track_progress is what actually REGISTERS the inline-comment MCP
           # server (and a live tracking comment). Without it the server never
           # connects, so mcp__github_inline_comment__create_inline_comment is
