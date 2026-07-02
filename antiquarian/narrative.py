@@ -26,6 +26,23 @@ def _noop(_msg: str) -> None:
     pass
 
 
+def _first_stderr_line(err: subprocess.CalledProcessError) -> str:
+    """First non-empty line of a failed ``claude -p``'s stderr, for logging.
+
+    A non-zero exit carries the actual cause on stderr — a usage-limit notice
+    ("usage limit reached, resets at …"), an auth prompt, a bad-flag message.
+    The retry loop previously logged only the return code, so an overnight run
+    that hit a rolling usage limit surfaced as a bare ``exited 1`` with the
+    real reason discarded. Return a short suffix (empty when stderr is blank)
+    so the log states the cause without dumping a multi-line trace.
+    """
+    stderr = (err.stderr or "").strip()
+    if not stderr:
+        return ""
+    first = next((ln.strip() for ln in stderr.splitlines() if ln.strip()), "")
+    return f" — {first}" if first else ""
+
+
 def _run_claude_p(
     args: Sequence[str],
     user_prompt: str,
@@ -92,13 +109,14 @@ def _run_claude_p(
                 log(
                     f"[narrative] claude -p exited {e.returncode} "
                     f"(exit attempt {cpe_attempt}/{max_calledprocess_attempts}); "
-                    f"retrying in {wait:.1f}s"
+                    f"retrying in {wait:.1f}s{_first_stderr_line(e)}"
                 )
                 sleep(wait)
             else:
                 log(
                     f"[narrative] claude -p exited {e.returncode} on all "
                     f"{max_calledprocess_attempts} attempts; giving up"
+                    f"{_first_stderr_line(e)}"
                 )
                 raise
 
