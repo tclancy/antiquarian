@@ -1652,3 +1652,17 @@ class TestPopoverDetailHtml:
         html = render_broadsheet(data)
         # The anchor survives, XML-escaped, in the attribute value.
         assert "&lt;a href=" in html and "issues/503" in html
+
+
+class TestLensLinkMarginScope:
+    """The 0.8rem action-link gap must not leak onto inline prose links (#173)."""
+
+    def test_margin_scoped_to_direct_child_links(self, seeded_repo: Path):
+        data = extract_render_data(seeded_repo)
+        html = render_broadsheet(data)
+        # Margin lives on the child-combinator rule (action links only)...
+        assert ".commit-lens-detail > a { margin-right: 0.8rem; }" in html
+        # ...and the broad descendant rule carries color but NOT the margin,
+        # so a linkified `#N` inside the detail prose gets no trailing gap.
+        assert ".commit-lens-detail a { color: var(--accent); }" in html
+        assert ".commit-lens-detail a { color: var(--accent); margin-right" not in html
