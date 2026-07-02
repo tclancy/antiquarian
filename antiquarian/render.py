@@ -1930,7 +1930,13 @@ def render_page(
     }}
     .commit-lens-dot.sel {{ background: var(--accent); color: var(--paper); }}
     .commit-lens-detail {{ font-size: 0.85rem; min-height: 2.5em; border-top: 1px solid var(--rule); padding-top: 0.4rem; }}
-    .commit-lens-detail a {{ color: var(--accent); margin-right: 0.8rem; }}
+    .commit-lens-detail a {{ color: var(--accent); }}
+    /* The 0.8rem gap is for the trailing action links (view PR / view commit /
+       read story), which are DIRECT children. Since #173 the detail prose also
+       carries inline links (e.g. a linkified `#26`), nested in a <span>; the
+       child combinator keeps the margin off those so it doesn't open a gap
+       mid-sentence. */
+    .commit-lens-detail > a {{ margin-right: 0.8rem; }}
     @media print {{ .commit-lens, .lane-hit {{ display: none !important; }} }}
 
     /* Named-arcs reference panel (#119): floats at the top of the viewport so
