@@ -628,34 +628,6 @@ def _discover_files_in_cache(cache_db: Path) -> list[str]:
     return sorted(r[0] for r in rows)
 
 
-_ORIGIN_RE = re.compile(r"##\s+Origin\s*\n+(.*?)(?:\n\n|\Z)", re.DOTALL)
-_FIRST_SENTENCE_RE = re.compile(r"^(.+?\.)\s", re.DOTALL)
-
-
-def _extract_story_descriptions(stories: list[Path]) -> dict[str, str]:
-    """Extract a one-sentence description from each story's Origin section.
-
-    Returns ``{file_path: description}`` where ``file_path`` is the repo-
-    relative path (e.g. ``src/a.py``) derived from the story filename
-    (``src__a.py.md`` → ``src/a.py``).
-    """
-    descriptions: dict[str, str] = {}
-    for story_path in stories:
-        text = story_path.read_text(encoding="utf-8", errors="replace")
-        m = _ORIGIN_RE.search(text)
-        if not m:
-            continue
-        para = m.group(1).strip()
-        sent_m = _FIRST_SENTENCE_RE.match(para)
-        sentence = sent_m.group(1) if sent_m else para
-        sentence = re.sub(r"`[^`]+`", "", sentence).strip()
-        if len(sentence) > 120:
-            sentence = sentence[:115].rsplit(" ", 1)[0] + "…"
-        file_path = story_path.stem.replace("__", "/")
-        descriptions[file_path] = sentence
-    return descriptions
-
-
 def _pull_survey_excerpt(repo_path: Path) -> str | None:
     """First arc paragraph from the most recent survey's Cross-file arcs section.
 
@@ -746,7 +718,6 @@ def extract_render_data(repo_path: Path) -> dict:
     - ``file_lifespans``: per-file first/last/count + rename-truncation flag
     - ``survey_excerpt``: pull-quote from the most recent survey, if any
     - ``dramatis_personae``: contributor entries from the survey, if any
-    - ``story_descriptions``: one-sentence Origin excerpts keyed by file path
 
     All fields are JSON-serializable; the dict can be persisted as JSON for
     caching or inspection.
@@ -792,7 +763,6 @@ def extract_render_data(repo_path: Path) -> dict:
         "file_metrics": file_metrics,
         "survey_excerpt": _pull_survey_excerpt(repo_path),
         "dramatis_personae": _pull_dramatis_personae(repo_path),
-        "story_descriptions": _extract_story_descriptions(stories),
     }
 
 
