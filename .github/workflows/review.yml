@@ -6,9 +6,31 @@ name: Claude Code Review
 # findings — preserving the independence the retro found catches bug classes
 # that same-agent self-review misses.
 
+# Steady-state burn reduction, ported from sandy (#320 §5):
+#   - Auto-trigger on `opened` only. With `synchronize` a 10-commit PR fired TEN
+#     model reviews; now it fires one. Re-review on demand by commenting `/review`
+#     (or `@claude review`), which is why the issue_comment trigger below exists —
+#     dropping `synchronize` without it would remove the ability to re-review
+#     after pushing fixes.
+#   - Skip Dependabot PRs and `chore` titles entirely; neither benefits from a
+#     model review, and both are frequent.
+# This account has exhausted its included Actions minutes two months running, and
+# only PRIVATE repos (this one) bill against that allowance.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: claude-review-antiquarian-${{ github.event.pull_request.number || github.event.issue.number }}
+  # MUST stay false. Cancellation happens when a run is *created*, before
+  # job-level `if` filtering — so with `true`, ANY comment on the PR (including
+  # this workflow's own tracking comment from track_progress) spawns an
+  # issue_comment run in this group and cancels the in-flight review. canvasoptimizer
+  # had 10 reviews cancelled mid-flight that way, billing partial minutes and
+  # posting nothing. Queueing is always correct here.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -23,9 +45,25 @@ permissions:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
-    # Skip fork PRs (Actions can't post inline comments back to the base repo
-    # for forks — a GitHub security boundary; antiquarian PRs are branch-based).
-    if: ${{ github.event.pull_request.head.repo.fork == false }}
+    # Run when:
+    #   - a non-fork PR is opened by a non-Dependabot author with a non-`chore`
+    #     title, OR
+    #   - a comment on a PR explicitly asks for `/review` or `@claude review`.
+    #
+    # The fork check stays on the pull_request branch only. `head.repo.fork` is
+    # null on an issue_comment event, so a single top-level `== false` check would
+    # evaluate false and skip every on-demand review. Fork safety still holds on
+    # that path: the action independently verifies the commenting actor has write
+    # access before doing anything.
+    if: |
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.fork == false
+        && github.event.pull_request.user.login != 'dependabot[bot]'
+        && !startsWith(github.event.pull_request.title, 'chore'))
+      || (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request != null
+        && (contains(github.event.comment.body, '/review')
+            || contains(github.event.comment.body, '@claude review')))
     steps:
       # Gate on the secret so this workflow is a clean green no-op until the
       # CLAUDE_CODE_OAUTH_TOKEN secret is added — no red X on every PR meanwhile.
@@ -41,11 +79,34 @@ jobs:
             echo "::notice::CLAUDE_CODE_OAUTH_TOKEN not set — review skipped. Add the secret to enable the gate (#164)."
           fi
 
-      - if: steps.gate.outputs.ready == 'yes'
-        uses: actions/checkout@v4
+      # An issue_comment event carries no pull_request context, so a bare checkout
+      # would review the DEFAULT BRANCH rather than the PR — silently reviewing the
+      # wrong code. Resolve the head SHA explicitly on that path.
+      - name: Resolve PR head SHA
+        id: pr
+        if: steps.gate.outputs.ready == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            number="${{ github.event.issue.number }}"
+            sha="$(gh api "repos/${{ github.repository }}/pulls/${number}" --jq .head.sha)"
+          else
+            sha="${{ github.event.pull_request.head.sha }}"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
       - if: steps.gate.outputs.ready == 'yes'
-        uses: anthropics/claude-code-action@v1
+        # Pinned to a full SHA, not the mutable @v4 tag: a re-pointed tag would run
+        # new code in CI with this job's permissions and secrets. = v4.4.0.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          ref: ${{ steps.pr.outputs.sha }}
+
+      - if: steps.gate.outputs.ready == 'yes'
+        # Pinned for the same supply-chain reason. = v1.0.183, matching sandy.
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # This gate exists to review AGENT PRs (#164), and agents open PRs
@@ -62,11 +123,16 @@ jobs:
           # connects, so mcp__github_inline_comment__create_inline_comment is
           # denied even though it's in --allowedTools — --allowedTools only
           # FILTERS already-registered servers, it does not register them. That
-          # was the "14 denials, posted nothing, max-turns" failure. This
-          # mirrors the official pr-review-comprehensive.yml example (which also
-          # omits classify_inline_comments — #1405 documents buffering bugs when
-          # it's set explicitly, so we let it default).
+          # was the "14 denials, posted nothing, max-turns" failure.
           track_progress: true
+          # CORRECTION to the previous note here, which said upstream's example
+          # omits classify_inline_comments so we should let it default. The
+          # DEFAULT IS TRUE — verified in a live run's resolved inputs on sandy,
+          # where `classify_inline_comments: true` appeared with no such key in the
+          # workflow. So "let it default" left the buggy buffering path enabled;
+          # omitting it is not the same as disabling it. Pinned off explicitly,
+          # which also stops an upstream default change from reintroducing it.
+          classify_inline_comments: false
           # --allowedTools then ALLOWS the now-registered inline-comment tool.
           # gh pr diff/view give full-diff context; gh pr comment is the channel
           # for a "diff is clean" summary when there are no line-level findings.
